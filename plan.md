@@ -848,10 +848,11 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   which is the honest amount to claim — the security is OpenSSH's and this backend
   cannot describe it.)*
 - [x] Range reads and writes; `StatFs` → capacity.
-- [ ] Staged resumable uploads and CAS on write-back. **Deferred:** `StageOpen/Write/
-  Commit` and `expect_cookie` are `xsyncv3.md` E4-S6/E4-S7 and do not exist yet. Plain
-  positional writes are what v3 has, so `Caps::atomic_rename` is false and the transfer
-  worker will use the safe path.
+- [x] Staged resumable uploads and CAS on write-back. *(Landed 2026-09-03: `xsyncv3.md`
+  E4-S6/E4-S7 added `StageOpen/Write/Status/Commit/Abort` and `WriteCas`. A stage
+  survives a reconnect and a server restart, so E13's resumable uploads and E12's
+  edit-in-place have what they need. The Excalibur adapter does not use them yet — that
+  is E12/E13's own work.)*
 - [ ] `watch` → live listing refresh. **Deferred** with E7 on the xsync side; `Caps::watch`
   reads the `NOTIFY` support bit, which no server sets yet, so it is already wired to
   turn on by itself.
@@ -1605,7 +1606,7 @@ placeholder story that only records the request:
 | **M-1 xsyncv3 Phase 1** *(in `../xsync`)* | `xsyncv3.md` §5 Phase 1; E7-S0 here | `xs --server` speaks v3: open/read/write at offset, full attrs, statfs, advertised writability; `xsync-client` crate with a conformance fixture. |
 | **M0 Skeleton** | E0, E1-S1–S3, E2-S1–S3 (mock backend) | Pixel-matched `1a` and `1b` with fake data; theme switch; sidebar. |
 | **M1 First real share (xsync)** — **Done 2026-09-03** | E7-S2, E3-S1 (xsync tab, "via SSH"), E3-S2, E3-S4, E8-S1/S2/S5–S8, E9, E10 | Connect to `ssh host xs --server`, browse, RW/RO from `MountInfo`, capacity from `StatFs`, status bar live. |
-| **M2 Read, edit, move** | E11, E12, E13, E14, E15 *(E14 unblocked 2026-09-03 by `xsyncv3.md` E5-S4; E12 and E13 still want E4-S6/S7)* | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
+| **M2 Read, edit, move** | E11, E12, E13, E14, E15 *(fully unblocked 2026-09-03: `xsyncv3.md` E5-S4 gave E14 its verbs, E4-S6/S7 gave E12 its CAS and E13 its resumable uploads)* | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
 | **M3 Other protocols** | E6 (SFTP, ports Kestrel), E4-S1–S6 (SMB), E5-S1–S4 (NFS), E3-S3 keychain | The handoff's SMB/NFS plus SFTP behind the trait xsync shaped; Docker fixtures arrive here. |
 | **M4 Polish** | E8-S3/S4/S9, E16, E17, E1-S4/S5, E19, E7-S1 (reduced mode), E7-S3 | Row variants, shortcuts, a11y, prefs, test matrix green, older-`xs` fallback. |
 | **M5 Release** | E18 | Signed macOS + Linux builds. |
