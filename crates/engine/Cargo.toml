@@ -5,12 +5,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# An application, not a library: nothing here is meant for crates.io.
+# Saying so also lets cargo-deny accept the workspace's path deps.
+publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+# The OS credential store. Default features cover the three platforms this
+# targets: Apple Keychain, Secret Service over zbus, and Windows.
+keyring = { workspace = true }
+zeroize = { workspace = true }
 # A path dependency while xsync's v3 branch is local. E7-S0 wants a pinned git
 # revision with a documented `[patch]` override for development; that needs the
 # branch pushed somewhere first.

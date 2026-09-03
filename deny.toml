@@ -7,6 +7,32 @@ all-features = true
 
 [advisories]
 version = 2
+# Unmaintained-crate notices, not vulnerabilities. Every one of these arrives
+# through Tauri and none is reachable from a dependency we chose directly, so
+# there is nothing to swap out here: they clear when Tauri's own tree moves.
+# Recorded individually rather than by a blanket `unmaintained = "allow"`, so a
+# genuinely new unmaintained crate still fails the build.
+ignore = [
+  # GTK3 bindings, pulled in by tauri's Linux backend (wry -> gtk). Tauri v2
+  # still targets GTK3; migrating is upstream's call, not ours.
+  { id = "RUSTSEC-2024-0411", reason = "gtk, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0412", reason = "gtk-sys, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0413", reason = "gdk, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0414", reason = "gdk-sys, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0415", reason = "gdkwayland-sys, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0416", reason = "gdkx11, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0417", reason = "gdkx11-sys, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0418", reason = "atk, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0419", reason = "atk-sys, via tauri's Linux backend" },
+  { id = "RUSTSEC-2024-0420", reason = "gtk3-macros, via tauri's Linux backend" },
+  # Build-time only: these run in proc macros and ship no code in the binary.
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, build-time only, via tauri-macros" },
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-property, build-time only, via tauri-codegen" },
+  { id = "RUSTSEC-2025-0080", reason = "unic-char-range, build-time only, via tauri-codegen" },
+  { id = "RUSTSEC-2025-0081", reason = "unic-common, build-time only, via tauri-codegen" },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-ident, build-time only, via tauri-codegen" },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-version, build-time only, via tauri-codegen" },
+]
 
 [licenses]
 version = 2
@@ -33,6 +59,10 @@ confidence-threshold = 0.9
 # one, and are usually forced by upstream. Warn so new ones stay visible.
 multiple-versions = "warn"
 wildcards = "deny"
+# Our own crates depend on each other by path with no version, which cargo-deny
+# reads as a wildcard. That is how a workspace is meant to look; the ban is here
+# to catch a wildcard on a *published* crate, which this still does.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

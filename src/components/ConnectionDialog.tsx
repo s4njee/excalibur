@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import styles from "./dialog.module.css";
 import {
   defaultPort,
@@ -43,6 +43,9 @@ export function ConnectionDialog(props: {
   const [draft, setDraft] = createSignal<Draft>(props.initial ?? emptyDraft("xsync"));
   const [result, setResult] = createSignal<TestResult | null>(null);
   const [busy, setBusy] = createSignal<"testing" | "connecting" | null>(null);
+  // Asked once: a machine either has a credential service or it does not, and
+  // offering to save into nothing is worse than saying so.
+  const [keychain] = createResource(() => props.backend.keychainAvailable());
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -84,7 +87,20 @@ export function ConnectionDialog(props: {
     try {
       const id = bookmarkId(draft());
       await props.backend.mount(toSpec(draft(), id));
-      props.onConnected(draft());
+      // The credential goes to the OS keychain after the connection worked, and
+      // only if asked for. Unticking the box is an instruction to forget, not
+      // merely to skip saving.
+      if (draft().password && draft().saveCredentials && keychain()) {
+        await props.backend.saveSecret(id, draft().password);
+      } else if (!draft().saveCredentials) {
+        await props.backend.forgetSecret(id).catch(() => undefined);
+      }
+      const connected = draft();
+      // Drop the password from component state as soon as it has been handed
+      // over. JavaScript cannot zeroize, but leaving it in a live signal for
+      // the rest of the session is a choice, and this is the other one.
+      setDraft((current) => ({ ...current, password: "" }));
+      props.onConnected(connected);
     } catch (error) {
       setResult({ ok: false, message: String(error) });
     } finally {
@@ -197,13 +213,24 @@ export function ConnectionDialog(props: {
 
             <Show when={usesPassword(draft().protocol)}>
               <span />
-              <label class={styles.checkRow}>
+              <label
+                class={styles.checkRow}
+                title={
+                  keychain()
+                    ? undefined
+                    : "No keychain available — credentials will be asked for each time"
+                }
+              >
                 <input
                   type="checkbox"
-                  checked={draft().saveCredentials}
+                  disabled={!keychain()}
+                  checked={draft().saveCredentials && (keychain() ?? false)}
                   onChange={(event) => set("saveCredentials", event.currentTarget.checked)}
                 />
                 Save in keychain
+                <Show when={keychain() === false}>
+                  <span class={styles.hint}>— none on this machine</span>
+                </Show>
               </label>
             </Show>
 

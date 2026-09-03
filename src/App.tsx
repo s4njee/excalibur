@@ -81,6 +81,11 @@ export default function App(props: {
     if (!bookmark) return;
     persist(removeBookmark(current, id));
     setSelectedBookmark(null);
+    // A forgotten bookmark must not leave its password behind in the keychain.
+    // Done before the undo window closes rather than after, because a
+    // credential outliving the thing that named it is the worse failure; undo
+    // restores the bookmark and asks for the password again.
+    void backend.forgetSecret(id).catch(() => undefined);
     // A one-step undo rather than a confirmation: the design does not specify
     // one, and asking before every removal is more intrusive than letting the
     // rare mistake be taken back.

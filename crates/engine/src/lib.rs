@@ -17,6 +17,7 @@
 pub mod backend;
 pub mod error;
 pub mod kind;
+pub mod secrets;
 pub mod session;
 
 pub use backend::{
@@ -24,4 +25,5 @@ pub use backend::{
     MountStatus, Protocol, ShareBackend, WriteMode,
 };
 pub use error::{EngineError, Result};
+pub use secrets::{KeyringStore, Secret, SecretStore};
 pub use session::{Connector, HealthPolicy, SessionEvent, SessionManager};

@@ -19,6 +19,18 @@ export interface Backend {
   mount(spec: Spec): Promise<void>;
   /** Whether a host is answering, for the sidebar's dimmed rows. */
   reachable(host: string, port: number): Promise<boolean>;
+  /** Whether this machine has a credential store that actually keeps things. */
+  keychainAvailable(): Promise<boolean>;
+  /**
+   * Save a credential for a bookmark.
+   *
+   * There is deliberately no counterpart that reads one back. The window
+   * collects a password once and never sees it again; the engine fetches it
+   * from the keychain when it connects.
+   */
+  saveSecret(account: string, secret: string): Promise<void>;
+  /** Forget a credential: the box was unticked, or the bookmark removed. */
+  forgetSecret(account: string): Promise<void>;
 }
 
 /** True when running inside the Tauri shell rather than a plain browser. */
@@ -57,6 +69,17 @@ export function fixtureBackend(options: { readOnly?: boolean; latencyMs?: number
     async reachable(): Promise<boolean> {
       return true;
     },
+    // A browser has no OS credential store, and pretending otherwise would
+    // offer to save a password into nothing.
+    async keychainAvailable(): Promise<boolean> {
+      return false;
+    },
+    async saveSecret(): Promise<void> {
+      throw new Error("no keychain in the browser preview");
+    },
+    async forgetSecret(): Promise<void> {
+      // Nothing was ever stored, so forgetting is already true.
+    },
   };
 }
 
@@ -78,6 +101,18 @@ function tauriBackend(): Backend {
     async reachable(host: string, port: number): Promise<boolean> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<boolean>("reachable", { host, port });
+    },
+    async keychainAvailable(): Promise<boolean> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<boolean>("keychain_available");
+    },
+    async saveSecret(account: string, secret: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("save_secret", { account, secret });
+    },
+    async forgetSecret(account: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("forget_secret", { account });
     },
   };
 }

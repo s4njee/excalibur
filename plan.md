@@ -133,7 +133,7 @@ reconstruct it from git history.
 | M0 | E2-S2 — Session manager | **Done** 2026-09-03 |
 | M1 | E3-S1 — New Connection dialog | **Done** 2026-09-03 |
 | M1 | E3-S2 — Bookmarks store | **Done** 2026-09-03 |
-| M1 | E3-S3 — Keychain | Next |
+| M1 | E3-S3 — Keychain | **Done** 2026-09-03 |
 | M0 | E0-S3 — Icon set | Not started |
 | M1 | E3-S4, E8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
@@ -141,7 +141,8 @@ reconstruct it from git history.
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
 theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. A user can
 open the dialog, pick a protocol, connect, and have the bookmark persist. The dialog's
-password field is deliberately inert until E3-S3 brings the keychain. `?screen=1b` is the one worth looking at: it
+password field now reaches the OS keychain when "Save in keychain" is ticked, though no
+backend authenticates with it yet (E4/E6). `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -543,15 +544,69 @@ is the same component tree with `mount.writable` false.
   row selects. It belongs with E8-S7's navigation, which is what decides where the
   listing goes afterwards.
 
-#### E3-S3 — Keychain
+#### E3-S3 — Keychain — **Done (stored, not yet consumed)**
+
+*2026-09-03.*
+
 **AC**
-- `keyring` crate: service `excalibur`, account `<bookmarkId>`; passwords, passphrases
+- [x] `keyring` crate: service `excalibur`, account `<bookmarkId>`; passwords, passphrases
   and tokens stored only when "Save in keychain" is on; deleted when the bookmark is
   deleted or the box is unticked.
-- Secrets are `zeroize`d after use in Rust; redacted from `Debug`; never logged; never
+- [x] Secrets are `zeroize`d after use in Rust; redacted from `Debug`; never logged; never
   sent to the webview.
-- Linux without a Secret Service: the checkbox is disabled with the tooltip "No
+- [x] Linux without a Secret Service: the checkbox is disabled with the tooltip "No
   keychain available — credentials will be asked for each time".
+
+**Results**
+
+- **"Never sent to the webview" is structural, not a rule anyone has to remember.**
+  There are commands to save and to forget a credential, and deliberately **no command
+  to read one back** — the window collects a password once, as the user types it, and
+  never sees it again. The engine will fetch it from the keychain itself when it
+  connects. A getter here would undo the property in one line, so its absence is the
+  design and `src-tauri/src/lib.rs` says so in a comment.
+- `Secret` wraps `Zeroizing<String>` and its accessor is called `expose()` rather than
+  `get()` or `as_str()`, so every point where a credential leaves the type is greppable
+  by one word. Its `Debug` prints `Secret(<redacted>)`, which is what keeps it out of a
+  log line written by someone who only derived `Debug` on a surrounding struct.
+- **Availability is answered by a probe round-trip, not by asking the platform.** A
+  Linux desktop with no Secret Service still has a keyring API that accepts every call
+  and stores nothing; a capability check that trusts it would offer "Save in keychain"
+  and silently lose the password. `KeyringStore::available()` writes, reads back and
+  deletes a value on a reserved account, so the answer is what the machine actually
+  does. It cost a real round trip to learn that, which is the right trade for not lying
+  to the user.
+- The keychain commands are `async` over `spawn_blocking`. Tauri runs a non-`async`
+  command on the main thread, and a macOS Keychain call can put up a system prompt and
+  sit there until the user answers — which would freeze the window behind it. Clippy's
+  `needless_pass_by_value` on the first draft is what surfaced this.
+- Verified against the **real macOS Keychain**, not a mock: `crates/engine/tests/keychain.rs`
+  round-trips a credential and is gated on `EXCALIBUR_KEYCHAIN_TEST=1` so CI, which has
+  no unlocked keychain, does not fail on it. Run it with
+  `EXCALIBUR_KEYCHAIN_TEST=1 cargo test -p excalibur-engine --test keychain`.
+- The browser preview reports no keychain, so the disabled state is the one on screen
+  there: the checkbox greys out, gains the inline hint "— none on this machine" and the
+  AC's tooltip verbatim. That is the Linux-without-Secret-Service case, visible on a Mac.
+- **The credential is stored and deleted correctly, but nothing reads it yet.** xsync
+  over SSH authenticates through OpenSSH and never asks for a password; SMB and SFTP,
+  which will, arrive with E4 and E6. So the write path is done and the read path has no
+  caller — worth stating plainly rather than implying the feature is closed.
+- Housekeeping this story forced, both worth having: `cargo deny check` had been failing
+  since M0 (sixteen `unmaintained` notices, all reached through Tauri, plus the
+  workspace's own path deps read as wildcards) — now accepted individually with reasons
+  in `deny.toml`, so a genuinely new one still fails the build. And `docs/supply-chain.md`
+  now exists, matching xsync's, recording the audit and why each direct dependency is
+  there.
+
+**Next steps**
+
+- **A connect path that reads the secret** is what closes the loop, and it arrives with
+  the first backend that authenticates with a password (E4 SMB or E6 SFTP). That is also
+  when the account key gets exercised against a real bookmark id.
+- **E3-S4 (host keys and TLS pins)** is the other half of connection trust and is next
+  in this epic.
+- Re-prompting when a stored credential is rejected — the share's password changed —
+  has no path yet. It belongs with whichever backend first reads a secret.
 
 #### E3-S4 — SSH host keys and TLS pins (SFTP, xsync)
 **AC**

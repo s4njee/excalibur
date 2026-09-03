@@ -201,3 +201,8 @@
   font-size: 11px;
   color: var(--text-tertiary);
 }
+
+.hint {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
