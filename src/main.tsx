@@ -21,10 +21,15 @@ document.documentElement.dataset.theme = readOnly ? "dark" : "light";
 const hostKey =
   screen === "trust" ? "unknown" : screen === "keychanged" ? "changed" : undefined;
 
+// `slow` renders E8-S1's loading state: a listing past the 200ms threshold,
+// with the previous one still readable underneath. Both halves are invisible
+// against a fixture that answers instantly.
+const latencyMs = screen === "slow" ? 1500 : undefined;
+
 render(
   () =>
-    hostKey ? (
-      <App backend={fixtureBackend({ hostKey })} />
+    hostKey || latencyMs ? (
+      <App backend={fixtureBackend({ hostKey, latencyMs })} />
     ) : (
       <App readOnly={readOnly} />
     ),

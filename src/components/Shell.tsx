@@ -22,22 +22,38 @@ export function TitleBar(props: { share: string; host: string }) {
  * to be one click away, and only reveals an editable field when the user
  * clicks the empty space (not yet wired — E1-S2 finishes it).
  */
-function PathField(props: { scheme: string; host: string; segments: string[] }) {
+function PathField(props: {
+  scheme: string;
+  host: string;
+  segments: string[];
+  onCrumb: (depth: number) => void;
+}) {
   return (
     <div class={styles.pathField}>
       <span class={styles.crumbScheme}>{props.scheme}://</span>
-      <span class={styles.crumb}>{props.host}</span>
+      {/* The host is the share root: depth 0. */}
+      <button class={styles.crumb} onClick={() => props.onCrumb(0)}>
+        {props.host}
+      </button>
       <For each={props.segments}>
-        {(segment, index) => (
-          <>
-            <span class={styles.crumbSeparator}>/</span>
-            <span
-              class={index() === props.segments.length - 1 ? styles.crumbCurrent : styles.crumb}
-            >
-              {segment}
-            </span>
-          </>
-        )}
+        {(segment, index) => {
+          const last = () => index() === props.segments.length - 1;
+          return (
+            <>
+              <span class={styles.crumbSeparator}>/</span>
+              {/* The last crumb is where we already are. Rendering it as a
+                  button would offer a click that does nothing. */}
+              <Show
+                when={!last()}
+                fallback={<span class={styles.crumbCurrent}>{segment}</span>}
+              >
+                <button class={styles.crumb} onClick={() => props.onCrumb(index() + 1)}>
+                  {segment}
+                </button>
+              </Show>
+            </>
+          );
+        }}
       </For>
     </div>
   );
@@ -55,21 +71,48 @@ export function Toolbar(props: {
   hasSelection: boolean;
   filter: string;
   onFilter: (value: string) => void;
+  canBack: boolean;
+  canForward: boolean;
+  canAscend: boolean;
+  onBack: () => void;
+  onForward: () => void;
+  onAscend: () => void;
+  onCrumb: (depth: number) => void;
 }) {
   return (
     <div class={styles.toolbar}>
       <div class={styles.segmented}>
-        <button class={styles.segment} disabled aria-label="Back">
+        <button
+          class={styles.segment}
+          disabled={!props.canBack}
+          aria-label="Back"
+          onClick={props.onBack}
+        >
           ‹
         </button>
-        <button class={styles.segment} disabled aria-label="Forward">
+        <button
+          class={styles.segment}
+          disabled={!props.canForward}
+          aria-label="Forward"
+          onClick={props.onForward}
+        >
           ›
         </button>
       </div>
-      <button class={styles.button} disabled aria-label="Enclosing folder">
+      <button
+        class={styles.button}
+        disabled={!props.canAscend}
+        aria-label="Enclosing folder"
+        onClick={props.onAscend}
+      >
         ↑
       </button>
-      <PathField scheme={props.scheme} host={props.host} segments={props.segments} />
+      <PathField
+        scheme={props.scheme}
+        host={props.host}
+        segments={props.segments}
+        onCrumb={props.onCrumb}
+      />
       <div class={styles.verbs}>
         <button class={styles.button} disabled={!props.hasSelection}>
           Quick Look
@@ -100,6 +143,8 @@ export function Toolbar(props: {
 }
 
 export function Sidebar(props: {
+  /** Double-click: mount the bookmark and open its root. */
+  onOpen: (id: string) => void;
   bookmarks: Bookmark[];
   activeId: string;
   selectedId: string | null;
@@ -123,6 +168,7 @@ export function Sidebar(props: {
               role="button"
               tabindex="0"
               onClick={() => props.onSelect(bookmark.id)}
+              onDblClick={() => props.onOpen(bookmark.id)}
             >
               <div class={styles.sidebarText}>
                 <div
@@ -153,6 +199,7 @@ export function Sidebar(props: {
             role="button"
             tabindex="0"
             onClick={() => props.onSelect(bookmark.id)}
+            onDblClick={() => props.onOpen(bookmark.id)}
           >
             <div class={styles.fileGlyph} />
             <div class={styles.sidebarText}>
@@ -201,6 +248,10 @@ export function FileList(props: {
   entries: Entry[];
   selected: Accessor<Set<string>>;
   onSelect: (path: string, additive: boolean) => void;
+  /** Descend into a folder. */
+  onOpen: (entry: Entry) => void;
+  /** A listing has been in flight past the indicator delay. */
+  slow?: boolean;
 }) {
   return (
     <>
@@ -212,7 +263,14 @@ export function FileList(props: {
         <div>Modified</div>
         <div>Kind</div>
       </div>
-      <div class={styles.rows} role="grid">
+      {/* Under the header, per the handoff, so it reads as the list loading
+          rather than as the window doing something. */}
+      <div class={styles.loadingTrack} aria-hidden={!props.slow}>
+        <Show when={props.slow}>
+          <div class={styles.loadingBar} role="progressbar" aria-label="Loading" />
+        </Show>
+      </div>
+      <div class={`${styles.rows} ${props.slow ? styles.rowsStale : ""}`} role="grid">
         <For each={props.entries}>
           {(entry) => {
             const selected = () => props.selected().has(entry.path);
@@ -223,6 +281,7 @@ export function FileList(props: {
                 }`}
                 role="row"
                 onClick={(event) => props.onSelect(entry.path, event.metaKey || event.ctrlKey)}
+                onDblClick={() => props.onOpen(entry)}
               >
                 <div class={styles.nameCell}>
                   <div class={entry.kind === "dir" ? styles.folderGlyph : styles.fileGlyph} />

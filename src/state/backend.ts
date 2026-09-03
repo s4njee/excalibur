@@ -84,11 +84,41 @@ export function fixtureBackend(
   };
 
   return {
-    async listDir(): Promise<Listing> {
+    async listDir(path = ""): Promise<Listing> {
       if (options.latencyMs) {
         await new Promise((resolve) => setTimeout(resolve, options.latencyMs));
       }
       const listing = structuredClone(fixture) as Listing;
+      if (path !== "") {
+        // The fixture is one directory deep, because it is generated from one
+        // `xcal ls`. Subdirectories are synthesised so navigation, breadcrumbs
+        // and Back can be exercised in a browser at all — a preview
+        // affordance, not a claim about what the engine returns.
+        listing.entries = [
+          {
+            name: "notes.txt",
+            path: `${path}/notes.txt`,
+            kind: "file",
+            size: 2048,
+            modifiedMs: Date.UTC(2026, 7, 30, 11, 12),
+            mode: null,
+            linkTarget: null,
+            kindLabel: "Plain Text",
+            hidden: false,
+          },
+          {
+            name: "archive",
+            path: `${path}/archive`,
+            kind: "dir",
+            size: 0,
+            modifiedMs: Date.UTC(2026, 7, 28, 9, 4),
+            mode: null,
+            linkTarget: null,
+            kindLabel: "Folder",
+            hidden: false,
+          },
+        ];
+      }
       if (options.readOnly) {
         listing.mount.writable = false;
         listing.mount.reason = "Read-only — export mapped `ro,root_squash`";

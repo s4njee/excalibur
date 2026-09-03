@@ -1,4 +1,4 @@
-import { createMemo, createResource, createSignal, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import {
   defaultBookmarkStore,
@@ -10,10 +10,12 @@ import {
   upsert,
   type BookmarkStore,
 } from "./state/bookmarks";
-import type { Draft } from "./state/connection";
+import { toSpec, type Draft } from "./state/connection";
 import { FileList, shellStyles as styles, Sidebar, StatusBar, TitleBar, Toolbar } from "./components/Shell";
 import { defaultBackend, fixtureBackend, type Backend } from "./state/backend";
 import type { Bookmark, Entry, Theme } from "./state/types";
+import { createListing } from "./state/listing";
+import * as nav from "./state/navigation";
 
 /** Sorted the way the list is: folders first, then by name. */
 function order(entries: Entry[], showHidden: boolean): Entry[] {
@@ -38,7 +40,19 @@ export default function App(props: {
   // same component tree rather than a separate mock.
   const backend =
     props.backend ?? (props.readOnly ? fixtureBackend({ readOnly: true }) : defaultBackend());
-  const [listing, { refetch }] = createResource(() => backend.listDir(""));
+  // Where the window is looking. The listing follows this rather than the
+  // other way round, so every way of navigating — a double-click, the
+  // breadcrumb, Back, the keyboard — goes through one place.
+  const [history, setHistory] = createSignal<nav.History>(nav.initial());
+  const path = () => nav.current(history());
+  const listingState = createListing((target) => backend.listDir(target));
+  const listing = listingState.listing;
+
+  createEffect(() => listingState.load(path()));
+
+  const goTo = (target: string) => setHistory((current) => nav.go(current, target));
+  const ascend = () => goTo(nav.parent(path()));
+
   const [filter, setFilter] = createSignal("");
   const [showHidden] = createSignal(true);
   const [selected, setSelected] = createSignal<Set<string>>(new Set(["Arrival.2016.mkv"]));
@@ -73,6 +87,69 @@ export default function App(props: {
         .catch(() => undefined);
     }
   });
+
+  // A selection is a set of paths in the directory that was on screen. Carrying
+  // it across a navigation would leave rows selected that are not there, and
+  // would let a verb act on a file the user can no longer see.
+  createEffect((previous: string | undefined) => {
+    const here = path();
+    if (previous !== undefined && previous !== here) setSelected(new Set<string>());
+    return here;
+  });
+
+  /**
+   * Descend into the one selected folder, for Cmd/Ctrl+Down.
+   *
+   * Only acts on a single selection: descending "into" three folders has no
+   * meaning, and picking one of them arbitrarily would be a guess.
+   */
+  const descend = () => {
+    const chosen = entries().filter((entry) => selected().has(entry.path));
+    if (chosen.length === 1 && chosen[0]?.kind === "dir") goTo(chosen[0].path);
+  };
+
+  onMount(() => {
+    const onKey = (event: KeyboardEvent) => {
+      // The design's modifier is Cmd on macOS and Ctrl elsewhere. Bare arrows
+      // move the selection (E8-S8) and must not navigate.
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        descend();
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (nav.canAscend(path())) ascend();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
+  });
+
+  /**
+   * Mount a saved bookmark and open its root.
+   *
+   * The sidebar row is the only place a share gets connected without going
+   * through the dialog, so a failure has nowhere inline to land: it goes to the
+   * bookmark's editor, pre-filled, which is where it can actually be fixed.
+   */
+  const mountBookmark = async (id: string) => {
+    const bookmark = bookmarks().find((candidate) => candidate.id === id);
+    if (!bookmark) return;
+    try {
+      await backend.mount(toSpec(toDraft(bookmark), bookmark.id));
+      persist(
+        bookmarks().map((candidate) =>
+          candidate.id === id
+            ? { ...candidate, mounted: true }
+            : { ...candidate, mounted: false },
+        ),
+      );
+      setHistory(nav.initial());
+      listingState.load("");
+    } catch {
+      setConnecting(toDraft(bookmark));
+    }
+  };
 
   const removeSelected = (id: string) => {
     const current = bookmarks();
@@ -112,12 +189,32 @@ export default function App(props: {
   );
 
   // The two M0 screens describe different mounts, so the chrome that names the
-  // mount has to follow them rather than being fixed.
+  // mount has to follow them rather than being fixed. The share root's own name
+  // is still fixed here — it comes from the active mount, which is E10's job —
+  // but everything below it is now the real path.
   const host = () => (props.readOnly ? "10.0.0.4" : "nas.local");
   const share = () => (props.readOnly ? "scratch" : "media");
   const scheme = () => (props.readOnly ? "nfs" : "smb");
-  const segments = () => (props.readOnly ? ["export", "scratch"] : ["media"]);
-  const mountPath = () => (props.readOnly ? "/export/scratch" : "/media");
+  const rootSegments = () => (props.readOnly ? ["export", "scratch"] : ["media"]);
+  const segments = () => [...rootSegments(), ...nav.segments(path())];
+  const mountPath = () => ["", ...segments()].join("/");
+
+  /**
+   * A breadcrumb click, by depth across the whole path field.
+   *
+   * The first `rootSegments().length` crumbs name the mount itself, which is
+   * not somewhere this window can navigate above — clicking them goes to the
+   * share root rather than doing nothing, which is what they visually promise.
+   */
+  const onCrumb = (depth: number) => {
+    const within = depth - rootSegments().length;
+    goTo(within <= 0 ? "" : nav.ancestor(path(), within));
+  };
+
+  /** Descend into a folder; anything else is not a navigation. */
+  const open = (entry: Entry) => {
+    if (entry.kind === "dir") goTo(entry.path);
+  };
 
   const select = (path: string, additive: boolean) => {
     setSelected((current) => {
@@ -141,6 +238,13 @@ export default function App(props: {
             hasSelection={selected().size > 0}
             filter={filter()}
             onFilter={setFilter}
+            canBack={nav.canBack(history())}
+            canForward={nav.canForward(history())}
+            canAscend={nav.canAscend(path())}
+            onBack={() => setHistory(nav.back)}
+            onForward={() => setHistory(nav.forward)}
+            onAscend={ascend}
+            onCrumb={onCrumb}
           />
           <div class={styles.body}>
             <Sidebar
@@ -149,6 +253,7 @@ export default function App(props: {
               selectedId={selectedBookmark()}
               onNewConnection={() => setConnecting(true)}
               onSelect={setSelectedBookmark}
+              onOpen={(id) => void mountBookmark(id)}
               onRemove={removeSelected}
               onEdit={(id) => {
                 const bookmark = bookmarks().find((candidate) => candidate.id === id);
@@ -156,7 +261,13 @@ export default function App(props: {
               }}
             />
             <div class={styles.listColumn}>
-              <FileList entries={entries()} selected={selected} onSelect={select} />
+              <FileList
+                entries={entries()}
+                selected={selected}
+                onSelect={select}
+                onOpen={open}
+                slow={listingState.slow()}
+              />
               <StatusBar
                 mount={data().mount}
                 path={mountPath()}
@@ -194,9 +305,10 @@ export default function App(props: {
                   // opening the dialog: a connection that never worked is not
                   // worth remembering.
                   persist(upsert(bookmarks(), { ...fromDraft(draft), mounted: true }));
-                  // Re-listing the new mount is E8-S7's navigation; for now the
-                  // dialog closes and the mount is held by the session manager.
-                  refetch();
+                  // A new mount is a new root, so the history starts over
+                  // rather than keeping paths that belonged to the old share.
+                  setHistory(nav.initial());
+                  listingState.load("");
                 }}
               />
             )}

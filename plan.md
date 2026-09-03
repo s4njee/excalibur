@@ -137,14 +137,18 @@ reconstruct it from git history.
 | M1 | E3-S3 — Keychain | **Done** 2026-09-03 |
 | M0 | E0-S3 — Icon set | Not started |
 | M1 | E3-S4 — SSH host keys | **Done** 2026-09-03 |
-| M1 | E8, E9, E10 | Not started |
+| M1 | E8-S1 — Listing state and loading | **Done** 2026-09-03 |
+| M1 | E8-S7 — Navigation and history | **Done** 2026-09-03 |
+| M1 | E8-S2/S5/S6/S8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
 theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. A user can
 open the dialog, pick a protocol, connect, and have the bookmark persist. The dialog's
 password field now reaches the OS keychain when "Save in keychain" is ticked, though no
-backend authenticates with it yet (E4/E6). `?screen=1b` is the one worth looking at: it
+backend authenticates with it yet (E4/E6). Browsing is live: double-click descends,
+Back/Forward/↑ and the breadcrumb all work, and a slow listing dims rather than blanks.
+Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow`. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -901,12 +905,46 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E8 — Browsing
 
-#### E8-S1 — Listing state and loading *(handoff §Loading)*
+#### E8-S1 — Listing state and loading *(handoff §Loading)* — **Done**
+
+*2026-09-03.*
+
 **AC**
-- `listing: { entries, loading, error }`; navigation cancels the previous request;
+- [x] `listing: { entries, loading, error }`; navigation cancels the previous request;
   listings < 200 ms show no indicator; past 200 ms a 2px indeterminate accent bar
   under the column header appears and the previous listing stays visible at
   `opacity: .5`.
+
+**Results**
+
+- **"Cancels" is the wrong word for what actually happens, so the code does not use
+  it.** There is no `AbortController` reaching the engine — a Tauri command runs to
+  completion whatever the window does — so what this really does is *ignore* a reply for
+  a path the user has already left. A generation counter enforces it. Naming it
+  accurately in `src/state/listing.ts` matters because someone will eventually need to
+  know the request is still running on the other side.
+- Tested with an out-of-order pair: a slow request for A, then a fast one for B, with A
+  answering last. B stays on screen. The same test exists for a *failed* stale request,
+  because an error from a superseded navigation painting over a good listing is the
+  version of this bug that would actually get shipped.
+- **A failed listing keeps the last good one underneath it.** A failed navigation that
+  also wiped the view would leave nothing to go back from.
+- The 2px track is always in the layout and only the bar inside it appears, so a listing
+  crossing the threshold does not shift every row down by two pixels as it arrives.
+- Verified in the browser at `?screen=slow`: at 100 ms there is no bar and full opacity;
+  at 400 ms the bar is up, the rows are at `0.5`, and all 13 of them are still readable.
+- **The breadcrumb updates immediately on navigation, ahead of the listing.** That is
+  deliberate: the dimming is what says "these contents are stale", and a path that
+  lagged would make Back and Forward feel unresponsive. It does mean the status bar
+  briefly shows the new path beside the old item count.
+
+**Next steps**
+
+- `error` is held but not yet rendered — E15-S1's banner is where a connection-level
+  failure belongs, and inventing a second place for it now would just have to be undone.
+- Once E8-S9's watch arrives, a refresh triggered by an event should *not* raise the
+  indicator; only a navigation should. The bar is driven by `slow`, so that will be a
+  flag on `load`, not a new mechanism.
 
 #### E8-S2 — Column layout `1f` *(handoff §Screens/1 Column header, Rows; §6 `1f`)*
 **AC**
@@ -946,11 +984,58 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   current listing; updates per keystroke without re-listing; counts in the status bar
   reflect the filtered set.
 
-#### E8-S7 — Navigation and history *(handoff §Navigation)*
+#### E8-S7 — Navigation and history *(handoff §Navigation)* — **Done**
+
+*2026-09-03.*
+
 **AC**
-- Double-click folder descends; `↑` ascends; breadcrumb click jumps; back/forward keep
-  a per-window `{stack, index}`; sidebar double-click mounts then opens the root.
-- Cmd/Ctrl+↓ descends into the selected folder, Cmd/Ctrl+↑ ascends.
+- [x] Double-click folder descends; `↑` ascends; breadcrumb click jumps; back/forward
+  keep a per-window `{stack, index}`; sidebar double-click mounts then opens the root.
+- [x] Cmd/Ctrl+↓ descends into the selected folder, Cmd/Ctrl+↑ ascends.
+
+**Results**
+
+- **The listing follows the path, not the other way round.** Every way of moving — a
+  double-click, a breadcrumb, Back, the keyboard, a fresh mount — sets one signal, and
+  an effect loads it. Wiring each of those to its own fetch is how the breadcrumb and
+  the contents end up disagreeing.
+- The history is one stack and an index, not two stacks. Back and forward become moves
+  along a list, and the rule that matters — going somewhere new discards what was ahead
+  — is a truncation rather than a push and a clear that have to be kept in step. There
+  is a test for exactly that sequence.
+- **Going where you already are is not recorded.** Clicking the last breadcrumb, or
+  re-opening the folder you are in, would otherwise stack duplicates and make Back look
+  broken.
+- Paths are share-relative with `""` for the root and no leading slash, matching
+  `ShareBackend::list_dir` so nothing is translated on the way to the engine. `""` and
+  `"/"` as two spellings of the root would have made every comparison normalise first.
+  The root is its own parent, so ascending cannot walk out of the share.
+- **A navigation clears the selection.** Carrying it across would leave rows selected
+  that are not on screen, and would let a toolbar verb act on a file the user can no
+  longer see. Verified in the browser: select a file, descend, selection is empty.
+- Cmd/Ctrl+↓ acts only on a *single* selected folder. Descending "into" three folders
+  has no meaning and picking one would be a guess. A bare arrow key does not navigate —
+  that belongs to E8-S8's selection movement — and there is a check for it.
+- The last breadcrumb renders as text, not a button: it is where we already are, and a
+  button there offers a click that does nothing.
+- Mounting from a sidebar row sends its failure to the bookmark's editor, pre-filled,
+  rather than inline. The row is the one place a share is connected without the dialog,
+  so there is no inline surface for the error, and the editor is where it can be fixed.
+- The fixture backend now synthesises subdirectories. The fixture is one directory deep
+  because it comes from one `xcal ls`, so without this there was no way to exercise
+  descending, breadcrumbs or Back in a browser at all. It is marked in the code as a
+  preview affordance, not a claim about the engine.
+
+**Next steps**
+
+- The share root's own name in the breadcrumb (`media`, `scratch`) is still fixed per
+  preview screen. It should come from the active mount, which is **E10**'s job.
+- Cmd/Ctrl+[ and ] for back/forward are in **E16-S1**'s shortcut map, which builds the
+  bindings and the tooltips from one table — worth doing there rather than adding two
+  more ad-hoc key handlers here.
+- Mounting a bookmark sets `mounted` on it and clears it on the others, which assumes
+  one active mount. The session manager already holds several; reconciling the sidebar
+  with `SessionEvent` is part of **E10**'s live status.
 
 #### E8-S8 — Selection model *(handoff §Selection)*
 **AC**
