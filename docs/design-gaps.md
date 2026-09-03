@@ -89,3 +89,16 @@ overlapping the file list, which is what an in-window panel is.
 
 **For the designer:** if it should be a real window that can be moved outside
 the app and left open beside it, that is a different thing and worth saying so.
+
+## Quick Look as a floating panel, not a window *(E11-S1, 2026-09-03)*
+
+**The mock** (§Screens/5) calls it a "440px floating panel, always dark
+regardless of app theme". `plan.md` read that as a separate OS window.
+
+**What was built:** a floating panel inside the main window, matching the
+handoff's own wording. A second Tauri window would need its own entry point and
+IPC bridge, and the mock describes no behaviour that requires one — it is drawn
+overlapping the file list, which is what an in-window panel is.
+
+**For the designer:** if it should be a real window that can be dragged outside
+the app and left open beside it, that is a different thing and worth saying so.
