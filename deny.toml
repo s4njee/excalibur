@@ -32,6 +32,28 @@ ignore = [
   { id = "RUSTSEC-2025-0081", reason = "unic-common, build-time only, via tauri-codegen" },
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-ident, build-time only, via tauri-codegen" },
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-version, build-time only, via tauri-codegen" },
+  # The one entry here that is a *vulnerability* rather than an unmaintained
+  # notice, and the one worth arguing about.
+  #
+  # RUSTSEC-2023-0071 is the Marvin timing side-channel in the `rsa` crate.
+  # There is no fixed version: it has been open upstream since 2023 and the
+  # fix requires constant-time work nobody has landed. It reaches us through
+  # `russh`'s default features, where it exists so that SFTP can use RSA keys.
+  #
+  # Accepted rather than fixed, because the only fix available to us is
+  # `default-features = false` on russh, which removes RSA key support
+  # entirely — and RSA is still the key type on a great many servers, so that
+  # trades a narrow timing attack for a large number of users unable to
+  # connect at all.
+  #
+  # The exposure: an SSH client *signs* with its private key, it does not
+  # decrypt. Recovering the key needs a malicious server able to trigger and
+  # precisely time many thousands of signatures — that is, a server the user
+  # chose to keep connecting to. It is real, and it is narrow.
+  #
+  # Revisit if: the `rsa` crate ships a constant-time release, or russh gains
+  # a way to keep RSA *verification* without RSA signing.
+  { id = "RUSTSEC-2023-0071", reason = "rsa Marvin side-channel, unfixed upstream; see the note above" },
 ]
 
 [licenses]

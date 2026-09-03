@@ -312,7 +312,7 @@ export function ConnectionDialog(props: {
           <Show when={!supported()}>
             <div class={styles.notice}>
               {PROTOCOLS.find((p) => p.id === draft().protocol)?.label} is not connected yet — the
-              engine answers it with “unsupported”. xsync works today.
+              engine answers it with “unsupported”. xsync and SFTP work today.
             </div>
           </Show>
 

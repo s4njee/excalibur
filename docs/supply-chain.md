@@ -24,13 +24,25 @@ the same discipline, and this file follows its format.
 
 ## Audit, 2026-09-03
 
-528 packages with `--all-features`. `cargo audit` reports **no vulnerabilities**.
-`cargo deny check` passes all four gates: advisories, bans, licences, sources.
+639 packages in `Cargo.lock`. `cargo deny check` passes all four gates:
+advisories, bans, licences, sources. One vulnerability is accepted with a
+written argument rather than fixed; it is the first, and it is described below.
 
 ### Accepted advisories
 
-Sixteen `unmaintained` notices, listed individually in `deny.toml` so that a
-genuinely new one still fails the build. None is a vulnerability and none is
+**RUSTSEC-2023-0071** — the Marvin timing side-channel in `rsa`, reached
+through `russh`'s default features so that SFTP can use RSA keys. It is the one
+accepted entry that is a *vulnerability* rather than an unmaintained notice, and
+the only fix available here is `default-features = false` on russh, which
+removes RSA key support outright. That trades a narrow timing attack for a large
+number of users unable to connect at all. An SSH client signs with its private
+key rather than decrypting, so exploiting it needs a malicious server able to
+trigger and precisely time many thousands of signatures — a server the user
+chose to keep connecting to. Real, and narrow. The full argument and the
+revisit condition are in `deny.toml` beside the entry.
+
+Then sixteen `unmaintained` notices, listed individually in `deny.toml` so that
+a genuinely new one still fails the build. None is a vulnerability and none is
 reachable from a dependency chosen here:
 
 - Ten GTK3 binding crates (`gtk`, `gdk`, `atk` and their `-sys` companions),
@@ -85,9 +97,11 @@ as a transitive dependency of these.
 | `sha2` | engine | E3-S4. SHA-256 for SSH host key fingerprints. |
 | `base64` | engine | E3-S4. Decodes `known_hosts` key material and encodes the fingerprint the way OpenSSH prints it. |
 | `dirs` | engine | E3-S4. Locates the per-platform data directory the `known_hosts` file lives in. |
+| `russh` | engine | E6-S1. The SSH transport for the SFTP backend, exact-pinned. Speaking SSH in-process rather than spawning `ssh` is what lets the host key be checked during the handshake that uses it, closing the scan-then-connect window the xsync backend still has. |
+| `russh-sftp` | engine | E6-S1. SFTP v3 over that transport, exact-pinned. The backend drives its `RawSftpSession`, not the friendlier `SftpSession`: the raw one carries the offset in each request, which is what makes pipelined reads and `posix-rename@openssh.com` reachable. |
 | `notify` | `src-tauri` | E12-S1. Watches an edit-in-place working copy so a save in the user's own editor reaches the share. The alternative is polling every open file. |
 | `blake3` | engine | E12-S1. The whole-file digest a staged xsync commit verifies. Already in the tree via `xsync-client`. |
-| `tempfile` | engine (dev) | Scratch exports for the xsync integration tests. |
+| `tempfile` | engine (dev) | Scratch exports for the xsync and SFTP integration tests. |
 
 ### On `sha2`, `base64` and `dirs`
 

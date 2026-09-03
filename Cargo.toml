@@ -34,6 +34,10 @@ keyring = "4"
 sha2 = "0.10"
 base64 = "0.22"
 dirs = "6"
+# SFTP (E6). Exact-pinned as the plan asks: an SSH client is the one
+# dependency where a surprise minor bump is a security-relevant change.
+russh = "=0.63.2"
+russh-sftp = "=2.4.0"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }

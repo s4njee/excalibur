@@ -111,9 +111,10 @@ export function validate(draft: Draft): string | null {
 
 /** Whether the protocol has a backend behind it yet. */
 export function isImplemented(protocol: Protocol): boolean {
-  // The engine answers the other three with `Unsupported`. Saying so in the
-  // dialog is better than letting a user fill in a form that cannot connect.
-  return protocol === "xsync";
+  // SMB and NFS are answered with `Unsupported` by the engine (E4, E5).
+  // Saying so in the dialog is better than letting a user fill in a form that
+  // cannot connect.
+  return protocol === "xsync" || protocol === "sftp";
 }
 
 /**

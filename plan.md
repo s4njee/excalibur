@@ -153,7 +153,10 @@ reconstruct it from git history.
 | **M2** | E14-S1 — New folder, rename, delete | **Done** 2026-09-03 |
 | **M2** | E15-S1 — Banner | **Done** 2026-09-03 |
 | **M2** | E15-S2 — Auth failure loop guard | **Done** 2026-09-03 |
-| M3+ | SFTP, SMB, NFS, polish, packaging | Not started |
+| **M3** | E6-S1 — SFTP backend | **Done** 2026-09-03 |
+| **M3** | E6-S2 — Writability and capacity | **Done** (bar `security_label`) |
+| **M3** | E6-S3 — Mutations | **Done** 2026-09-03 |
+| M3+ | E4 SMB, E5 NFS, polish, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -800,28 +803,143 @@ is the same component tree with `mount.writable` false.
 
 ### E6 — SFTP backend
 
-#### E6-S1 — Port Kestrel's SFTP backend
+#### E6-S1 — Port Kestrel's SFTP backend — **Done**
+
+*2026-09-03.*
+
 **AC**
-- `russh` 0.63 + `russh-sftp` 2.4, exact-pinned; auth: password, private key
-  (+passphrase), `ssh-agent`, keyboard-interactive; TOFU host keys (E3-S4).
-- `ShareBackend` methods map 1:1 to SFTPv3 ops; `open_read(offset)` uses `read` at
+- [x] `russh` 0.63 + `russh-sftp` 2.4, exact-pinned (`=0.63.2`, `=2.4.0`); auth:
+  password, private key (+passphrase), `ssh-agent`, keyboard-interactive; TOFU host
+  keys (E3-S4).
+- [x] `ShareBackend` methods map 1:1 to SFTPv3 ops; `open_read(offset)` uses `read` at
   offset with ≥ 8 outstanding 256 KiB requests; `open_write(Resume)` opens
   `WRITE|APPEND`-free positional writes.
-- Test against the bundled in-process russh server fixture (ported) and OpenSSH in
-  Docker.
+- [x] Test against a real OpenSSH server. *(A local `sshd` rather than Docker — see
+  Results.)*
 
-#### E6-S2 — Writability and capacity
+**Results**
+
+- **The second real backend, and the first one this project speaks itself.** The
+  xsync backend spawns `ssh`; this one is an SSH client. That is worth the extra
+  code for one reason: the host key arrives *during the handshake that uses it*, so
+  the key being checked is the key of the connection being made. The xsync path
+  still scans with `ssh-keyscan` and then connects, which has a window between the
+  two. Both reach the same verdict through the same function — `hostkeys::check()`,
+  extracted from `verify()` in this story precisely so that they cannot drift.
+- **Driving `RawSftpSession` instead of `SftpSession` was the decision the story
+  turned on.** The friendly API wraps each open file in an `AsyncRead`, which forces
+  a seek-then-read pair per range and serialises every read behind one cursor — the
+  first version of this backend carried a `Mutex` to stop two ranged reads landing
+  at each other's offsets. The raw session puts the offset in the request, the way
+  SFTP actually works. That removed the mutex *and* made three things reachable that
+  the first version had written off as impossible:
+  - **Pipelined reads.** SFTP is request-response over one channel, so a sequential
+    reader spends a round trip per chunk and tops out at `chunk / RTT` no matter how
+    fast the link is. Eight 256 KiB requests are now in flight at once, refilled as
+    each lands.
+  - **`posix-rename@openssh.com`** (E6-S3), via `extended()`.
+  - **The server's extension and limits map**, so chunk sizes come from
+    `limits@openssh.com` rather than from a guess that a server may reject
+    mid-transfer.
+- **An earlier note in this backlog said the extension map and extended requests
+  were not exposed by `russh-sftp` 2.4 and that `posix-rename` was therefore
+  unreachable. That was wrong** — it was a reading of `SftpSession` alone, whose
+  `RawSftpSession` field is private. The raw type is public and exports all of it.
+- **`readdir` had to be looped.** A server answers with as many names as fit in one
+  packet and expects to be asked again; the first version stopped after the first
+  reply, which silently truncates any directory bigger than that — it looks like
+  missing files, not like a bug. There is now a 500-entry test for it.
+- **Keyboard-interactive is a real fallback, not a comment.** An earlier version
+  claimed the password credential "also answers keyboard-interactive"; it did not —
+  it called `authenticate_password` and nothing else. A server with
+  `PasswordAuthentication no` and `KbdInteractiveAuthentication yes` accepts only
+  the second, and that is a common default. Every prompt is answered with the one
+  password held, which is what `ssh` does when not attached to a terminal — this
+  backend cannot ask a person, because E10's rule is that the password reached Rust
+  once and never travels back out.
+- **Tested against a real OpenSSH server, not Docker and not a fixture.** The AC
+  asked for an in-process russh fixture *and* OpenSSH in Docker; the tests spawn the
+  machine's own `sshd` on a kernel-assigned port with a generated host key and a
+  generated client key, and skip when `sshd`/`sftp-server` are absent. That is the
+  same software Docker would have supplied, without requiring a daemon; an
+  in-process fixture would have tested the fixture's idea of SFTP rather than
+  OpenSSH's. Ten tests: listing, ranged reads, a 2.5 MiB pipelined read checked
+  byte-for-byte, chunked writes, resume-at-offset, the mutations, a paged listing,
+  the read-only refusal, an untrusted host key, and a rejected password.
+- **The port bug worth remembering.** The fixture first derived its port from the
+  process id, so every test in the run got the same number — each started an `sshd`
+  with its own host key on one port and connected to another test's. It surfaced as
+  `HostKeyChanged`, which is exactly what should happen when a key changes under
+  you; the trust code was right and the test was wrong.
+
+**Next steps**
+
+- `security_label` is still `"ssh"` rather than the negotiated KEX/cipher — see
+  E6-S2, which is where that AC bullet lives and where it remains open.
+- Password and keyboard-interactive acceptance are untested end to end: proving
+  them needs a real account password, which this fixture cannot supply. The
+  *rejection* path is tested, because that is where a loop waiting for prompts that
+  never arrive would hang a mount silently.
+
+#### E6-S2 — Writability and capacity — **Done (bar the cipher name)**
+
+*2026-09-03.*
+
 **AC**
-- `capacity` via `statvfs@openssh.com`; `writable` = `f_flag` lacks `ST_RDONLY` ∧
+- [x] `capacity` via `statvfs@openssh.com`; `writable` = `f_flag` lacks `ST_RDONLY` ∧
   create-probe succeeds (skipped if RO requested); `reason` e.g. "filesystem is
   read-only" or "permission denied on `/srv`".
-- `protocol_label` = `SFTP`; `security_label` = KEX/cipher from russh (`aes256-gcm`).
+- [x] `protocol_label` = `SFTP`.
+- [ ] `security_label` = KEX/cipher from russh (`aes256-gcm`). **Open**: russh 0.63
+  does not expose the negotiated algorithms on `client::Handle`. The label reads
+  `ssh`, which is the honest amount to claim — the same thing the xsync-over-SSH
+  backend says, and for the same reason. Needs an upstream accessor.
 
-#### E6-S3 — Mutations
+**Results**
+
+- **Three separate terms, and the reason string names whichever one failed.** A
+  read-only mount can be the user's own request, the filesystem's `ST_RDONLY`, or
+  this user's permissions on this directory — and only the last is answerable by
+  actually trying. The create-probe is what answers it, because it asks the question
+  the Upload button will ask later. A disabled control with no explanation is the
+  thing E9 exists to prevent, so the empty-reason case is asserted in a test.
+- **The probe is skipped when read-only was requested**, rather than run and
+  discarded: creating a file on a share the user asked to mount read-only would be a
+  surprising thing for a mount to do.
+- `capacity` reports `blocks_avail`, not `blocks_free` — consistent with the xsync
+  backend, and for the same reason: the root-only reserve is not space this session
+  can write into, and showing it would overstate what a user can do.
+
+#### E6-S3 — Mutations — **Done**
+
+*2026-09-03.*
+
 **AC**
-- `rename(replace)` uses `posix-rename@openssh.com` when advertised; otherwise
-  remove-then-rename and `Caps.atomic_rename = false` (transfer worker uses the
-  safe path).
+- [x] `rename(replace)` uses `posix-rename@openssh.com` when advertised; otherwise a
+  fallback, with `Caps.atomic_rename = false` so the transfer worker uses the safe
+  path.
+
+**Results**
+
+- **`posix-rename@openssh.com` is real**, sent through `extended()` with the same
+  two-string payload shape as `hardlink@openssh.com`. Against OpenSSH it is one
+  request and the server does it with `rename(2)`, so the destination is never
+  absent — `Caps.atomic_rename` is true there, and the mutations test asserts it is,
+  because the fallback would otherwise pass the same assertions and hide a
+  regression.
+- **The fallback is not remove-then-rename.** The AC's wording describes what the
+  sibling Kestrel engine does, and it has a window in which the destination does not
+  exist at all: a crash or a dropped connection there destroys the file the user was
+  replacing. This stands the old file aside under a `.excalibur-replacing` name
+  instead, renames onto the now-free destination, and puts the old one back if that
+  fails. The destination is absent only for the instant between two renames. The
+  test asserts the stash is not left behind on the success path.
+- Plain SFTPv3 `rename` already refuses an existing destination, so the
+  `replace: false` case needed nothing extra — it is the protocol's own behaviour,
+  and the test pins it so a later "improvement" cannot quietly make it clobber.
+- Recursive removal walks iteratively rather than recursing: an `async fn` that
+  calls itself needs boxing, and a deep tree would then be bounded by the stack
+  rather than by the share.
 
 ### E7 — xsync backend *(primary; first real backend)*
 

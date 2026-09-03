@@ -1,6 +1,7 @@
 //! The one seam every protocol implements.
 
 pub mod mock;
+pub mod sftp;
 pub mod xsync;
 
 use async_trait::async_trait;

@@ -24,6 +24,8 @@ base64 = { workspace = true }
 # tree via xsync-client.
 blake3 = "1"
 dirs = { workspace = true }
+russh = { workspace = true }
+russh-sftp = { workspace = true }
 # A path dependency while xsync's v3 branch is local. E7-S0 wants a pinned git
 # revision with a documented `[patch]` override for development; that needs the
 # branch pushed somewhere first.

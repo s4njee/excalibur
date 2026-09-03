@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
+use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
-use excalibur_engine::backend::{ConnectionSpec, Protocol, ShareBackend};
+use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
 use excalibur_engine::transfer::conflict::{self, Conflict};
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
@@ -36,6 +37,8 @@ use tauri::{Emitter, Manager};
 /// first.
 struct ProtocolConnector {
     known_hosts: KnownHosts,
+    /// Where a stored password comes from. Read here, never in the window.
+    secrets: Arc<dyn SecretStore>,
 }
 
 #[async_trait]
@@ -88,8 +91,33 @@ impl Connector for ProtocolConnector {
                 let backend = XsyncBackend::connect_ssh(&target, &spec.share).await?;
                 Ok(Arc::new(backend))
             }
-            // SMB, NFS and SFTP arrive with E4, E5 and E6. Until then a spec
-            // naming one is answered honestly rather than silently mocked.
+            Protocol::Sftp => {
+                let port = spec.port.unwrap_or(hostkeys::DEFAULT_SSH_PORT);
+                let username = spec.username.clone().unwrap_or_else(whoami);
+                // The credential is read from the keychain here rather than
+                // being passed in from the window: that is what keeps E3-S3's
+                // rule true — the window collects a password once and never
+                // sees it again.
+                let credential = match self.secrets.get(&spec.id) {
+                    Ok(Some(secret)) => Credential::Password(secret.expose().to_owned()),
+                    // No stored password means the agent, which is what most
+                    // SSH users actually have, and needs nothing typed.
+                    _ => Credential::Agent,
+                };
+                let target = SftpTarget {
+                    host: &spec.host,
+                    port,
+                    username: &username,
+                    root: &spec.share,
+                    read_only: spec.mount_preference == Access::Ro,
+                };
+                let backend =
+                    SftpBackend::connect(&target, &credential, Arc::new(self.known_hosts.clone()))
+                        .await?;
+                Ok(Arc::new(backend))
+            }
+            // SMB and NFS arrive with E4 and E5. Until then a spec naming one
+            // is answered honestly rather than silently mocked.
             other => Err(excalibur_engine::EngineError::Unsupported(format!(
                 "{other:?} is not implemented yet"
             ))),
@@ -787,6 +815,16 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The local user's name, for an SFTP spec that did not give one.
+///
+/// `ssh` defaults to the same thing, so a bookmark with no username behaves
+/// the way the command line would.
+fn whoami() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "root".to_owned())
+}
+
 /// Start the worker on whatever is queued, unless it is already running.
 ///
 /// Spawned rather than awaited: `enqueue` returns as soon as the rows exist,
@@ -958,8 +996,10 @@ pub fn run() {
     // something to degrade around: without it there is nowhere to record a
     // trust decision, and every SSH connection would ask again forever.
     let known_hosts = KnownHosts::app_default().expect("no data directory for known_hosts");
+    let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore);
     let sessions = Arc::new(SessionManager::new(Arc::new(ProtocolConnector {
         known_hosts: known_hosts.clone(),
+        secrets: Arc::clone(&secrets),
     })));
 
     let demo: Arc<dyn ShareBackend> = Arc::new(MockBackend::media_share());
@@ -1003,7 +1043,7 @@ pub fn run() {
         })
         .manage(AppState {
             sessions: Arc::clone(&sessions),
-            secrets: Arc::new(KeyringStore),
+            secrets: Arc::clone(&secrets),
             known_hosts,
             edits: Arc::new(EditStore::app_default().expect("no cache directory for edits")),
             transfers: Arc::clone(&queue),

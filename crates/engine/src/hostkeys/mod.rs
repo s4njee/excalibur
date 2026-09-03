@@ -451,6 +451,21 @@ pub async fn verify(
     port: u16,
 ) -> Result<Trust> {
     let offered = scanner.scan(host, port).await?;
+    check(known, host, port, &offered)
+}
+
+/// Decide about keys the caller already has.
+///
+/// Split out from [`verify`] because an SSH library hands the host key over
+/// during its own handshake — there is nothing to scan for. Both paths reach
+/// the same decision through this one function, which matters more than it
+/// looks: two implementations of "is this key trusted" is exactly the sort of
+/// duplication where one of them ends up more permissive than the other.
+///
+/// # Errors
+///
+/// Fails when the store cannot be read.
+pub fn check(known: &KnownHosts, host: &str, port: u16, offered: &[HostKey]) -> Result<Trust> {
     let stored = known.stored(host, port)?;
 
     // Revocation is checked against every key the host offered, not just the
@@ -476,7 +491,7 @@ pub async fn verify(
 
     let live: Vec<&StoredKey> = stored.iter().filter(|entry| !entry.revoked).collect();
     if live.is_empty() {
-        let Some(offered) = preferred(&offered) else {
+        let Some(offered) = preferred(offered) else {
             return Err(EngineError::Disconnected(format!(
                 "{host}:{port} offered no SSH host keys"
             )));
@@ -517,7 +532,7 @@ pub async fn verify(
     // We hold keys for this host, but none of the algorithms it now offers.
     // A host that added a key type is far more likely than one that dropped
     // every type we knew, so this asks rather than alarms.
-    let Some(offered) = preferred(&offered) else {
+    let Some(offered) = preferred(offered) else {
         return Err(EngineError::Disconnected(format!(
             "{host}:{port} offered no SSH host keys"
         )));
@@ -767,6 +782,36 @@ mod tests {
             .expect("verify");
 
         assert!(matches!(trust, Trust::Revoked { .. }), "got {trust:?}");
+    }
+
+    #[test]
+    fn checking_a_key_in_hand_reaches_the_same_verdict_as_scanning_for_it() {
+        // Two implementations of "is this key trusted" is exactly where one
+        // ends up more permissive than the other, so `verify` and `check` are
+        // the same decision reached two ways. An SSH library hands the key
+        // over during its own handshake; there is nothing to scan for.
+        let (_dir, known) = store();
+        known.trust(&key("ssh-ed25519", ED25519)).expect("trust");
+
+        let good = [key("ssh-ed25519", ED25519)];
+        assert_eq!(
+            check(&known, "nas.local", 22, &good).expect("check"),
+            Trust::Trusted
+        );
+
+        let imposter = key(
+            "ssh-ed25519",
+            "AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAA",
+        );
+        assert!(matches!(
+            check(&known, "nas.local", 22, &[imposter]).expect("check"),
+            Trust::Changed { .. }
+        ));
+
+        assert!(matches!(
+            check(&known, "other.local", 22, &good).expect("check"),
+            Trust::Unknown { .. }
+        ));
     }
 
     #[test]
