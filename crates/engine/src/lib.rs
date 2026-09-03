@@ -20,6 +20,7 @@ pub mod hostkeys;
 pub mod kind;
 pub mod secrets;
 pub mod session;
+pub mod transfer;
 
 pub use backend::{
     Attrs, Capacity, Caps, ConnectionSpec, Entry, EntryKind, Health, Listing, MountInfo,
@@ -29,3 +30,4 @@ pub use error::{EngineError, Result};
 pub use hostkeys::{HostKey, KnownHosts, Trust};
 pub use secrets::{KeyringStore, Secret, SecretStore};
 pub use session::{Connector, HealthPolicy, SessionEvent, SessionManager};
+pub use transfer::{Direction, Status as TransferStatus, Transfer};

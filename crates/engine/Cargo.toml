@@ -26,6 +26,8 @@ dirs = { workspace = true }
 # branch pushed somewhere first.
 xsync-client = { path = "../../../xsync/crates/xsync-client" }
 serde = { workspace = true }
+# The transfer queue is persisted as JSON (E13-S1), so it survives a restart.
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
