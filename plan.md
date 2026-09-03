@@ -139,7 +139,8 @@ reconstruct it from git history.
 | M1 | E3-S4 — SSH host keys | **Done** 2026-09-03 |
 | M1 | E8-S1 — Listing state and loading | **Done** 2026-09-03 |
 | M1 | E8-S7 — Navigation and history | **Done** 2026-09-03 |
-| M1 | E8-S2/S5/S6/S8, E9, E10 | Not started |
+| M1 | E8-S2 — Column layout `1f` | **Done** 2026-09-03 |
+| M1 | E8-S5/S6/S8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
@@ -148,7 +149,7 @@ open the dialog, pick a protocol, connect, and have the bookmark persist. The di
 password field now reaches the OS keychain when "Save in keychain" is ticked, though no
 backend authenticates with it yet (E4/E6). Browsing is live: double-click descends,
 Back/Forward/↑ and the breadcrumb all work, and a slow listing dims rather than blanks.
-Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow`. `?screen=1b` is the one worth looking at: it
+Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge`. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -946,17 +947,78 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   indicator; only a navigation should. The bar is driven by `slow`, so that will be a
   flag on `load`, not a new mechanism.
 
-#### E8-S2 — Column layout `1f` *(handoff §Screens/1 Column header, Rows; §6 `1f`)*
+#### E8-S2 — Column layout `1f` *(handoff §Screens/1 Column header, Rows; §6 `1f`)* — **Done**
+
+*2026-09-03.*
+
 **AC**
-- Header grid `1fr 96px 156px 128px`, gap 16px, padding `0 12px`, bg `#f4f4f5`,
+- [x] Header grid `1fr 96px 156px 128px`, gap 16px, padding `0 12px`, bg `#f4f4f5`,
   border-bottom `#dcdcde`, 10.5px/600 `#6a6a70`, sort indicator 8px `#2f6df6` ▲/▼.
-- Rows 24px, border-bottom `#f2f2f3`; name cell flex gap 8px, glyph `flex: none`,
+  *(The static metrics landed with M0; this story made the indicator follow the
+  actual sort and the widths adjustable.)*
+- [x] Rows 24px, border-bottom `#f2f2f3`; name cell flex gap 8px, glyph `flex: none`,
   ellipsis truncation; Size mono 11px right `#6a6a70` (`—` `#8a8a90` for folders);
   Modified `31 Aug 2026, 18:24`; Kind human-readable.
-- Selected row: bg + border `#2f6df6`, white text, glyph stroke `rgba(255,255,255,.7)`.
-- Dotfiles `opacity: .55`, Kind "Hidden", shown only when `showHidden`.
-- Virtualised: 100k rows scroll at 60fps (measured with the mock backend).
-- Columns click-to-sort and drag-resizable; widths persisted per layout.
+- [x] Selected row: bg + border `#2f6df6`, white text, glyph stroke `rgba(255,255,255,.7)`.
+- [x] Dotfiles `opacity: .55`, Kind "Hidden", shown only when `showHidden`.
+- [x] Virtualised: 100k rows scroll at 60fps (measured with the mock backend).
+- [x] Columns click-to-sort and drag-resizable; widths persisted per layout.
+
+**Results**
+
+- **100k rows, 26 in the DOM.** Every row is the same height, so which rows to draw is
+  arithmetic rather than measurement — no observers, no per-row bookkeeping. A single
+  spacer of the full height carries the scrollbar and the drawn slice is translated into
+  it.
+- **Measured, not asserted.** 400 scroll steps across 15,000 rows at ~37 rows per step:
+  median **1.8 ms** per step, p95 9.8 ms, worst 13.8 ms, and **zero steps over the
+  16.7 ms budget**. Honest caveat: this measures the per-step work (scroll → Solid
+  re-render → forced layout) synchronously, not compositor frames — `requestAnimationFrame`
+  does not run while the preview pane is hidden. It is the cost that decides whether
+  60fps is reachable, and it has 9× headroom, but it is not the same as a frame trace.
+  `?screen=huge` renders the 100k listing for anyone who wants to check with devtools.
+- **A bug worth recording, because the first version looked right.** Dividers were
+  positioned by summing column widths in from the right edge. That quietly ignored the
+  three 16px gaps and the header's 12px padding, putting every divider ~50px into the
+  *next* column, drawn across its label. Now each divider is a child of the cell it
+  follows, sitting on that cell's own right edge — it cannot drift, because it is
+  anchored to the boundary rather than calculating where the boundary should be.
+  Verified numerically: the three dividers centre on 422/574/706, exactly the midpoints
+  of the gaps.
+- **A first click on Size or Modified sorts descending.** Ascending would mean smallest
+  and oldest first, which is almost never what the click meant, and would make every
+  user click twice. Name and Kind start ascending.
+- **Folders stay first in both directions.** "Folders first" is a preference about
+  grouping, not a claim that folders sort before files, so reversing must not sink them
+  to the bottom. There is a test for the reversed case specifically.
+- **Ties break by name, not by the order the backend returned.** The AC says *stable*,
+  and this is stable in the sense that matters — the same listing sorts the same way
+  every time — but it deliberately does not preserve backend order on ties, because that
+  order is arbitrary and can differ between two listings of an unchanged directory.
+  Sorting by Size with every folder at zero would otherwise reshuffle the folders on
+  each refresh.
+- A drag moves width between exactly the two columns its divider sits between, clamped
+  at 48px, and a clamped column cannot silently take width from its neighbour. Verified
+  in the browser: dragging the last divider 30px moved Modified 116→86 and Kind 128→158,
+  leaving Name and Size untouched.
+- Widths persist on **pointer-up, not per move** — a file write per frame otherwise —
+  and survive a reload. `src/state/prefs.ts` is a small keyed store on the same
+  Tauri-or-browser split the bookmarks use; **E17-S1** is where it grows a real schema.
+  The key is `columnWidths.columns`, shaped for `1g`/`1h` so those need no migration.
+- Every reader validates what it loads. A persisted file is user-editable and outlives
+  upgrades, so `sanitise` falls back **per column** rather than discarding the record.
+
+**Next steps**
+
+- The sort *model* here covers **E8-S6**'s first bullet. What remains of E8-S6 is the
+  filter: it is substring and case-insensitive today, but not diacritic-insensitive, and
+  the status bar counts the whole listing rather than the filtered set.
+- `foldersFirst` is a signal with no UI, default on. **E17** gives it a control.
+- `ROW_HEIGHT` is a constant in `Shell.tsx` that must match `--height-row`. Two places
+  to keep in step; reading it from the token at mount would remove that, and is worth
+  doing when `1g`/`1h` (**E8-S3/S4**) bring their own row heights.
+- Keyboard access to the header (tab to a column, Enter to sort) is not wired —
+  **E16-S2**'s accessibility pass.
 
 #### E8-S3 — Layout `1g` name-led *(handoff §6 `1g`)*
 **AC**

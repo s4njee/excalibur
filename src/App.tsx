@@ -16,25 +16,16 @@ import { defaultBackend, fixtureBackend, type Backend } from "./state/backend";
 import type { Bookmark, Entry, Theme } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
-
-/** Sorted the way the list is: folders first, then by name. */
-function order(entries: Entry[], showHidden: boolean): Entry[] {
-  return entries
-    .filter((entry) => showHidden || !entry.hidden)
-    .slice()
-    .sort((left, right) => {
-      const leftIsDir = left.kind === "dir";
-      const rightIsDir = right.kind === "dir";
-      if (leftIsDir !== rightIsDir) return leftIsDir ? -1 : 1;
-      return left.name.localeCompare(right.name, undefined, { numeric: true });
-    });
-}
+import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
+import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
+import { defaultPrefs, type Prefs } from "./state/prefs";
 
 export default function App(props: {
   backend?: Backend;
   theme?: Theme;
   readOnly?: boolean;
   bookmarks?: BookmarkStore;
+  prefs?: Prefs;
 }) {
   // `readOnly` exists so the design's second screen can be rendered from the
   // same component tree rather than a separate mock.
@@ -54,7 +45,39 @@ export default function App(props: {
   const ascend = () => goTo(nav.parent(path()));
 
   const [filter, setFilter] = createSignal("");
+  const prefs = props.prefs ?? defaultPrefs();
+  const [sort, setSort] = createSignal<Sort>(DEFAULT_SORT);
+  const [widths, setWidths] = createSignal<Widths>(DEFAULT_WIDTHS);
+
+  onMount(async () => {
+    // Per layout, because `1g` and `1h` have no columns to size. Only `1f`
+    // exists today; the key is shaped for the other two rather than needing a
+    // migration when they land.
+    setWidths(sanitise(await prefs.get("columnWidths.columns")));
+    const saved = await prefs.get("sort");
+    if (saved && typeof saved === "object") {
+      const { column, ascending } = saved as Partial<Sort>;
+      if (typeof column === "string" && typeof ascending === "boolean") {
+        setSort({ column, ascending } as Sort);
+      }
+    }
+  });
+
+  const onSort = (column: import("./state/types").SortColumn) => {
+    const next = toggle(sort(), column);
+    setSort(next);
+    void prefs.set("sort", next);
+  };
+
+  // The drag itself only moves the signal. Writing on every pointermove would
+  // be a file write per frame, so it is persisted once when the drag ends.
+  const onResize = (divider: Divider, delta: number) =>
+    setWidths((current) => resize(current, divider, delta));
+  const onResizeEnd = () => void prefs.set("columnWidths.columns", widths());
+
   const [showHidden] = createSignal(true);
+  // A preference, default on, per E8-S6. No UI yet; E17 gives it one.
+  const [foldersFirst] = createSignal(true);
   const [selected, setSelected] = createSignal<Set<string>>(new Set(["Arrival.2016.mkv"]));
   const [connecting, setConnecting] = createSignal<Draft | true | null>(null);
   const store = props.bookmarks ?? defaultBookmarkStore();
@@ -179,7 +202,8 @@ export default function App(props: {
     const matching = needle
       ? data.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
       : data.entries;
-    return order(matching, showHidden());
+    const visible = showHidden() ? matching : matching.filter((entry) => !entry.hidden);
+    return sortEntries(visible, sort(), foldersFirst());
   });
 
   const selectedBytes = createMemo(() =>
@@ -267,6 +291,11 @@ export default function App(props: {
                 onSelect={select}
                 onOpen={open}
                 slow={listingState.slow()}
+                sort={sort()}
+                onSort={onSort}
+                widths={widths()}
+                onResize={onResize}
+                onResizeEnd={onResizeEnd}
               />
               <StatusBar
                 mount={data().mount}

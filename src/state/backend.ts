@@ -53,6 +53,12 @@ export function fixtureBackend(
      * to be in the right state. The shapes match what the engine serialises.
      */
     hostKey?: "unknown" | "changed";
+    /**
+     * Replace the listing with this many synthetic rows, for measuring the
+     * virtualised list against E8-S2's 100k-row criterion. A real share with
+     * 100k files is not something to keep in a fixture.
+     */
+    rows?: number;
   } = {},
 ): Backend {
   const hostKeyFailure = () => {
@@ -89,6 +95,20 @@ export function fixtureBackend(
         await new Promise((resolve) => setTimeout(resolve, options.latencyMs));
       }
       const listing = structuredClone(fixture) as Listing;
+      if (options.rows) {
+        listing.entries = Array.from({ length: options.rows }, (_, index) => ({
+          name: `Episode ${index + 1}.mkv`,
+          path: `${path}/episode-${index + 1}.mkv`,
+          kind: "file" as const,
+          size: 1_000_000 + index,
+          modifiedMs: Date.UTC(2026, 7, 1) + index * 60_000,
+          mode: null,
+          linkTarget: null,
+          kindLabel: "Matroska Video",
+          hidden: false,
+        }));
+        return listing;
+      }
       if (path !== "") {
         // The fixture is one directory deep, because it is generated from one
         // `xcal ls`. Subdirectories are synthesised so navigation, breadcrumbs

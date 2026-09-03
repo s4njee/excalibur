@@ -26,10 +26,14 @@ const hostKey =
 // against a fixture that answers instantly.
 const latencyMs = screen === "slow" ? 1500 : undefined;
 
+// `huge` is E8-S2's 100k-row criterion, which needs a listing no fixture should
+// carry. Nothing else about the window changes.
+const rows = screen === "huge" ? 100_000 : undefined;
+
 render(
   () =>
-    hostKey || latencyMs ? (
-      <App backend={fixtureBackend({ hostKey, latencyMs })} />
+    hostKey || latencyMs || rows ? (
+      <App backend={fixtureBackend({ hostKey, latencyMs, rows })} />
     ) : (
       <App readOnly={readOnly} />
     ),
