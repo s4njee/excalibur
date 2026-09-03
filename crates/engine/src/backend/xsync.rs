@@ -17,8 +17,8 @@ use xsync_client::{
 };
 
 use super::{
-    Attrs, Capacity, Caps, Entry, EntryKind, Health, Listing, MountInfo, MountStatus, ShareBackend,
-    WriteMode,
+    Attrs, Capacity, Caps, CasOutcome, Entry, EntryKind, Health, Listing, MountInfo, MountStatus,
+    ShareBackend, WriteMode,
 };
 use crate::error::{EngineError, Result};
 use crate::kind::classify_entry;
@@ -246,6 +246,28 @@ fn trimmed(path: &str) -> &str {
     path.trim_matches('/')
 }
 
+/// A 16-byte cookie from the engine's opaque bytes, if it is one.
+fn cookie_bytes(raw: &[u8]) -> Option<[u8; 16]> {
+    raw.try_into().ok()
+}
+
+/// The trait's portable path, for the cases the staged one cannot serve.
+async fn default_cas(
+    backend: &XsyncBackend,
+    path: &str,
+    expected: Option<&Attrs>,
+    data: &[u8],
+) -> Result<CasOutcome> {
+    if let Some(expected) = expected {
+        let current = backend.stat(path).await?;
+        if !current.unchanged_from(expected) {
+            return Ok(CasOutcome::Changed(current));
+        }
+    }
+    backend.write_range(path, WriteMode::Create, data).await?;
+    Ok(CasOutcome::Written(backend.stat(path).await?))
+}
+
 /// Translate a client error into the engine's taxonomy.
 ///
 /// The mapping is by `io::ErrorKind` rather than by protocol code, because the
@@ -306,6 +328,9 @@ fn attrs_of(attrs: &xsync_client::Attrs) -> Attrs {
             .symlink_target
             .as_ref()
             .map(|target| String::from_utf8_lossy(target).into_owned()),
+        // The protocol's own opaque value, which is what makes this backend's
+        // compare-and-swap exact rather than a size-and-mtime guess.
+        change_cookie: Some(attrs.change_cookie.to_vec()),
     }
 }
 
@@ -493,6 +518,66 @@ impl ShareBackend for XsyncBackend {
                 .map_err(|error| map_error(&error));
         }
         self.remove_tree(path).await
+    }
+
+    /// Replace a file atomically, refusing if it moved (`xsyncv3.md` E4-S7).
+    ///
+    /// Overrides the trait's portable default, which stats, compares and then
+    /// writes — three steps another writer can slip between. Here the cookie
+    /// is checked immediately before the publishing rename, on the server, so
+    /// there is no window at all. The bytes go through a stage, so a refused
+    /// commit leaves the destination untouched rather than half-written.
+    async fn write_all_if_unchanged(
+        &self,
+        path: &str,
+        expected: Option<&Attrs>,
+        data: &[u8],
+    ) -> Result<CasOutcome> {
+        let path = trimmed(path);
+        if !self.mount.info().writable {
+            return Err(EngineError::ReadOnly(self.mount.info().reason.clone()));
+        }
+        // A cookie the caller does not have is a caller that cannot use this
+        // path; fall back rather than publishing unconditionally behind its
+        // back.
+        let expect_cookie = match expected {
+            None => None,
+            Some(attrs) => match attrs.change_cookie.as_deref().and_then(cookie_bytes) {
+                Some(cookie) => Some(cookie),
+                None => return default_cas(self, path, expected, data).await,
+            },
+        };
+
+        let mut stage = self
+            .mount
+            .stage(path.as_bytes(), data.len() as u64, 0o644, b"")
+            .await
+            .map_err(|error| map_error(&error))?;
+        let max = stage.max_write() as usize;
+        let mut offset = 0_usize;
+        // Chunked to the mount's own limit: a whole file in one message is
+        // refused above `max_write`, and an editor's save is not always small.
+        while offset < data.len() {
+            let end = data.len().min(offset + max);
+            stage
+                .write(offset as u64, &data[offset..end])
+                .await
+                .map_err(|error| map_error(&error))?;
+            offset = end;
+        }
+        if data.is_empty() {
+            stage.write(0, &[]).await.ok();
+        }
+
+        let digest = *blake3::hash(data).as_bytes();
+        match stage
+            .commit(digest, expect_cookie, None)
+            .await
+            .map_err(|error| map_error(&error))?
+        {
+            Ok(attrs) => Ok(CasOutcome::Written(attrs_of(&attrs))),
+            Err(current) => Ok(CasOutcome::Changed(attrs_of(&current))),
+        }
     }
 
     async fn ping(&self) -> Result<Health> {

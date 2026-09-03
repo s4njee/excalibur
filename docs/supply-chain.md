@@ -85,6 +85,8 @@ as a transitive dependency of these.
 | `sha2` | engine | E3-S4. SHA-256 for SSH host key fingerprints. |
 | `base64` | engine | E3-S4. Decodes `known_hosts` key material and encodes the fingerprint the way OpenSSH prints it. |
 | `dirs` | engine | E3-S4. Locates the per-platform data directory the `known_hosts` file lives in. |
+| `notify` | `src-tauri` | E12-S1. Watches an edit-in-place working copy so a save in the user's own editor reaches the share. The alternative is polling every open file. |
+| `blake3` | engine | E12-S1. The whole-file digest a staged xsync commit verifies. Already in the tree via `xsync-client`. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync integration tests. |
 
 ### On `sha2`, `base64` and `dirs`

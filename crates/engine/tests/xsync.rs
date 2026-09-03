@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use excalibur_engine::backend::xsync::XsyncBackend;
+use excalibur_engine::backend::CasOutcome;
 use excalibur_engine::{EngineError, EntryKind, ShareBackend, WriteMode};
 
 /// The `xs` binary to serve with, or `None` to skip.
@@ -227,4 +228,56 @@ async fn a_recursive_remove_clears_a_nested_tree() {
 
     backend.remove("a", true).await.expect("recursive remove");
     assert!(!root.path().join("a").exists());
+}
+
+#[tokio::test]
+async fn a_guarded_write_is_atomic_and_refuses_a_file_that_moved() {
+    // E12's write-back over the real protocol: the cookie is checked on the
+    // server immediately before the publishing rename, so nothing can slip
+    // between the check and the write the way the portable default allows.
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+        .await
+        .expect("mount the export");
+
+    let before = backend.stat("notes.txt").await.expect("stat");
+    // The protocol carries a real cookie, which is what makes this exact
+    // rather than a size-and-mtime guess.
+    assert!(before.change_cookie.is_some());
+
+    // Unchanged: the write goes through.
+    let written = backend
+        .write_all_if_unchanged("notes.txt", Some(&before), b"first edit")
+        .await
+        .expect("guarded write");
+    assert!(matches!(written, CasOutcome::Written(_)), "{written:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("notes.txt")).unwrap(),
+        b"first edit"
+    );
+
+    // The old cookie is now stale, so a second write with it is refused and
+    // the file is left exactly as it was.
+    let refused = backend
+        .write_all_if_unchanged("notes.txt", Some(&before), b"second edit")
+        .await
+        .expect("the guard resolves rather than failing");
+    assert!(matches!(refused, CasOutcome::Changed(_)), "{refused:?}");
+    assert_eq!(
+        std::fs::read(root.path().join("notes.txt")).unwrap(),
+        b"first edit",
+        "a refused write published anyway"
+    );
+
+    // No expectation writes unconditionally.
+    let forced = backend
+        .write_all_if_unchanged("notes.txt", None, b"forced")
+        .await
+        .expect("unconditional write");
+    assert!(matches!(forced, CasOutcome::Written(_)));
+    assert_eq!(std::fs::read(root.path().join("notes.txt")).unwrap(), b"forced");
 }

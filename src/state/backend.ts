@@ -6,7 +6,15 @@
 // actually produces — regenerate it rather than editing it.
 
 import fixture from "./fixture.json";
-import type { Conflict, Listing, MountEvent, MountInfo, Transfer } from "./types";
+import type {
+  Conflict,
+  EditSession,
+  Listing,
+  MountEvent,
+  MountInfo,
+  SaveOutcome,
+  Transfer,
+} from "./types";
 
 /** A connection spec, as the engine takes it. Never carries a secret. */
 export type Spec = Record<string, unknown>;
@@ -76,6 +84,14 @@ export interface Backend {
   checkConflicts(paths: string[], destination: string, upload: boolean): Promise<Conflict[]>;
   /** Subscribe to queue changes. Returns an unsubscribe. */
   onTransferChanged(handler: (transfer: Transfer) => void): () => void;
+  /** Check a file out, open it in the OS editor, and watch it for saves. */
+  editFile(path: string): Promise<EditSession>;
+  /** Write a working copy back. `force` is the conflict prompt's Replace. */
+  saveEdit(id: string, force: boolean): Promise<SaveOutcome>;
+  /** Finish with a file and remove its working copy. */
+  closeEdit(id: string): Promise<void>;
+  /** Fires when an editor writes a working copy. Returns an unsubscribe. */
+  onEditSaved(handler: (session: EditSession) => void): () => void;
   /** Accept a host's SSH key, after the user compared its fingerprint. */
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
@@ -216,6 +232,17 @@ export function fixtureBackend(
       await new Promise((resolve) => setTimeout(resolve, 250));
       if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
+    },
+    // A browser cannot open an editor or watch a file.
+    async editFile(): Promise<EditSession> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async saveEdit(): Promise<SaveOutcome> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async closeEdit(): Promise<void> {},
+    onEditSaved(): () => void {
+      return () => undefined;
     },
     // A browser has no queue and nothing to move it with. Empty rather than
     // invented: a preview showing fake transfers would be a preview of
@@ -427,6 +454,34 @@ function tauriBackend(): Backend {
           if (cancelled) unlisten();
           else stop = unlisten;
         }),
+      );
+      return () => {
+        cancelled = true;
+        stop?.();
+      };
+    },
+    async editFile(path: string): Promise<EditSession> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<EditSession>("edit_file", { path });
+    },
+    async saveEdit(id: string, force: boolean): Promise<SaveOutcome> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<SaveOutcome>("save_edit", { id, force });
+    },
+    async closeEdit(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("close_edit", { id });
+    },
+    onEditSaved(handler: (session: EditSession) => void): () => void {
+      let stop: (() => void) | null = null;
+      let cancelled = false;
+      void import("@tauri-apps/api/event").then(({ listen }) =>
+        listen<EditSession>("edit://saved", (message) => handler(message.payload)).then(
+          (unlisten) => {
+            if (cancelled) unlisten();
+            else stop = unlisten;
+          },
+        ),
       );
       return () => {
         cancelled = true;

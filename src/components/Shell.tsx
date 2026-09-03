@@ -152,6 +152,7 @@ export function Toolbar(props: {
   onForward: () => void;
   onAscend: () => void;
   onCrumb: (depth: number) => void;
+  onEdit?: () => void;
   onDownload?: () => void;
   onUpload?: () => void;
 }) {
@@ -200,7 +201,7 @@ export function Toolbar(props: {
             directly: an inline condition here is exactly how a write affordance
             ends up gated on something that is not the mount. */}
         <Verb affordance="quickLook" context={context()} label="Quick Look" />
-        <Verb affordance="edit" context={context()} label="Edit" />
+        <Verb affordance="edit" context={context()} label="Edit" onClick={props.onEdit} />
         <Verb
           affordance="download"
           context={context()}

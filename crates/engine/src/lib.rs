@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backend;
+pub mod edit;
 pub mod error;
 pub mod hostkeys;
 pub mod kind;
@@ -26,6 +27,7 @@ pub use backend::{
     Attrs, Capacity, Caps, ConnectionSpec, Entry, EntryKind, Health, Listing, MountInfo,
     MountStatus, Protocol, ShareBackend, WriteMode,
 };
+pub use edit::{EditSession, EditStore, SaveOutcome};
 pub use error::{EngineError, Result};
 pub use hostkeys::{HostKey, KnownHosts, Trust};
 pub use secrets::{KeyringStore, Secret, SecretStore};

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kind::Category;
 
-use crate::error::Result;
+use crate::error::{EngineError, Result};
 
 /// Which protocol a connection speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +173,38 @@ pub struct Attrs {
     pub mode: Option<u32>,
     /// Symlink target, when it is one.
     pub link_target: Option<String>,
+    /// An opaque value that changes whenever the file does.
+    ///
+    /// `None` for a protocol that has no such thing, which is every one of
+    /// them except xsync today. Edit-in-place falls back to comparing size and
+    /// mtime there — weaker, because a same-size edit inside mtime granularity
+    /// slips through, but it is what SMB, NFS and SFTP can offer.
+    pub change_cookie: Option<Vec<u8>>,
+}
+
+impl Attrs {
+    /// Whether this describes the same content as `other`.
+    ///
+    /// The cookie decides when both sides have one. Otherwise size and mtime
+    /// together, which is the same comparison xsync's own v2 `Publish` used
+    /// and the strongest thing available without one.
+    #[must_use]
+    pub fn unchanged_from(&self, other: &Self) -> bool {
+        match (&self.change_cookie, &other.change_cookie) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => self.size == other.size && self.modified_ms == other.modified_ms,
+        }
+    }
+}
+
+/// What a compare-and-swap write did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CasOutcome {
+    /// Written. Carries the destination's attributes afterwards.
+    Written(Attrs),
+    /// Refused: the destination is not what the caller expected. Carries what
+    /// it is now, so the caller can offer replace / keep both / cancel.
+    Changed(Attrs),
 }
 
 /// One row in the list.
@@ -274,6 +306,56 @@ pub trait ShareBackend: Send + Sync {
 
     /// Remove a file, or a directory and its contents when `recursive`.
     async fn remove(&self, path: &str, recursive: bool) -> Result<()>;
+
+    /// Replace a file, but only if it is still what the caller last saw.
+    ///
+    /// The default is a stat, a comparison and a write — portable, and what
+    /// SMB, NFS and SFTP will be able to do. It is **not atomic**: another
+    /// writer between the stat and the write is not detected, which is the
+    /// race a real compare-and-swap closes.
+    ///
+    /// A backend that can do better overrides this. xsync does, with
+    /// `StageCommit` and `expect_cookie` (`xsyncv3.md` E4-S7): the check
+    /// happens immediately before the publishing rename, so nothing can slip
+    /// between them.
+    ///
+    /// `expected` of `None` writes unconditionally.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write itself fails. A *refusal* is `Ok(Changed)`, not an
+    /// error: the destination having moved is an answer the caller asked for.
+    async fn write_all_if_unchanged(
+        &self,
+        path: &str,
+        expected: Option<&Attrs>,
+        data: &[u8],
+    ) -> Result<CasOutcome> {
+        if let Some(expected) = expected {
+            match self.stat(path).await {
+                Ok(current) if !current.unchanged_from(expected) => {
+                    return Ok(CasOutcome::Changed(current))
+                }
+                Ok(_) => {}
+                // Gone is a change: the caller expected a file and there is
+                // none. Recreating it silently would resurrect something
+                // somebody deleted.
+                Err(EngineError::NotFound(_)) => {
+                    return Ok(CasOutcome::Changed(Attrs {
+                        kind: EntryKind::Other,
+                        size: 0,
+                        modified_ms: None,
+                        mode: None,
+                        link_target: None,
+                        change_cookie: None,
+                    }))
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.write_range(path, WriteMode::Create, data).await?;
+        Ok(CasOutcome::Written(self.stat(path).await?))
+    }
 
     /// Whether the connection is still answering.
     async fn ping(&self) -> Result<Health>;

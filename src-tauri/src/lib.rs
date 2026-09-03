@@ -20,8 +20,9 @@ use excalibur_engine::transfer::conflict::{self, Conflict};
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::{
-    hostkeys, Connector, Direction, EngineError, KeyringStore, KnownHosts, Listing, MountInfo,
-    Result, Secret, SecretStore, SessionManager, Transfer, TransferStatus, Trust,
+    hostkeys, Connector, Direction, EditSession, EditStore, EngineError, KeyringStore, KnownHosts,
+    Listing, MountInfo, Result, SaveOutcome, Secret, SecretStore, SessionManager, Transfer,
+    TransferStatus, Trust,
 };
 use tauri::http;
 use tauri::{Emitter, Manager};
@@ -127,6 +128,8 @@ struct AppState {
     /// Accepted SSH host keys. Shared with the connector, which is what
     /// enforces them.
     known_hosts: KnownHosts,
+    /// Files checked out for editing.
+    edits: Arc<EditStore>,
     /// Everything moving, or waiting to.
     transfers: Arc<TransferQueue>,
     /// Moves it. Held so a new enqueue can wake it.
@@ -589,6 +592,122 @@ async fn check_conflicts(
     Ok(conflicts)
 }
 
+/// Check a file out, open it in the OS editor, and watch it for saves.
+///
+/// The download and the watch both happen here rather than in the window,
+/// because a save can arrive at any time and the window may not be looking.
+#[tauri::command]
+async fn edit_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> std::result::Result<EditSession, CommandError> {
+    let backend = state.backend().await;
+    let session = state.edits.checkout(&backend, &path).await?;
+    open_in_editor(&session.local_path);
+    watch_for_saves(app, session.clone());
+    Ok(session)
+}
+
+/// Write a working copy back.
+///
+/// `force` is the conflict prompt's "Replace". Without it a moved remote comes
+/// back as `Conflict` rather than being overwritten.
+#[tauri::command]
+async fn save_edit(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    force: bool,
+) -> std::result::Result<SaveOutcome, CommandError> {
+    let backend = state.backend().await;
+    state
+        .edits
+        .save(&backend, &id, force)
+        .await
+        .map_err(Into::into)
+}
+
+/// Every file currently checked out.
+#[tauri::command]
+async fn edits(state: tauri::State<'_, AppState>) -> std::result::Result<Vec<EditSession>, ()> {
+    Ok(state.edits.all().await)
+}
+
+/// Finish with a file and remove its working copy.
+#[tauri::command]
+async fn close_edit(state: tauri::State<'_, AppState>, id: String) -> std::result::Result<(), ()> {
+    state.edits.close(&id).await;
+    Ok(())
+}
+
+/// Hand a path to whatever the OS opens it with.
+///
+/// `open` on macOS, `xdg-open` elsewhere on Unix, `explorer` on Windows. The
+/// child is spawned and forgotten: waiting on an editor would block for as
+/// long as the user is editing.
+fn open_in_editor(path: &str) {
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    #[cfg(windows)]
+    let program = "explorer";
+    let _ = std::process::Command::new(program).arg(path).spawn();
+}
+
+/// Tell the window whenever a working copy is written.
+///
+/// Debounced: an editor's save is often several filesystem events — a truncate,
+/// a write, an mtime touch, sometimes a rename over the top — and one save
+/// should be one write-back rather than four.
+fn watch_for_saves(app: tauri::AppHandle, session: EditSession) {
+    use notify::{RecursiveMode, Watcher};
+
+    let local = std::path::PathBuf::from(&session.local_path);
+    let Some(directory) = local.parent().map(std::path::Path::to_path_buf) else {
+        return;
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok(mut watcher) = notify::recommended_watcher(sender) else {
+            return;
+        };
+        // The *directory*, not the file: an editor that saves by writing a
+        // temporary and renaming it over the top replaces the inode, and a
+        // watch on the file itself would follow the old one into the bin.
+        if watcher
+            .watch(&directory, RecursiveMode::NonRecursive)
+            .is_err()
+        {
+            return;
+        }
+        // `None` on a machine whose clock has barely started, which simply
+        // means the first event is not debounced against a previous one.
+        let mut last: Option<std::time::Instant> = None;
+        while let Ok(Ok(event)) = receiver.recv() {
+            if !event.paths.iter().any(|path| path == &local) {
+                continue;
+            }
+            if !matches!(
+                event.kind,
+                notify::EventKind::Create(_) | notify::EventKind::Modify(_)
+            ) {
+                continue;
+            }
+            if last.is_some_and(|last| last.elapsed() < SAVE_DEBOUNCE) {
+                continue;
+            }
+            last = Some(std::time::Instant::now());
+            if app.emit("edit://saved", &session).is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// Filesystem events closer together than this are one save.
+const SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Whether a host is answering, for the sidebar's dimmed rows.
 ///
 /// Deliberately weaker than mounting: this runs for every saved bookmark on a
@@ -886,6 +1005,7 @@ pub fn run() {
             sessions: Arc::clone(&sessions),
             secrets: Arc::new(KeyringStore),
             known_hosts,
+            edits: Arc::new(EditStore::app_default().expect("no cache directory for edits")),
             transfers: Arc::clone(&queue),
             worker: Arc::clone(&worker),
             demo: Arc::clone(&demo),
@@ -942,6 +1062,10 @@ pub fn run() {
             clear_finished_transfers,
             download_folder,
             check_conflicts,
+            edit_file,
+            save_edit,
+            edits,
+            close_edit,
             mount,
             unmount,
             remount_read_write,

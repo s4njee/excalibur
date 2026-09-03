@@ -1488,20 +1488,71 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E12 — Edit in place *(handoff §Screens/5, "Edit")*
 
-#### E12-S1 — Round trip
+#### E12-S1 — Round trip — **Done (with three named gaps)**
+
+*2026-09-03.*
+
 **AC**
-- `Edit` (toolbar or `Open in editor`) downloads to `~/Library/Caches/excalibur/edit/<id>/<name>`
-  (XDG cache on Linux), records the remote `Attrs`/cookie, opens the OS default
-  editor (`open`/`xdg-open`), and watches the file with `notify`.
-- Each save uploads via `open_write(Create)` to a temp name and atomic rename (or
-  xsync `StageCommit`/`Write` with `expect_cookie`); a toast and a queue row record
-  each write-back *(handoff: "Show a toast or a queue entry")*.
-- Remote changed underneath (cookie/mtime mismatch) → conflict prompt Replace / Keep
-  both / Cancel; never a silent overwrite.
-- Disabled on RO mounts; the Quick Look footer reads "Read-only — download a copy to
-  edit".
-- Temp files are removed when the editor's file handle count drops to zero for 10
-  minutes, or on app quit with no unsaved write-back pending.
+- [x] `Edit` (toolbar or `Open in editor`) downloads to the platform cache dir, records
+  the remote `Attrs`/cookie, opens the OS default editor (`open`/`xdg-open`/`explorer`),
+  and watches the file with `notify`.
+- [x] Each save writes back through a compare-and-swap; a **toast** records each one.
+- [ ] …and a **queue row**. The handoff says "a toast or a queue entry" and this does the
+  toast. A write-back is one small `write_all_if_unchanged`, not a streamed transfer, so
+  putting it in the queue would mean a row that is finished before it is drawn.
+- [x] Remote changed underneath → conflict prompt; **never a silent overwrite**.
+- [ ] …with `Keep both` as a third option. The prompt offers Replace / Cancel. `Keep
+  both` needs a second destination and a second CAS against *that* name, which is
+  E13-S6's naming plus a write — worth doing, not done.
+- [x] Disabled on RO mounts; the Quick Look footer reads "Read-only — download a copy to
+  edit". Verified on screen.
+- [x] Working copies are swept when idle, and never while they hold an unsaved change.
+- [ ] …keyed on "the editor's file handle count drops to zero". **Not possible portably**
+  — an editor may close the file between saves or never hold it open at all — so the
+  sweep is ten minutes of *no modification* instead, which errs towards keeping a file
+  somebody may still be editing.
+
+**Results**
+
+- **This is what `xsyncv3.md` E4-S7 was built for, and it is wired end to end.**
+  `ShareBackend::write_all_if_unchanged` has a portable default — stat, compare, write —
+  and `XsyncBackend` **overrides it** with `StageCommit` + `expect_cookie`. The default is
+  honestly documented as *not atomic*: another writer between the stat and the write is
+  not detected. The override has no such window, because the cookie is checked on the
+  server immediately before the publishing rename. There is a test against a real
+  `xs --server` asserting a stale cookie is refused **and the file is left exactly as it
+  was**.
+- **`Attrs` gained an optional `change_cookie`.** `None` for every protocol except xsync,
+  and `unchanged_from` falls back to size-and-mtime there — weaker, because a same-size
+  edit inside mtime granularity slips through, but it is what SMB, NFS and SFTP can
+  offer, and it is the same comparison xsync's own v2 `Publish` used.
+- **The expectation advances on every write-back.** Comparing against the *original*
+  would make every save after the first look like somebody else had changed the file —
+  which is this editor. There is a test for the second save specifically.
+- **A file gone from the remote counts as changed**, not as a file to recreate. Silently
+  restoring something somebody deleted is the same class of mistake as overwriting their
+  edit.
+- **An untouched working copy is not written back.** Editors write files they have not
+  changed — a save with no edits, a plugin touching the mtime — and uploading for each
+  would put a round trip behind every keystroke-adjacent event.
+- **The watch is on the directory, not the file.** An editor that saves by writing a
+  temporary and renaming it over the top replaces the inode, and a watch on the file
+  itself would follow the old one into the bin. Saves are debounced at 300ms, because one
+  save is often four filesystem events.
+- The session id is derived from the remote path rather than random, so opening the same
+  file twice reuses one working copy instead of orphaning the first edit in a directory
+  nobody will look in again.
+- **A read-only mount refuses the *checkout*, not the save.** Downloading a file, letting
+  the user edit it, and only then saying it cannot be written back would waste their work.
+
+**Next steps**
+
+- `Keep both` on the write-back conflict, reusing E13-S6's naming.
+- The sweep runs on demand rather than on a timer; nothing calls it yet. It wants the
+  same home as E4-S6's stage sweep — something with a lifecycle, which the app has and
+  the engine does not.
+- Quitting with an unsaved write-back pending is not detected. The AC asks for the temp
+  files to survive that, and they do, but nothing tells the user why they are still there.
 
 ### E13 — Transfers *(handoff §Screens/4, §Transfers)*
 

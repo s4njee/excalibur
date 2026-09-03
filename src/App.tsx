@@ -26,6 +26,7 @@ import { defaultBackend, fixtureBackend, writeGuarded, type Backend } from "./st
 import type {
   Bookmark,
   Conflict,
+  EditSession,
   Entry,
   MountEvent,
   MountInfo,
@@ -315,6 +316,8 @@ export default function App(props: {
    * to its field, without this deciding which is which.
    */
   const [problem, setProblem] = createSignal<string | null>(null);
+  /** Something worth saying that is not a failure. Shown as a toast. */
+  const [notice, setNotice] = createSignal<string | null>(null);
   // The last thing the engine said about the active mount. Held separately
   // from the listing because a mount that has *dropped* has no listing to
   // carry its state — that is exactly when the health dot has to turn red.
@@ -330,6 +333,8 @@ export default function App(props: {
     sources: string[];
     destination: string;
   } | null>(null);
+  /** A write-back that the remote refused, awaiting Replace / Cancel. */
+  const [saveConflict, setSaveConflict] = createSignal<EditSession | null>(null);
   /** Whether Quick Look is open. It follows the selection while it is. */
   const [quickLook, setQuickLook] = createSignal(false);
   /** The row being renamed inline, by path. */
@@ -634,6 +639,47 @@ export default function App(props: {
     }
   };
 
+  /**
+   * Write a working copy back, and say what happened.
+   *
+   * A conflict is not an error and is not swallowed: it raises the prompt, and
+   * nothing has been written at that point. Anything else is a toast, because
+   * the handoff asks for "a toast or a queue entry" per write-back and a
+   * silent save gives the user no reason to believe it worked.
+   */
+  const writeBack = async (session: EditSession, force: boolean) => {
+    try {
+      const outcome = await backend.saveEdit(session.id, force);
+      if (outcome.outcome === "conflict") {
+        setSaveConflict(session);
+        return;
+      }
+      if (outcome.outcome === "saved") {
+        setNotice(`Saved ${session.name} to the share`);
+      }
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
+  onMount(() => {
+    const stop = backend.onEditSaved((session) => void writeBack(session, false));
+    onCleanup(stop);
+  });
+
+  /** Open the selected file in the OS editor and start watching it. */
+  const editSelected = async () => {
+    if (refusedBy("edit")) return;
+    const chosen = selectedVisible();
+    if (chosen.length !== 1 || !chosen[0]) return;
+    try {
+      const session = await backend.editFile(chosen[0].path);
+      setNotice(`Opened ${session.name} in your editor`);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
   const removeSelected = (id: string) => {
     const current = bookmarks();
     const index = current.findIndex((bookmark) => bookmark.id === id);
@@ -764,11 +810,52 @@ export default function App(props: {
             onForward={() => setHistory(nav.forward)}
             onAscend={ascend}
             onCrumb={onCrumb}
+            onEdit={() => void editSelected()}
             onDownload={() => void downloadSelected()}
             onUpload={() => void uploadHere()}
           />
           {/* The preview follows the selection: it shows whatever single row
               is selected, and closes on its own when that stops being one. */}
+          <Show when={notice()}>
+            {(message) => (
+              <div class={styles.toast}>
+                <span>{message()}</span>
+                <button class={styles.toastAction} onClick={() => setNotice(null)}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </Show>
+          <Show when={saveConflict()}>
+            {(session) => (
+              <div class={styles.scrim}>
+                <div class={styles.sheet} role="alertdialog" aria-label="Remote changed">
+                  <div class={styles.sheetTitle}>
+                    “{session().name}” changed on the share
+                  </div>
+                  <div class={styles.sheetBody}>
+                    Somebody else edited it since you opened it, so nothing has been
+                    written. Your copy is still where your editor has it open.
+                  </div>
+                  <div class={styles.sheetActions}>
+                    <button class={styles.action} onClick={() => setSaveConflict(null)}>
+                      Cancel
+                    </button>
+                    <button
+                      class={`${styles.action} ${styles.actionDanger}`}
+                      onClick={() => {
+                        const pending = session();
+                        setSaveConflict(null);
+                        void writeBack(pending, true);
+                      }}
+                    >
+                      Replace
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </Show>
           <Show when={showTransfers()}>
             <Transfers
               transfers={transfers()}
@@ -824,6 +911,11 @@ export default function App(props: {
                 mount={data().mount}
                 caps={data().mount.caps}
                 onClose={() => setQuickLook(false)}
+                // The panel's own entry point into E12, offered only where it
+                // would work — the footer already says so on a read-only mount.
+                onEdit={
+                  data().mount.writable ? () => void editSelected() : undefined
+                }
               />
             )}
           </Show>

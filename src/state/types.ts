@@ -118,6 +118,22 @@ export interface Conflict {
   keepBothAs: string;
 }
 
+/** A file checked out for editing. */
+export interface EditSession {
+  id: string;
+  remotePath: string;
+  localPath: string;
+  name: string;
+  saves: number;
+}
+
+/** What a write-back did. */
+export type SaveOutcome =
+  | { outcome: "saved"; saves: number }
+  /** The remote moved. Nothing was written; the user decides. */
+  | { outcome: "conflict"; size: number; modifiedMs: number | null }
+  | { outcome: "unchanged" };
+
 export interface Listing {
   entries: Entry[];
   mount: MountInfo;

@@ -293,6 +293,8 @@ impl ShareBackend for MockBackend {
                     kind_category: kind.category,
                     hidden: name.starts_with('.'),
                     attrs: Attrs {
+                        // The mock has no protocol behind it to ask.
+                        change_cookie: None,
                         kind: node.kind,
                         size: node.size,
                         modified_ms: Some(node.modified_ms),
@@ -320,6 +322,7 @@ impl ShareBackend for MockBackend {
         nodes
             .get(path.trim_matches('/'))
             .map(|node| Attrs {
+                change_cookie: None,
                 kind: node.kind,
                 size: node.size,
                 modified_ms: Some(node.modified_ms),

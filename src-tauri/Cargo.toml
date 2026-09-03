@@ -33,3 +33,4 @@ tauri = { version = "2", features = [] }
 tauri-plugin-store = "2"
 tokio = { workspace = true }
 tauri-plugin-dialog = "2.7.3"
+notify = "8.2.0"
