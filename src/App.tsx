@@ -1,5 +1,6 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { QuickLook } from "./components/QuickLook";
 import {
   defaultBookmarkStore,
   fromDraft,
@@ -202,6 +203,20 @@ export default function App(props: {
         if (event.key !== "Escape") return;
       }
 
+      if (event.key === "Escape" && quickLook()) {
+        // The panel is the most recently opened thing, so it closes first.
+        setQuickLook(false);
+        return;
+      }
+
+      if (event.key === " " && renaming() === null) {
+        // Space toggles the preview. It is only a shortcut while nothing is
+        // being typed into, which the input check above already guarantees.
+        event.preventDefault();
+        setQuickLook((open) => !open && selectedVisible().length === 1);
+        return;
+      }
+
       if (event.key === "Escape") {
         // The design's order: the filter first, then the selection. A filter
         // is the more disruptive of the two states to be stuck in, and
@@ -295,6 +310,8 @@ export default function App(props: {
   // from the listing because a mount that has *dropped* has no listing to
   // carry its state — that is exactly when the health dot has to turn red.
   const [mountEvent, setMountEvent] = createSignal<MountEvent | null>(null);
+  /** Whether Quick Look is open. It follows the selection while it is. */
+  const [quickLook, setQuickLook] = createSignal(false);
   /** The row being renamed inline, by path. */
   const [renaming, setRenaming] = createSignal<string | null>(null);
   /** A delete waiting out its undo window, and the timer that will run it. */
@@ -634,6 +651,18 @@ export default function App(props: {
             onAscend={ascend}
             onCrumb={onCrumb}
           />
+          {/* The preview follows the selection: it shows whatever single row
+              is selected, and closes on its own when that stops being one. */}
+          <Show when={quickLook() && selectedVisible().length === 1 ? selectedVisible()[0] : null}>
+            {(entry) => (
+              <QuickLook
+                entry={entry()}
+                mount={data().mount}
+                caps={data().mount.caps}
+                onClose={() => setQuickLook(false)}
+              />
+            )}
+          </Show>
           <Show when={problem()}>
             {(message) => (
               <Banner

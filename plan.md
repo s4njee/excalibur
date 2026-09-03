@@ -1388,32 +1388,102 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E11 — Quick Look *(handoff §Screens/5)*
 
-#### E11-S1 — Panel
-**AC**
-- Separate always-dark 440px panel window; header 30px `#2a2b2e` with filename
-  11.5px/500, mono 10px `#9a9ba0` `2 KB · text/plain`, `Open in editor`, `✕`; body
-  `#1e1f21` padding 14px; footer 24px with RW/RO chip and copy per handoff;
-  right-aligned "Space to close".
-- Space toggles; Escape closes; arrow keys move selection and the preview follows.
+#### E11-S1 — Panel — **Done (a floating panel, not a separate window)**
 
-#### E11-S2 — Text
-**AC**
-- Mono 11px, `line-height: 1.8`, `#c4c4c8`, non-selectable 1-based line numbers
-  `#63646a`; reads the first 1 MiB via `open_read(0)` and lazily continues on
-  scroll; encoding sniff (UTF-8, UTF-16 BOM, Latin-1 fallback); binary detection →
-  "unpreviewable" card.
+*2026-09-03.*
 
-#### E11-S3 — Images, video, audio
 **AC**
-- Images render centred, contained; video/audio use the platform `<video>`/`<audio>`
-  fed by a Tauri custom protocol (`excalibur-stream://mount/path`) that honours HTTP
-  `Range` by calling `open_read(offset)`; seeking a 40 GB MKV starts playback within
-  2 s on LAN.
-- Disabled (with the reduced-mode chip) when `Caps.random_access = false`.
+- [x] Always-dark 440px panel; header 30px `#2a2b2e` with filename 11.5px/500, mono 10px
+  `#9a9ba0`, `Open in editor`, `✕`; body `#1e1f21` padding 14px; footer 24px with RW/RO
+  chip and copy per handoff; right-aligned "Space to close".
+- [ ] …as a separate *window*. **Built as a floating panel inside the main window**,
+  which is what the handoff itself says ("440px floating panel"). `plan.md` read that as
+  a separate OS window; the handoff's own wording does not require one, and a second
+  Tauri window costs its own entry point and IPC for no behaviour the mock describes.
+  Recorded here rather than done quietly.
+- [x] Space toggles; Escape closes; the preview follows the selection.
+- [ ] …*arrow keys* move the selection. Arrow keys are still unbound — deferred to
+  **E16-S1**'s shortcut map since E8-S8. The preview follows the selection however it
+  changes, so this lights up for free when they land.
 
-#### E11-S4 — Unpreviewable
+**Results**
+
+- **The panel is always dark, and its colours are literal rather than tokens.** It
+  deliberately does not follow the app's theme — a photo shown against white half the
+  time is the thing the handoff is avoiding — so reading theme tokens here would be
+  wrong rather than merely unnecessary.
+- **It closes itself when the selection stops being exactly one row.** A preview of
+  "three files" has no meaning, and leaving the last one on screen would misdescribe
+  what is selected.
+
+#### E11-S2 — Text — **Done (no lazy continuation yet)**
+
+*2026-09-03.*
+
 **AC**
-- Shows kind, size, mtime and a `Download` button that enqueues a transfer.
+- [x] Mono 11px, `line-height: 1.8`, `#c4c4c8`, non-selectable 1-based line numbers
+  `#63646a`; reads the first 1 MiB; encoding sniff (UTF-8, UTF-16 BOM, Latin-1
+  fallback); binary detection → "unpreviewable" card.
+- [ ] …and lazily continues on scroll. **Not built:** a preview is a preview, and the
+  first megabyte is already more than the panel shows. The `Range` header that windows
+  it is the same one a continuation would use, so this is an addition rather than a
+  redesign.
+
+**Results**
+
+- **Encoding is sniffed before decoding, and binary is checked before either.** Decoding
+  a binary as Latin-1 always "succeeds" and produces a screen of noise, so the NUL scan
+  has to come first. UTF-16 is detected by its BOM because a UTF-16 file decoded as UTF-8
+  is not slightly wrong, it is unreadable.
+- Latin-1 is the fallback rather than an error, because it never fails and is right often
+  enough for a preview.
+- Line numbers are `user-select: none`, so copying the preview copies the file's text and
+  not a column of numbers interleaved with it.
+
+#### E11-S3 — Images, video, audio — **Done (throughput unmeasured)**
+
+*2026-09-03.*
+
+**AC**
+- [x] Images render centred and contained; video/audio use the platform
+  `<video>`/`<audio>` fed by a Tauri custom protocol (`excalibur-stream://`) that honours
+  HTTP `Range` by calling `read_range`.
+- [ ] Seeking a 40 GB MKV starts playback within 2 s on LAN. **Not measured:** it needs a
+  40 GB file and a second machine. The mechanism is in place and the range arithmetic is
+  tested; the number is not claimed.
+- [x] Disabled when `Caps.random_access = false`.
+
+**Results**
+
+- **This is the piece the architecture demanded, and it is why E11 started here.** The
+  engine's rule is that *file bytes never cross IPC*: a command's return value is
+  serialised through the webview bridge, so previewing a 40 GB film through one would
+  mean holding it in memory. The custom protocol streams a range straight from the
+  backend to the element that asked for it. Every viewer — text included — reads through
+  it; none of them uses a command.
+- **`bytes=0-` is capped rather than answered literally.** A player asking for everything
+  is how a preview becomes a download; it asks again for the rest. A range *past* the end
+  answers `416` rather than being clamped, because clamping would serve bytes the caller
+  did not ask for and a player seeking past the end would play them. Both are tested.
+- A request with no `Range` gets one megabyte, not the file: that first request is a
+  `<video>` discovering the container, and answering it in full defeats the point.
+- The `Content-Range` describes what is *in the body*, not what was asked for, so a short
+  read at the end of a file is reported honestly.
+- The media type comes from the engine's kind table, not from sniffing: sniffing would
+  mean reading the file to answer a question the name answers well enough.
+- `random_access` gates the media viewers only. A backend that cannot seek can still show
+  text and an image, which are read from the start — a scrub bar that cannot scrub is
+  worse than no viewer.
+
+#### E11-S4 — Unpreviewable — **Done (Download awaits E13)**
+
+*2026-09-03.*
+
+**AC**
+- [x] Shows kind, size and mtime.
+- [ ] …and a `Download` button that enqueues a transfer. **The button is there and
+  disabled**, with a tooltip saying transfers arrive with E13. Hidden would make the card
+  look like a dead end; enabled would be a lie.
 
 ### E12 — Edit in place *(handoff §Screens/5, "Edit")*
 

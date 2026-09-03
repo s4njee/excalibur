@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; font-src 'self'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: excalibur-stream: http://excalibur-stream.localhost; media-src 'self' excalibur-stream: http://excalibur-stream.localhost; font-src 'self'"
     }
   },
   "bundle": {
