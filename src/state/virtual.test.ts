@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OVERSCAN, visibleRange } from "./virtual";
+import { OVERSCAN, rowsInBand, visibleRange } from "./virtual";
 
 describe("visibleRange", () => {
   it("renders a viewport's worth plus overscan, not the whole list", () => {
@@ -35,5 +35,30 @@ describe("visibleRange", () => {
 
   it("treats a zero row height as nothing to render rather than dividing by it", () => {
     expect(visibleRange(0, 240, 0, 100)).toEqual({ start: 0, end: 0 });
+  });
+});
+
+describe("rowsInBand", () => {
+  it("covers a row the band touches at all", () => {
+    // Requiring the midpoint would make the first row of a downward drag
+    // refuse to select until the pointer is 12px in.
+    expect(rowsInBand(0, 1, 24, 100)).toEqual({ start: 0, end: 1 });
+  });
+
+  it("works in either drag direction", () => {
+    expect(rowsInBand(100, 20, 24, 100)).toEqual(rowsInBand(20, 100, 24, 100));
+  });
+
+  it("covers exactly the rows a tall band spans", () => {
+    // 24..96 touches rows 1, 2 and 3.
+    expect(rowsInBand(24, 96, 24, 100)).toEqual({ start: 1, end: 4 });
+  });
+
+  it("clamps to the list rather than running past it", () => {
+    expect(rowsInBand(0, 999_999, 24, 5)).toEqual({ start: 0, end: 5 });
+  });
+
+  it("is empty for an empty list", () => {
+    expect(rowsInBand(0, 100, 24, 0)).toEqual({ start: 0, end: 0 });
   });
 });

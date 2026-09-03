@@ -18,6 +18,7 @@ import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
 import { filterEntries } from "./state/filter";
+import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
 import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, type Prefs } from "./state/prefs";
 
@@ -79,7 +80,10 @@ export default function App(props: {
   const [showHidden] = createSignal(true);
   // A preference, default on, per E8-S6. No UI yet; E17 gives it one.
   const [foldersFirst] = createSignal(true);
-  const [selected, setSelected] = createSignal<Set<string>>(new Set(["Arrival.2016.mkv"]));
+  const [selection, setSelection] = createSignal(clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"));
+  // The row type-to-select jumped to, so the list can scroll it into view.
+  const [reveal, setReveal] = createSignal<number | null>(null);
+  const selected = () => selection().paths as Set<string>;
   const [connecting, setConnecting] = createSignal<Draft | true | null>(null);
   const store = props.bookmarks ?? defaultBookmarkStore();
   const [bookmarks, setBookmarks] = createSignal<Bookmark[]>([]);
@@ -117,7 +121,7 @@ export default function App(props: {
   // would let a verb act on a file the user can no longer see.
   createEffect((previous: string | undefined) => {
     const here = path();
-    if (previous !== undefined && previous !== here) setSelected(new Set<string>());
+    if (previous !== undefined && previous !== here) setSelection(EMPTY_SELECTION);
     return here;
   });
 
@@ -132,17 +136,72 @@ export default function App(props: {
     if (chosen.length === 1 && chosen[0]?.kind === "dir") goTo(chosen[0].path);
   };
 
+  // Type-to-select accumulates keystrokes for 700ms. The buffer is a plain
+  // variable rather than a signal: nothing renders from it, and making it
+  // reactive would re-run the list for every keypress.
+  let typed = "";
+  let typedAt = 0;
+  // Where the selection was when this burst began. Extending the buffer
+  // searches from here so `b` then `l` refines to the first `bl` rather than
+  // stepping past the row `b` just landed on.
+  let typedOrigin: string | null = null;
+  const TYPING_WINDOW_MS = 700;
+
+  const jumpTo = (character: string) => {
+    const now = Date.now();
+    if (now - typedAt > TYPING_WINDOW_MS) {
+      typed = character;
+      typedOrigin = selection().anchor;
+    } else {
+      typed += character;
+    }
+    typedAt = now;
+    const names = entries().map((entry) => entry.name);
+    const found = typeAhead(order(), names, typed, {
+      current: selection().anchor,
+      origin: typedOrigin,
+    });
+    if (found === null) return;
+    setSelection((current) => clickSelect(current, order(), found));
+    setReveal(order().indexOf(found));
+  };
+
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
-      // The design's modifier is Cmd on macOS and Ctrl elsewhere. Bare arrows
-      // move the selection (E8-S8) and must not navigate.
-      if (!(event.metaKey || event.ctrlKey)) return;
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        descend();
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        if (nav.canAscend(path())) ascend();
+      // Anything typed into the filter box or a dialog field belongs to that
+      // field, not to the list.
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.isContentEditable)) {
+        // Escape is the exception: it is how the filter gets cleared, and the
+        // field is exactly where the user will be when they want that.
+        if (event.key !== "Escape") return;
+      }
+
+      if (event.key === "Escape") {
+        // The design's order: the filter first, then the selection. A filter
+        // is the more disruptive of the two states to be stuck in, and
+        // clearing both at once would make one Escape do two things.
+        if (filter() !== "") setFilter("");
+        else setSelection(EMPTY_SELECTION);
+        return;
+      }
+
+      if (event.metaKey || event.ctrlKey) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          descend();
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          if (nav.canAscend(path())) ascend();
+        }
+        return;
+      }
+
+      if (event.altKey) return;
+      // A single printable character is type-to-select. `key.length === 1`
+      // is what separates those from `ArrowDown`, `Enter` and the rest.
+      if (event.key.length === 1 && event.key !== " ") {
+        jumpTo(event.key);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -262,13 +321,16 @@ export default function App(props: {
     if (entry.kind === "dir") goTo(entry.path);
   };
 
-  const select = (path: string, additive: boolean) => {
-    setSelected((current) => {
-      const next = additive ? new Set(current) : new Set<string>();
-      if (additive && current.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
+  /** The visible paths, in display order — what a range or a band spans. */
+  const order = createMemo(() => entries().map((entry) => entry.path));
+
+  const select = (path: string, modifiers: { shift?: boolean; toggle?: boolean }) => {
+    setSelection((current) => clickSelect(current, order(), path, modifiers));
+    setReveal(null);
+  };
+
+  const selectBand = (start: number, end: number, additive: boolean) => {
+    setSelection((current) => band(current, order().slice(start, end), additive));
   };
 
   return (
@@ -311,6 +373,8 @@ export default function App(props: {
                 entries={entries()}
                 selected={selected}
                 onSelect={select}
+                onBand={selectBand}
+                reveal={reveal()}
                 onOpen={open}
                 slow={listingState.slow()}
                 sort={sort()}

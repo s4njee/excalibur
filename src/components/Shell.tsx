@@ -6,7 +6,7 @@ const ROW_HEIGHT = 24;
 import type { Bookmark, Category, Entry, MountInfo, SortColumn } from "../state/types";
 import type { Sort } from "../state/sort";
 import { template, type Divider, type Widths } from "../state/columns";
-import { visibleRange } from "../state/virtual";
+import { rowsInBand, visibleRange } from "../state/virtual";
 import { formatCapacity, formatCounts, formatModified } from "../state/format";
 import { formatSize } from "../state/format";
 
@@ -253,13 +253,17 @@ export function Sidebar(props: {
 export function FileList(props: {
   entries: Entry[];
   selected: Accessor<Set<string>>;
-  onSelect: (path: string, additive: boolean) => void;
+  onSelect: (path: string, modifiers: { shift?: boolean; toggle?: boolean }) => void;
   /** Descend into a folder. */
   onOpen: (entry: Entry) => void;
   /** A listing has been in flight past the indicator delay. */
   slow?: boolean;
   sort: Sort;
   onSort: (column: SortColumn) => void;
+  /** Select the rows a rubber band covered, by index range. */
+  onBand: (start: number, end: number, additive: boolean) => void;
+  /** Scroll this row into view. Set by type-to-select; cleared by the parent. */
+  reveal?: number | null;
   widths: Widths;
   onResize: (divider: Divider, delta: number) => void;
   /** Called when a drag finishes, so the result is persisted once. */
@@ -297,6 +301,63 @@ export function FileList(props: {
       setScrollTop(0);
     }
   });
+
+  // Type-to-select can land on a row that is not rendered, so revealing it is
+  // a scroll rather than a `scrollIntoView` on an element that may not exist.
+  createEffect(() => {
+    const index = props.reveal;
+    if (index === null || index === undefined) return;
+    const top = index * ROW_HEIGHT;
+    const bottom = top + ROW_HEIGHT;
+    if (top < rows.scrollTop) rows.scrollTop = top;
+    else if (bottom > rows.scrollTop + rows.clientHeight) {
+      rows.scrollTop = bottom - rows.clientHeight;
+    }
+    setScrollTop(rows.scrollTop);
+  });
+
+  /**
+   * Rubber-band selection.
+   *
+   * Deliberately does not start on the name cell. That is the part of a row a
+   * user grabs to drag a file out (E13-S5), and taking it now would mean giving
+   * it back later. Everything else — the rest of every row, and the empty space
+   * below the last one — bands.
+   *
+   * The covered rows are computed from content coordinates rather than by
+   * hit-testing elements, because hit-testing would only ever find the
+   * virtualised window: a band dragged past the viewport must still select the
+   * rows it scrolled over.
+   */
+  const [bandBox, setBandBox] = createSignal<{ from: number; to: number } | null>(null);
+
+  const startBand = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(`.${styles.nameCell}`)) return;
+
+    const box = rows.getBoundingClientRect();
+    const origin = event.clientY - box.top + rows.scrollTop;
+    const additive = event.metaKey || event.ctrlKey;
+    let moved = false;
+
+    const move = (at: PointerEvent) => {
+      const current = at.clientY - box.top + rows.scrollTop;
+      // A few pixels of slop, so a click with a shaky hand stays a click.
+      if (!moved && Math.abs(current - origin) < 4) return;
+      moved = true;
+      setBandBox({ from: origin, to: current });
+      const { start, end } = rowsInBand(origin, current, ROW_HEIGHT, props.entries.length);
+      props.onBand(start, end, additive);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setBandBox(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
 
   /**
    * One header cell, with the divider that follows it.
@@ -356,10 +417,22 @@ export function FileList(props: {
         aria-rowcount={props.entries.length}
         ref={rows}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        onPointerDown={startBand}
       >
         {/* One spacer of the full height carries the scrollbar, and the drawn
             rows are offset into it. */}
         <div class={styles.virtualSpacer} style={{ height: `${props.entries.length * ROW_HEIGHT}px` }}>
+          <Show when={bandBox()}>
+            {(box) => (
+              <div
+                class={styles.band}
+                style={{
+                  top: `${Math.min(box().from, box().to)}px`,
+                  height: `${Math.abs(box().to - box().from)}px`,
+                }}
+              />
+            )}
+          </Show>
           <div style={{ transform: `translateY(${range().start * ROW_HEIGHT}px)` }}>
             <For each={window_()}>
               {(entry, index) => {
@@ -373,7 +446,12 @@ export function FileList(props: {
                     role="row"
                     aria-rowindex={range().start + index() + 1}
                     aria-selected={selected()}
-                    onClick={(event) => props.onSelect(entry.path, event.metaKey || event.ctrlKey)}
+                    onClick={(event) =>
+                      props.onSelect(entry.path, {
+                        shift: event.shiftKey,
+                        toggle: event.metaKey || event.ctrlKey,
+                      })
+                    }
                     onDblClick={() => props.onOpen(entry)}
                   >
                     <div class={styles.nameCell}>

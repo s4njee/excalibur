@@ -1075,8 +1075,8 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 **Next steps**
 
-- Escape should clear the filter before the selection (**E8-S8**), and Cmd/Ctrl+F should
-  focus it (**E16-S1**). Neither is wired.
+- Cmd/Ctrl+F should focus the filter (**E16-S1**); not wired. Escape's ordering landed
+  with **E8-S8**.
 - `foldersFirst` is a signal with no control, default on. **E17** gives it one.
 - The filter matches names only. Matching the Kind column too would be cheap now that
   every entry carries one, but it is not in the AC and would surprise anyone typing an
@@ -1135,12 +1135,64 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   one active mount. The session manager already holds several; reconciling the sidebar
   with `SessionEvent` is part of **E10**'s live status.
 
-#### E8-S8 — Selection model *(handoff §Selection)*
+#### E8-S8 — Selection model *(handoff §Selection)* — **Done**
+
+*2026-09-03.*
+
 **AC**
-- Click selects; shift-click extends; Cmd/Ctrl-click toggles; click-drag rubber-bands
+- [x] Click selects; shift-click extends; Cmd/Ctrl-click toggles; click-drag rubber-bands
   (rectangle intersects rows); type-to-select jumps to the first match with a 700 ms
   typing buffer; Escape clears filter first, then selection.
-- `selection: Set<string>` of paths; verbs and status counts derive from it.
+- [x] `selection: Set<string>` of paths; verbs and status counts derive from it.
+
+**Results**
+
+- **The selection carries an anchor, and that is the whole story.** Shift-click extends
+  from the anchor, and the anchor does *not* follow the far end — so two shift-clicks
+  from one starting row grow and shrink the same range instead of walking away down the
+  list. That is invisible in a screenshot and obvious in a test, which is why the model
+  is a pure module.
+- Shift-click *replaces* the range rather than unioning it, because a shift-click means
+  "the range is this" and shrinking it by clicking closer to the anchor has to work.
+- Paths, not indices. The list re-sorts and re-filters underneath a selection, and an
+  index would then point at a different file.
+- **The rubber band computes covered rows arithmetically, not by hit-testing.**
+  Hit-testing would only ever find the virtualised window, so a band dragged past the
+  viewport would stop selecting at the edge of what happens to be in the DOM. The band
+  takes content coordinates, so scrolling mid-drag keeps working.
+- **It deliberately does not start on the name cell.** That is the part of a row a user
+  grabs to drag a file out, which is E13-S5's; taking it now would mean giving it back
+  later. Everything else bands — the rest of every row, and the empty space below the
+  last one. Verified both ways in the browser.
+- A band needs 4px of movement before it starts, so a click with a shaky hand stays a
+  click.
+- **Type-to-select needed two behaviours, and the first version only had one.** Typing
+  `bl` landed on `Blade.Runner.2049.srt` rather than `.mkv`: extending the buffer was
+  searching on from the row `b` had just matched, stepping past it. Adding a letter must
+  *refine* — it searches from where the burst began — while repeating a letter must
+  *cycle*, searching on from the current row. `s`,`s`,`s` walks through the s-names;
+  `b`,`l` stays on the first `bl`. Both wrap.
+- A buffer of one repeated character matches on a single instance of it, because
+  `sss` is what "press s three times" produces and no file is named that.
+- Matching reuses the filter's `fold`, so type-to-select is case- and
+  diacritic-insensitive on exactly the same terms as the filter. One rule, one
+  implementation.
+- **Escape clears the filter first, then the selection**, and does *not* do both at once
+  — one Escape, one effect. It is also the one key allowed to act while focus is in a
+  text field, because that is precisely where the user will be when they want the filter
+  gone.
+- Type-to-select scrolls its match into view by setting the scroll position rather than
+  calling `scrollIntoView`, because the row it jumped to may not be in the DOM.
+
+**Next steps**
+
+- **Arrow keys do not move the selection yet.** They are unbound, and the natural home
+  for them is **E16-S1**'s shortcut map, which generates bindings and tooltips from one
+  table rather than accumulating ad-hoc handlers here.
+- The band selects contiguous rows only, which is what a rectangle over a single-column
+  list means. `1h`'s grid layout (**E8-S4**) will need a real 2D rectangle.
+- Cmd/Ctrl held while banding adds to the existing selection; shift while banding is not
+  handled and currently behaves like a plain band.
 
 #### E8-S9 — Live refresh
 **AC**

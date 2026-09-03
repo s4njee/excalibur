@@ -626,3 +626,16 @@
 .rowSelected .fileGlyph[data-category] {
   border-color: rgba(255, 255, 255, 0.7);
 }
+
+/* The rubber band. Spans the full width because the list is a table: a
+   rectangle that only covered part of a row would still select it, so drawing
+   it narrower than the row would misdescribe what is happening. */
+.band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid var(--accent);
+  pointer-events: none;
+  z-index: 1;
+}
