@@ -533,7 +533,12 @@ function ColumnDivider(props: { onDrag: (delta: number) => void; onDone: () => v
   };
 
   return (
-    <div class={styles.divider} onPointerDown={start} role="separator" aria-orientation="vertical" />
+    <div
+      class={styles.columnDivider}
+      onPointerDown={start}
+      role="separator"
+      aria-orientation="vertical"
+    />
   );
 }
 

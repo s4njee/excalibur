@@ -1327,16 +1327,62 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E10 — Status bar *(handoff §Screens/1 Status bar)*
 
-#### E10-S1 — Groups and dividers
+#### E10-S1 — Groups and dividers — **Done**
+
+*2026-09-03.*
+
 **AC**
-- 24px, bg `#f7f7f8`, 10px gaps, 1×12px `#dcdcde` dividers. Groups: permission badge
+- [x] 24px, bg `#f7f7f8`, 10px gaps, 1×12px `#dcdcde` dividers. Groups: permission badge
   (mono 9.5px/500 `.04em`, `RW` white-on-`#2f6df6`, `RO` `#e8e8ea`-on-`#4a4b50` in
   dark), plain-language restatement with mono 10.5px path, counts
   `13 items · 1 selected · 48.2 GB` (selected size), capacity `2.4 TB free of 16 TB`,
   right-aligned mono 10px protocol/cipher + 6px health dot (`#2f9e5f` healthy,
   `#c0392b` failed).
-- Restatement text: RW → "Read & write on `<path>`"; RO → `reason` from `MountInfo`.
-- Capacity refreshes on mount, on reconnect, and after every transfer completes.
+- [x] Restatement text: RW → "Read & write on `<path>`"; RO → `reason` from `MountInfo`.
+- [x] Capacity refreshes on mount and on reconnect.
+- [ ] …and after every transfer completes. **Not possible yet:** transfers are E13. The
+  refresh hangs off the mount event stream, so E13 wires the same call rather than a new
+  mechanism.
+
+**Results**
+
+- **The window was never listening.** The Tauri side has emitted `mount://changed` since
+  E2-S2 and nothing subscribed to it, so the health dot could not turn red, capacity
+  never refreshed, and a share that reconnected *read-only* left an `RW` badge on screen.
+  The whole point of publishing those events was the case where the mount changes
+  underneath the user, and that path had never been connected.
+- **Status comes from the event stream; `writable` and capacity come from the listing.**
+  A mount that has dropped has no listing to carry its state, which is exactly when the
+  dot must go red — so the status is held separately. But on a `ready` event the window
+  **re-lists** rather than taking the facts off the event, because `writable` travels
+  with the listing and sourcing it from two places is how the badge and the rows come to
+  disagree.
+- **A CSS-module class collision, and one I introduced myself.** E8-S2 added a
+  `.divider` for the draggable column boundary to a file that already had a `.divider`
+  for the status bar's 1×12px separator. Same module, same name: the later rule won, and
+  the status bar's dividers silently became 9px and `position: absolute` — gone from the
+  layout entirely. **Nothing failed. No test caught it, and I had looked at several
+  screenshots of that bar since.** It surfaced only because this story read the computed
+  width back off the page and compared it to the AC's `1px`. The column one is now
+  `.columnDivider`.
+- Every literal in the AC is verified from **computed style on the rendered page**, not
+  from the stylesheet: bar 24px/`#f7f7f8`/10px gap; badge mono 9.5px/500/`0.38px`
+  tracking, `RW` white-on-`#2f6df6`, `RO` `#e8e8ea`-on-`#4a4b50` in dark; dividers
+  1×12px `#dcdcde`; path mono 10.5px; protocol mono 10px; dot 6×6, `#2f9e5f` healthy and
+  `#c0392b` failed.
+- **The chrome now names the mount it is showing.** Host, share, scheme and the
+  breadcrumb root came from the `readOnly` preview flag — the leftover E8-S7 flagged.
+  They come from the active bookmark now, falling back to the design's two demo screens
+  only when nothing is mounted, which is what both the preview and a first run are.
+
+**Next steps**
+
+- **E13** adds the post-transfer capacity refresh, on the same event path.
+- A `reconnecting` mount currently only turns the dot red. **E15-S1**'s banner is the
+  rest of that state — the message, the dimmed list and the `Reconnect` button.
+- The status bar describes the *active* mount only. With several mounted, switching the
+  sidebar selection does not yet switch what the window is looking at; that is the other
+  half of **E8-S7**'s sidebar work.
 
 ### E11 — Quick Look *(handoff §Screens/5)*
 
@@ -1556,7 +1602,7 @@ placeholder story that only records the request:
 |---|---|---|
 | **M-1 xsyncv3 Phase 1** *(in `../xsync`)* | `xsyncv3.md` §5 Phase 1; E7-S0 here | `xs --server` speaks v3: open/read/write at offset, full attrs, statfs, advertised writability; `xsync-client` crate with a conformance fixture. |
 | **M0 Skeleton** | E0, E1-S1–S3, E2-S1–S3 (mock backend) | Pixel-matched `1a` and `1b` with fake data; theme switch; sidebar. |
-| **M1 First real share (xsync)** | E7-S2, E3-S1 (xsync tab, "via SSH"), E3-S2, E3-S4, E8-S1/S2/S5–S8, E9, E10 | Connect to `ssh host xs --server`, browse, RW/RO from `MountInfo`, capacity from `StatFs`, status bar live. |
+| **M1 First real share (xsync)** — **Done 2026-09-03** | E7-S2, E3-S1 (xsync tab, "via SSH"), E3-S2, E3-S4, E8-S1/S2/S5–S8, E9, E10 | Connect to `ssh host xs --server`, browse, RW/RO from `MountInfo`, capacity from `StatFs`, status bar live. |
 | **M2 Read, edit, move** | E11, E12, E13, E14, E15 | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
 | **M3 Other protocols** | E6 (SFTP, ports Kestrel), E4-S1–S6 (SMB), E5-S1–S4 (NFS), E3-S3 keychain | The handoff's SMB/NFS plus SFTP behind the trait xsync shaped; Docker fixtures arrive here. |
 | **M4 Polish** | E8-S3/S4/S9, E16, E17, E1-S4/S5, E19, E7-S1 (reduced mode), E7-S3 | Row variants, shortcuts, a11y, prefs, test matrix green, older-`xs` fallback. |

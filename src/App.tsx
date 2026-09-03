@@ -13,7 +13,7 @@ import {
 import { toSpec, type Draft } from "./state/connection";
 import { FileList, shellStyles as styles, Sidebar, StatusBar, TitleBar, Toolbar } from "./components/Shell";
 import { defaultBackend, fixtureBackend, type Backend } from "./state/backend";
-import type { Bookmark, Entry, Theme } from "./state/types";
+import type { Bookmark, Entry, MountEvent, MountInfo, Theme } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
@@ -237,9 +237,39 @@ export default function App(props: {
 
   const [remounting, setRemounting] = createSignal(false);
   const [problem, setProblem] = createSignal<string | null>(null);
+  // The last thing the engine said about the active mount. Held separately
+  // from the listing because a mount that has *dropped* has no listing to
+  // carry its state — that is exactly when the health dot has to turn red.
+  const [mountEvent, setMountEvent] = createSignal<MountEvent | null>(null);
 
   /** The mount the window is looking at, when there is a real one. */
   const activeMountId = () => bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
+  const activeBookmark = () => bookmarks().find((bookmark) => bookmark.mounted) ?? null;
+
+  onMount(() => {
+    const stop = backend.onMountChanged((event) => {
+      if (event.id !== activeMountId()) return;
+      setMountEvent(event);
+      // A mount that came back is the one moment `writable` and capacity must
+      // be re-read rather than trusted — a reconnected share can be read-only
+      // now. Re-listing rather than taking them from the event keeps the badge
+      // and the rows sourced from one place.
+      if (event.status === "ready") listingState.load(path());
+    });
+    onCleanup(stop);
+  });
+
+  /**
+   * The mount as the status bar should describe it.
+   *
+   * The listing is the authority on `writable` and capacity, because those
+   * travel with it. The *status* comes from the event stream, which is the only
+   * thing that knows about a mount that has stopped answering.
+   */
+  const mountFacts = (fallback: MountInfo): MountInfo => {
+    const event = mountEvent();
+    return event === null ? fallback : { ...fallback, status: event.status };
+  };
 
   /**
    * The read-only recovery path.
@@ -337,14 +367,20 @@ export default function App(props: {
     selectedVisible().reduce((total, entry) => total + entry.size, 0),
   );
 
-  // The two M0 screens describe different mounts, so the chrome that names the
-  // mount has to follow them rather than being fixed. The share root's own name
-  // is still fixed here — it comes from the active mount, which is E10's job —
-  // but everything below it is now the real path.
-  const host = () => (props.readOnly ? "10.0.0.4" : "nas.local");
-  const share = () => (props.readOnly ? "scratch" : "media");
-  const scheme = () => (props.readOnly ? "nfs" : "smb");
-  const rootSegments = () => (props.readOnly ? ["export", "scratch"] : ["media"]);
+  // The chrome that names the mount follows the mount. Falling back to the
+  // design's two demo screens only when nothing is mounted, which is what the
+  // preview and a first run both are — the fixture describes a share that no
+  // session is holding, and inventing a connection for it would be worse than
+  // naming the one the mock draws.
+  const host = () => activeBookmark()?.host ?? (props.readOnly ? "10.0.0.4" : "nas.local");
+  const share = () => activeBookmark()?.share.split("/").filter(Boolean).pop()
+    ?? (props.readOnly ? "scratch" : "media");
+  const scheme = () => activeBookmark()?.protocol ?? (props.readOnly ? "nfs" : "smb");
+  const rootSegments = () => {
+    const bookmark = activeBookmark();
+    if (bookmark) return bookmark.share.split("/").filter(Boolean);
+    return props.readOnly ? ["export", "scratch"] : ["media"];
+  };
   const segments = () => [...rootSegments(), ...nav.segments(path())];
   const mountPath = () => ["", ...segments()].join("/");
 
@@ -428,7 +464,7 @@ export default function App(props: {
                 onResizeEnd={onResizeEnd}
               />
               <StatusBar
-                mount={data().mount}
+                mount={mountFacts(data().mount)}
                 path={mountPath()}
                 items={entries().length}
                 total={totalEntries()}

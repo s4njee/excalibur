@@ -570,7 +570,7 @@
 /* A divider is 9px of grab area around a 1px line, because a 1px hit target is
    not one. It straddles the 16px gap: half of the grab area hangs into the
    next column, which is where a user aims. */
-.divider {
+.columnDivider {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -580,7 +580,7 @@
   touch-action: none;
 }
 
-.divider::after {
+.columnDivider::after {
   content: "";
   position: absolute;
   top: 4px;
@@ -590,7 +590,7 @@
   background: var(--hairline-chrome);
 }
 
-.divider:hover::after {
+.columnDivider:hover::after {
   background: var(--accent);
 }
 

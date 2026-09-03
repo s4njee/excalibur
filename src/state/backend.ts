@@ -6,7 +6,7 @@
 // actually produces — regenerate it rather than editing it.
 
 import fixture from "./fixture.json";
-import type { Listing, MountInfo } from "./types";
+import type { Listing, MountEvent, MountInfo } from "./types";
 
 /** A connection spec, as the engine takes it. Never carries a secret. */
 export type Spec = Record<string, unknown>;
@@ -19,6 +19,14 @@ export interface Backend {
   mount(spec: Spec): Promise<void>;
   /** Whether a host is answering, for the sidebar's dimmed rows. */
   reachable(host: string, port: number): Promise<boolean>;
+  /**
+   * Subscribe to mount state changes. Returns an unsubscribe.
+   *
+   * Pushed rather than polled: a share that drops should be reflected while
+   * the user is looking at it, and a timer fast enough for that would be a
+   * timer asking every mounted server how it is, forever.
+   */
+  onMountChanged(handler: (event: MountEvent) => void): () => void;
   /** Whether this machine has a credential store that actually keeps things. */
   keychainAvailable(): Promise<boolean>;
   /**
@@ -168,6 +176,10 @@ export function fixtureBackend(
       if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
     },
+    // Nothing changes state in a browser: the fixture is one fixed mount.
+    onMountChanged(): () => void {
+      return () => undefined;
+    },
     // A browser cannot open a TCP socket, so it cannot answer this. Claiming
     // "reachable" would dim nothing and claiming "unreachable" would dim
     // everything; assuming reachable is the one that misleads least.
@@ -221,6 +233,26 @@ function tauriBackend(): Backend {
     async reachable(host: string, port: number): Promise<boolean> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<boolean>("reachable", { host, port });
+    },
+    onMountChanged(handler: (event: MountEvent) => void): () => void {
+      // `listen` resolves to the unlisten function, which arrives after this
+      // has already returned. Holding it in a closure and calling whatever is
+      // there at unsubscribe time keeps the caller's contract synchronous —
+      // and covers unsubscribing before the listener finished registering.
+      let stop: (() => void) | null = null;
+      let cancelled = false;
+      void import("@tauri-apps/api/event").then(({ listen }) =>
+        listen<MountEvent>("mount://changed", (message) => handler(message.payload)).then(
+          (unlisten) => {
+            if (cancelled) unlisten();
+            else stop = unlisten;
+          },
+        ),
+      );
+      return () => {
+        cancelled = true;
+        stop?.();
+      };
     },
     async keychainAvailable(): Promise<boolean> {
       const { invoke } = await import("@tauri-apps/api/core");

@@ -75,6 +75,20 @@ export interface Entry {
   hidden: boolean;
 }
 
+/**
+ * A mount changing state, pushed from the engine.
+ *
+ * `mount` is present on every `ready`, because that is the moment a window must
+ * re-read `writable` rather than trusting what it had — a share can come back
+ * from a reconnect read-only.
+ */
+export interface MountEvent {
+  id: string;
+  status: MountStatus;
+  mount: MountInfo | null;
+  reason: string | null;
+}
+
 export interface Listing {
   entries: Entry[];
   mount: MountInfo;
