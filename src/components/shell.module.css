@@ -1,0 +1,462 @@
+/*
+ * The browser shell: four stacked rows, and the body split into a fixed
+ * sidebar and a flexible list column. Every dimension here is from the design
+ * handoff; colours come from the tokens rather than being repeated.
+ */
+
+.window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--list-bg);
+}
+
+/* Title bar ---------------------------------------------------------------- */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: var(--height-titlebar);
+  padding: 0 12px;
+  background: var(--titlebar);
+  border-bottom: 1px solid var(--hairline-chrome);
+  /* The window is dragged by its title bar; the buttons inside opt out. */
+  -webkit-app-region: drag;
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--titlebar-text);
+}
+
+/* Toolbar ------------------------------------------------------------------ */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 8px;
+  height: var(--height-toolbar);
+  padding: 0 10px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--hairline-chrome);
+}
+
+.segmented {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: var(--control-bg);
+}
+
+.segment {
+  width: 30px;
+  height: var(--height-control);
+  border: 0;
+  background: transparent;
+  color: #55555c;
+  font-size: 12px;
+  transition: color var(--transition-state);
+}
+
+.segment + .segment {
+  border-left: 1px solid var(--hairline-chrome);
+}
+
+.segment:disabled {
+  color: var(--disabled-text);
+}
+
+.verbs {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+
+.button {
+  height: var(--height-control);
+  padding: 0 9px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-control);
+  transition:
+    background var(--transition-state),
+    color var(--transition-state),
+    border-color var(--transition-state);
+}
+
+.button:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-border);
+  color: var(--disabled-text);
+}
+
+/* Exactly one primary in the toolbar, and it is Upload. */
+.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.primary:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-border);
+  color: var(--disabled-text);
+}
+
+.pathField {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: var(--height-control);
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.crumbScheme {
+  color: var(--text-tertiary);
+}
+
+.crumb {
+  color: #3a3a40;
+  cursor: default;
+}
+
+.crumbCurrent {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.crumbSeparator {
+  color: #c0c0c6;
+  padding: 0 1px;
+}
+
+.filter {
+  flex: none;
+  width: 150px;
+  height: var(--height-control);
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-control);
+}
+
+.filter::placeholder {
+  color: var(--text-placeholder);
+}
+
+/* Body --------------------------------------------------------------------- */
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: var(--width-sidebar);
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--hairline-chrome);
+}
+
+.sectionHeader {
+  padding: 10px 12px 4px;
+  font-size: var(--text-section-header);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.sectionHeaderSpaced {
+  padding-top: 16px;
+}
+
+.sidebarRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 12px;
+  border-left: 3px solid transparent;
+  transition: background var(--transition-state);
+}
+
+.sidebarRowActive {
+  background: var(--sidebar-active-bg);
+  border-left-color: var(--sidebar-active-border);
+  /* 3px of border replaces 3px of padding, so the text does not shift. */
+  padding-left: 9px;
+}
+
+.sidebarRowUnreachable {
+  opacity: 0.5;
+}
+
+.sidebarText {
+  min-width: 0;
+}
+
+.sidebarName {
+  font-size: var(--text-row);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebarNameActive {
+  font-weight: 600;
+}
+
+.sidebarSubtitle {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-small);
+  color: var(--text-tertiary);
+}
+
+.sidebarSubtitleActive {
+  color: var(--sidebar-active-subtitle);
+}
+
+.sidebarFooter {
+  display: flex;
+  margin-top: auto;
+  border-top: 1px solid var(--hairline-chrome);
+}
+
+.sidebarFooterButton {
+  flex: 1;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-control);
+}
+
+.sidebarFooterButton:disabled {
+  color: var(--disabled-text);
+}
+
+/* List column -------------------------------------------------------------- */
+
+.listColumn {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  background: var(--list-bg);
+}
+
+.columnHeader,
+.row {
+  display: grid;
+  grid-template-columns: 1fr 96px 156px 128px;
+  column-gap: 16px;
+  align-items: center;
+  padding: 0 12px;
+}
+
+.columnHeader {
+  flex: none;
+  height: var(--height-column-header);
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--hairline-chrome);
+  font-size: var(--text-column-header);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.headerRight {
+  text-align: right;
+}
+
+.sortMark {
+  color: var(--accent);
+  font-size: 8px;
+  padding-left: 3px;
+}
+
+.rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.row {
+  height: var(--height-row);
+  border-bottom: 1px solid var(--hairline-row);
+}
+
+.rowSelected {
+  background: var(--selection-bg);
+  border-bottom-color: var(--selection-bg);
+  color: var(--selection-text);
+}
+
+.rowHidden {
+  opacity: 0.55;
+}
+
+.nameCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderGlyph {
+  flex: none;
+  width: 11px;
+  height: 9px;
+  border-radius: var(--radius-glyph);
+  background: var(--glyph-folder);
+}
+
+.fileGlyph {
+  flex: none;
+  width: 9px;
+  height: 11px;
+  border-radius: var(--radius-glyph);
+  border: 1px solid var(--glyph-file);
+}
+
+.rowSelected .fileGlyph {
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.rowSelected .folderGlyph {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.sizeCell {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.sizeDash {
+  color: var(--text-tertiary);
+}
+
+.metaCell {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Selected rows lose the dimmed metadata colours: on the accent fill they
+ * would be unreadable. */
+.rowSelected .sizeCell,
+.rowSelected .sizeDash,
+.rowSelected .metaCell {
+  color: var(--selection-text);
+}
+
+/* Status bar --------------------------------------------------------------- */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 10px;
+  height: var(--height-statusbar);
+  padding: 0 12px;
+  background: var(--statusbar-bg);
+  border-top: 1px solid var(--hairline-chrome);
+  font-size: var(--text-status);
+  color: var(--text-secondary);
+}
+
+.divider {
+  flex: none;
+  width: 1px;
+  height: 12px;
+  background: var(--hairline-chrome);
+}
+
+.badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: var(--radius-chip);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-small);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.badgeRw {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.badgeRo {
+  background: var(--badge-ro-bg);
+  color: var(--badge-ro-text);
+}
+
+.statusPath {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-status);
+  color: #3a3a40;
+}
+
+.statusRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.protocol {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.healthDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.healthDotFailed {
+  background: var(--error);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

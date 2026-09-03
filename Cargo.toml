@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "crates/cli", "src-tauri"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.88"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+# Excalibur speaks four protocols and does every byte of I/O in Rust. The
+# lints below are the same discipline the sibling xsync workspace runs under:
+# a file browser that mishandles a path is a security problem, not a bug.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,177 @@
+/*
+ * Every value here is literal, taken from the design handoff. Components read
+ * these and never hard-code a colour, so a design change is one edit here and
+ * a theme is a different set of the same names.
+ *
+ * The light palette is the base. Dark redefines only what changes, so a token
+ * added without a dark value inherits the light one visibly rather than
+ * silently resolving to nothing.
+ */
+
+:root {
+  /* Type */
+  --font-sans: "Helvetica Neue", Helvetica, Arimo, Arial, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-row: 12px;
+  --text-row-roomy: 12.5px;
+  --text-control: 11.5px;
+  --text-column-header: 10.5px;
+  --text-section-header: 9.5px;
+  --text-status: 11px;
+  --text-mono-small: 9.5px;
+  --text-mono-status: 10.5px;
+
+  /* Surfaces */
+  --titlebar: linear-gradient(#f7f7f8, #eeeef0);
+  --toolbar-bg: #f4f4f5;
+  --sidebar-bg: #eeeef0;
+  --list-bg: #ffffff;
+  --statusbar-bg: #f7f7f8;
+  --field-bg: #ffffff;
+  --control-bg: #ffffff;
+
+  /* Lines */
+  --hairline-chrome: #dcdcde;
+  --hairline-row: #f2f2f3;
+  --control-border: #c9c9cd;
+
+  /* Text */
+  --text-primary: #1a1a1c;
+  --text-secondary: #6a6a70;
+  --text-tertiary: #8a8a90;
+  --text-placeholder: #a0a0a6;
+  --titlebar-text: #4a4a50;
+
+  /* Glyphs */
+  --glyph-folder: #8a8f98;
+  --glyph-file: #a8adb5;
+
+  /* Selection */
+  --selection-bg: #2f6df6;
+  --selection-text: #ffffff;
+  --selection-soft-bg: #e8effd;
+  --selection-soft-text: #4a6ba8;
+
+  /* Sidebar */
+  --sidebar-active-bg: #dfe7fb;
+  --sidebar-active-border: #2f6df6;
+  --sidebar-active-subtitle: #5c76a8;
+
+  /* Accent and semantic */
+  --accent: #2f6df6;
+  --accent-pressed: #1d4fc4;
+  --success: #2f9e5f;
+  --error: #c0392b;
+  --error-chip-bg: #fdeaea;
+  --chip-accent-bg: #e8effd;
+  --chip-neutral-bg: #f0f0f2;
+  --badge-ro-bg: #4a4b50;
+  --badge-ro-text: #e8e8ea;
+
+  /* Disabled */
+  --disabled-text: #b0b0b6;
+  --disabled-bg: #f0f0f2;
+  --disabled-border: #dcdcde;
+
+  /* Segmented control */
+  --segment-track: #e2e2e5;
+
+  /* Geometry */
+  --radius-control: 5px;
+  --radius-small: 4px;
+  --radius-chip: 3px;
+  --radius-glyph: 1.5px;
+  --radius-segment: 6px;
+  --radius-window: 7px;
+  --height-titlebar: 34px;
+  --height-toolbar: 44px;
+  --height-column-header: 24px;
+  --height-row: 24px;
+  --height-statusbar: 24px;
+  --height-control: 24px;
+  --height-control-compact: 22px;
+  --height-control-inline: 20px;
+  --width-sidebar: 206px;
+  --shadow-window: 0 2px 10px rgba(0, 0, 0, 0.1);
+  --shadow-segment: 0 1px 2px rgba(0, 0, 0, 0.12);
+
+  /* The design asks for sparse, fast motion: 120ms for state colour, 140ms for
+   * Quick Look. Nothing in the list animates its layout, because that fights
+   * scanning. */
+  --transition-state: 120ms ease;
+  --transition-panel: 140ms ease;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --titlebar: #303135;
+  --toolbar-bg: #2a2b2e;
+  --sidebar-bg: #26272a;
+  --list-bg: #1e1f21;
+  --statusbar-bg: #2a2b2e;
+  --field-bg: #1c1d1f;
+  --control-bg: #35363a;
+
+  --hairline-chrome: #1a1b1d;
+  --hairline-row: #26272a;
+  --control-border: #45464b;
+
+  --text-primary: #e8e8ea;
+  --text-secondary: #9a9ba0;
+  --text-tertiary: #8a8b90;
+  --text-placeholder: #63646a;
+  --titlebar-text: #c8c8cc;
+
+  --glyph-folder: #7d838c;
+  --glyph-file: #8a8b90;
+
+  --sidebar-active-bg: #1f3358;
+  --sidebar-active-border: #4f86ff;
+  --sidebar-active-subtitle: #8fa8d8;
+
+  --accent: #4f86ff;
+  --accent-pressed: #2f6df6;
+
+  --disabled-text: #63646a;
+  --disabled-bg: #2e2f32;
+  --disabled-border: #3a3b3f;
+
+  --segment-track: #1c1d1f;
+  --chip-neutral-bg: #35363a;
+  --chip-accent-bg: #1f3358;
+  --error-chip-bg: #3a2222;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-row);
+  color: var(--text-primary);
+  background: var(--list-bg);
+  -webkit-font-smoothing: antialiased;
+  /* A file browser is not a document: text selection on chrome and rows makes
+   * drag-to-select feel broken. */
+  user-select: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: default;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}

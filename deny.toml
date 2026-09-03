@@ -1,0 +1,40 @@
+# Supply-chain policy, enforced in CI. Anything accepted here is recorded with
+# the reason it was accepted, so an addition is a deliberate edit rather than a
+# silent pass. The sibling xsync repository runs the same discipline.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+# Every licence in the tree today. All are permissive and compatible with this
+# crate's declared "MIT OR Apache-2.0".
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "Unlicense",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions are an audit-surface problem rather than a correctness
+# one, and are usually forced by upstream. Warn so new ones stay visible.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

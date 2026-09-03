@@ -1,0 +1,166 @@
+{
+  "entries": [
+    {
+      "name": ".DS_Store",
+      "path": ".DS_Store",
+      "kind": "file",
+      "size": 6148,
+      "modifiedMs": 1788157340000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "Hidden",
+      "hidden": true
+    },
+    {
+      "name": "Arrival.2016.mkv",
+      "path": "Arrival.2016.mkv",
+      "kind": "file",
+      "size": 48234496000,
+      "modifiedMs": 1788200640000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "Matroska Video",
+      "hidden": false
+    },
+    {
+      "name": "Arrival.2016.srt",
+      "path": "Arrival.2016.srt",
+      "kind": "file",
+      "size": 74216,
+      "modifiedMs": 1788200639000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "SubRip Text",
+      "hidden": false
+    },
+    {
+      "name": "Blade.Runner.2049.mkv",
+      "path": "Blade.Runner.2049.mkv",
+      "kind": "file",
+      "size": 61680312320,
+      "modifiedMs": 1788193440000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "Matroska Video",
+      "hidden": false
+    },
+    {
+      "name": "Blade.Runner.2049.srt",
+      "path": "Blade.Runner.2049.srt",
+      "kind": "file",
+      "size": 91004,
+      "modifiedMs": 1788193439000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "SubRip Text",
+      "hidden": false
+    },
+    {
+      "name": "Documentaries",
+      "path": "Documentaries",
+      "kind": "dir",
+      "size": 0,
+      "modifiedMs": 1788114240000,
+      "mode": 493,
+      "linkTarget": null,
+      "kindLabel": "Folder",
+      "hidden": false
+    },
+    {
+      "name": "Dune.Part.Two.mkv",
+      "path": "Dune.Part.Two.mkv",
+      "kind": "file",
+      "size": 54112223232,
+      "modifiedMs": 1788186240000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "Matroska Video",
+      "hidden": false
+    },
+    {
+      "name": "Interstellar.mkv",
+      "path": "Interstellar.mkv",
+      "kind": "file",
+      "size": 44982075392,
+      "modifiedMs": 1788179040000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "Matroska Video",
+      "hidden": false
+    },
+    {
+      "name": "Moon.2009.mp4",
+      "path": "Moon.2009.mp4",
+      "kind": "file",
+      "size": 8412774400,
+      "modifiedMs": 1788171840000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "MPEG-4 Video",
+      "hidden": false
+    },
+    {
+      "name": "Series",
+      "path": "Series",
+      "kind": "dir",
+      "size": 0,
+      "modifiedMs": 1788027840000,
+      "mode": 493,
+      "linkTarget": null,
+      "kindLabel": "Folder",
+      "hidden": false
+    },
+    {
+      "name": "Solaris.1972.mkv",
+      "path": "Solaris.1972.mkv",
+      "kind": "file",
+      "size": 39126437888,
+      "modifiedMs": 1788164640000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "Matroska Video",
+      "hidden": false
+    },
+    {
+      "name": "Transcodes",
+      "path": "Transcodes",
+      "kind": "dir",
+      "size": 0,
+      "modifiedMs": 1788197040000,
+      "mode": 493,
+      "linkTarget": null,
+      "kindLabel": "Folder",
+      "hidden": false
+    },
+    {
+      "name": "cover-art.jpg",
+      "path": "cover-art.jpg",
+      "kind": "file",
+      "size": 2284112,
+      "modifiedMs": 1788157440000,
+      "mode": 420,
+      "linkTarget": null,
+      "kindLabel": "JPEG Image",
+      "hidden": false
+    }
+  ],
+  "mount": {
+    "status": "ready",
+    "writable": true,
+    "reason": "",
+    "protocolLabel": "SMB3",
+    "securityLabel": "aes-128-gcm",
+    "options": "",
+    "capacity": {
+      "free": 2400000000000,
+      "total": 16000000000000
+    },
+    "caps": {
+      "randomAccess": true,
+      "resumeWrite": true,
+      "atomicRename": true,
+      "symlinks": true,
+      "watch": false
+    }
+  }
+}

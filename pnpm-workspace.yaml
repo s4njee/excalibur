@@ -1,0 +1,4 @@
+allowBuilds:
+  # Required: esbuild's postinstall fetches its platform binary, which Vite
+  # needs. Named explicitly rather than allowing install scripts in general.
+  esbuild: true

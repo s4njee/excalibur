@@ -1,0 +1,14 @@
+# Rust
+/target
+**/target
+
+# Node
+node_modules
+dist
+.vite
+
+# Tauri
+src-tauri/gen
+
+# OS
+.DS_Store

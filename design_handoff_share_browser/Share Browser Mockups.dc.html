@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"><style>
+body{margin:0;background:#e7e7e4;font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#2f6df6}a:hover{color:#1d4fc4}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 13px/1.2 "Helvetica Neue",Helvetica,Arial,sans-serif;color:#1a1a1a}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 "Helvetica Neue",Helvetica,Arial,sans-serif;color:rgba(0,0,0,.55)}
+.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:7px;box-shadow:0 2px 10px rgba(0,0,0,.10);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2f6df6;color:#fff}
+.dv-next{margin:22px 0 0;font:12px/1.5 "Helvetica Neue",Helvetica,Arial,sans-serif;color:rgba(0,0,0,.5)}
+.dv-note{margin:0 0 22px;max-width:760px;font:12.5px/1.65 "Helvetica Neue",Helvetica,Arial,sans-serif;color:rgba(0,0,0,.6)}
+.dv-note b{color:#1a1a1a;font-weight:600}
+</style></helmet>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Share browser — first pass</span></div>
+<p class="dv-note">Platform-neutral chrome, single pane, bookmarks sidebar always present. Mount permission lives at the far left of the status bar as an <b>RW</b> / <b>RO</b> badge so it reads before anything else. Quick Look, Edit, Download and Upload are toolbar-level verbs that act on the selection. Row layout riffs are <a class="dv-oid" href="#1f">1f</a>–<a class="dv-oid" href="#1h">1h</a>.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Browser, light — the primary mock</div>
+<div class="dv-card" style="width:1060px">
+  <div style="display:flex;align-items:center;height:34px;padding:0 12px;background:linear-gradient(#f7f7f8,#eeeef0);border-bottom:1px solid #d6d6d9">
+    <div style="display:flex;gap:6px;align-items:center">
+      <span style="width:9px;height:9px;border-radius:50%;background:#c8c8cc"></span>
+      <span style="width:9px;height:9px;border-radius:50%;background:#c8c8cc"></span>
+      <span style="width:9px;height:9px;border-radius:50%;background:#c8c8cc"></span>
+    </div>
+    <div style="flex:1;text-align:center;font-size:12px;font-weight:600;color:#4a4a50;letter-spacing:.01em">media — nas.local</div>
+    <div style="width:60px"></div>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;background:#f4f4f5;border-bottom:1px solid #dcdcde">
+    <div style="display:flex;border:1px solid #c9c9cd;border-radius:5px;overflow:hidden;background:#fff">
+      <button style="width:30px;height:24px;border:0;background:transparent;color:#55555c;font-size:11px;cursor:pointer">◀</button>
+      <span style="width:1px;background:#dcdcde"></span>
+      <button style="width:30px;height:24px;border:0;background:transparent;color:#b0b0b6;font-size:11px;cursor:pointer">▶</button>
+    </div>
+    <button style="height:24px;padding:0 9px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#55555c;font-size:11px;cursor:pointer">↑</button>
+    <div style="flex:1;display:flex;align-items:center;gap:6px;height:24px;padding:0 9px;background:#fff;border:1px solid #c9c9cd;border-radius:5px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#3a3a40">
+      <span style="color:#8a8a90">smb://</span><span>nas.local</span><span style="color:#c0c0c6">/</span><span>media</span><span style="color:#c0c0c6">/</span><span style="color:#1a1a1c;font-weight:500">Movies</span>
+    </div>
+    <div style="display:flex;gap:5px">
+      <button style="height:24px;padding:0 10px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11.5px;font-family:inherit;cursor:pointer">Quick Look</button>
+      <button style="height:24px;padding:0 10px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11.5px;font-family:inherit;cursor:pointer">Edit</button>
+      <button style="height:24px;padding:0 10px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11.5px;font-family:inherit;cursor:pointer">Download</button>
+      <button style="height:24px;padding:0 10px;border:1px solid #2f6df6;border-radius:5px;background:#2f6df6;color:#fff;font-size:11.5px;font-weight:500;font-family:inherit;cursor:pointer">Upload</button>
+    </div>
+    <div style="width:150px;display:flex;align-items:center;height:24px;padding:0 9px;background:#fff;border:1px solid #c9c9cd;border-radius:5px;font-size:11.5px;color:#a0a0a6">Filter</div>
+  </div>
+
+  <div style="display:flex;height:520px">
+    <div style="width:206px;flex:none;background:#eeeef0;border-right:1px solid #dcdcde;display:flex;flex-direction:column">
+      <div style="padding:12px 12px 6px;font-size:9.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:#8a8a90">Mounted</div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px 0 9px;background:#dfe7fb;border-left:3px solid #2f6df6">
+        <span style="width:13px;height:10px;background:#2f6df6;border-radius:2px;flex:none"></span>
+        <div style="min-width:0"><div style="font-size:12px;font-weight:600;color:#1a1a1c">media</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#5c76a8">SMB3 · nas.local</div></div>
+      </div>
+      <div style="padding:16px 12px 6px;font-size:9.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:#8a8a90">Bookmarks</div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px">
+        <span style="width:13px;height:10px;background:#a8adb5;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;color:#1a1a1c">backups</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8a90">NFS4 · 10.0.0.4</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px">
+        <span style="width:13px;height:10px;background:#a8adb5;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;color:#1a1a1c">scratch</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8a90">SMB3 · nas.local</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px">
+        <span style="width:13px;height:10px;background:#a8adb5;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;color:#1a1a1c">photos-archive</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8a90">NFS4 · 10.0.0.4</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px;opacity:.5">
+        <span style="width:13px;height:10px;background:#a8adb5;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;color:#1a1a1c">office-fs</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8a90">unreachable</div></div>
+      </div>
+      <div style="margin-top:auto;display:flex;gap:1px;border-top:1px solid #dcdcde">
+        <button style="flex:1;height:28px;border:0;background:transparent;color:#55555c;font-size:13px;cursor:pointer">+</button>
+        <button style="flex:1;height:28px;border:0;background:transparent;color:#55555c;font-size:13px;cursor:pointer">−</button>
+        <button style="flex:1;height:28px;border:0;background:transparent;color:#55555c;font-size:11px;font-family:inherit;cursor:pointer">Edit</button>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#fff">
+      <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;background:#f4f4f5;border-bottom:1px solid #dcdcde;font-size:10.5px;font-weight:600;color:#6a6a70">
+        <div style="display:flex;align-items:center;gap:5px">Name <span style="font-size:8px;color:#2f6df6">▲</span></div>
+        <div style="text-align:right">Size</div><div>Modified</div><div>Kind</div>
+      </div>
+      <div style="flex:1;overflow:hidden;font-size:12px;color:#1a1a1c">
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:11px;height:9px;background:#8a8f98;border-radius:1.5px;flex:none"></span>4K HDR</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a90">—</div><div style="color:#6a6a70">14 Aug 2026, 09:12</div><div style="color:#6a6a70">Folder</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:11px;height:9px;background:#8a8f98;border-radius:1.5px;flex:none"></span>Documentaries</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a90">—</div><div style="color:#6a6a70">02 Aug 2026, 21:40</div><div style="color:#6a6a70">Folder</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:11px;height:9px;background:#8a8f98;border-radius:1.5px;flex:none"></span>Kids</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a90">—</div><div style="color:#6a6a70">28 Jul 2026, 11:02</div><div style="color:#6a6a70">Folder</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;background:#2f6df6;color:#fff;border-bottom:1px solid #2f6df6">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid rgba(255,255,255,.7);border-radius:1.5px;flex:none"></span>Arrival.2016.2160p.mkv</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px">48.2 GB</div><div>31 Aug 2026, 18:24</div><div>Matroska Video</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>Arrival.2016.en.srt</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">84 KB</div><div style="color:#6a6a70">31 Aug 2026, 18:24</div><div style="color:#6a6a70">SubRip Text</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>Dune.Part.Two.2160p.mkv</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">61.7 GB</div><div style="color:#6a6a70">24 Aug 2026, 07:55</div><div style="color:#6a6a70">Matroska Video</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>index.nfo</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">2 KB</div><div style="color:#6a6a70">24 Aug 2026, 07:55</div><div style="color:#6a6a70">Plain Text</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>Heat.1995.remux.mkv</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">38.4 GB</div><div style="color:#6a6a70">19 Aug 2026, 22:10</div><div style="color:#6a6a70">Matroska Video</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>poster-heat.jpg</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">1.4 MB</div><div style="color:#6a6a70">19 Aug 2026, 22:10</div><div style="color:#6a6a70">JPEG Image</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>Sicario.2015.1080p.mp4</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">8.9 GB</div><div style="color:#6a6a70">11 Aug 2026, 13:31</div><div style="color:#6a6a70">MPEG-4 Movie</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>Tenet.2020.2160p.mkv</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">55.1 GB</div><div style="color:#6a6a70">04 Aug 2026, 16:47</div><div style="color:#6a6a70">Matroska Video</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>watchlist.txt</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">640 B</div><div style="color:#6a6a70">01 Aug 2026, 08:03</div><div style="color:#6a6a70">Plain Text</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #f2f2f3;opacity:.55">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px;flex:none"></span>.DS_Store</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">6 KB</div><div style="color:#6a6a70">01 Aug 2026, 08:03</div><div style="color:#6a6a70">Hidden</div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;height:24px;padding:0 12px;background:#f7f7f8;border-top:1px solid #dcdcde;font-size:11px;color:#6a6a70">
+        <span style="display:flex;align-items:center;gap:5px;padding:2px 6px;background:#2f6df6;color:#fff;border-radius:3px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;font-weight:500;letter-spacing:.04em">RW</span>
+        <span>Read &amp; write on <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#3a3a40">/media</span></span>
+        <span style="width:1px;height:12px;background:#dcdcde"></span>
+        <span>13 items · 1 selected · 48.2 GB</span>
+        <span style="width:1px;height:12px;background:#dcdcde"></span>
+        <span>2.4 TB free of 16 TB</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:7px">
+          <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px">SMB3 · aes-128-gcm</span>
+          <span style="width:6px;height:6px;border-radius:50%;background:#2f9e5f"></span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Browser, dark — read-only mount</div>
+<div class="dv-card" style="width:1060px;border-color:rgba(0,0,0,.4)">
+  <div style="display:flex;align-items:center;height:34px;padding:0 12px;background:#303135;border-bottom:1px solid #26272a">
+    <div style="display:flex;gap:6px;align-items:center">
+      <span style="width:9px;height:9px;border-radius:50%;background:#4c4d52"></span>
+      <span style="width:9px;height:9px;border-radius:50%;background:#4c4d52"></span>
+      <span style="width:9px;height:9px;border-radius:50%;background:#4c4d52"></span>
+    </div>
+    <div style="flex:1;text-align:center;font-size:12px;font-weight:600;color:#c4c4c8">backups — 10.0.0.4</div>
+    <div style="width:60px"></div>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;background:#2a2b2e;border-bottom:1px solid #1a1b1d">
+    <div style="display:flex;border:1px solid #45464b;border-radius:5px;overflow:hidden;background:#35363a">
+      <button style="width:30px;height:24px;border:0;background:transparent;color:#c4c4c8;font-size:11px;cursor:pointer">◀</button>
+      <span style="width:1px;background:#45464b"></span>
+      <button style="width:30px;height:24px;border:0;background:transparent;color:#6a6b70;font-size:11px;cursor:pointer">▶</button>
+    </div>
+    <button style="height:24px;padding:0 9px;border:1px solid #45464b;border-radius:5px;background:#35363a;color:#c4c4c8;font-size:11px;cursor:pointer">↑</button>
+    <div style="flex:1;display:flex;align-items:center;gap:6px;height:24px;padding:0 9px;background:#1c1d1f;border:1px solid #45464b;border-radius:5px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#c4c4c8">
+      <span style="color:#7a7b80">nfs://</span><span>10.0.0.4</span><span style="color:#55565b">/</span><span>export</span><span style="color:#55565b">/</span><span style="color:#e8e8ea;font-weight:500">backups</span>
+    </div>
+    <div style="display:flex;gap:5px">
+      <button style="height:24px;padding:0 10px;border:1px solid #45464b;border-radius:5px;background:#35363a;color:#e8e8ea;font-size:11.5px;font-family:inherit;cursor:pointer">Quick Look</button>
+      <button style="height:24px;padding:0 10px;border:1px solid #3a3b3f;border-radius:5px;background:#2e2f32;color:#63646a;font-size:11.5px;font-family:inherit;cursor:not-allowed">Edit</button>
+      <button style="height:24px;padding:0 10px;border:1px solid #45464b;border-radius:5px;background:#35363a;color:#e8e8ea;font-size:11.5px;font-family:inherit;cursor:pointer">Download</button>
+      <button style="height:24px;padding:0 10px;border:1px solid #3a3b3f;border-radius:5px;background:#2e2f32;color:#63646a;font-size:11.5px;font-family:inherit;cursor:not-allowed">Upload</button>
+    </div>
+    <div style="width:150px;display:flex;align-items:center;height:24px;padding:0 9px;background:#1c1d1f;border:1px solid #45464b;border-radius:5px;font-size:11.5px;color:#63646a">Filter</div>
+  </div>
+
+  <div style="display:flex;height:340px">
+    <div style="width:206px;flex:none;background:#26272a;border-right:1px solid #1a1b1d;display:flex;flex-direction:column">
+      <div style="padding:12px 12px 6px;font-size:9.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:#77787d">Mounted</div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px 0 9px;background:#1f3358;border-left:3px solid #4f86ff">
+        <span style="width:13px;height:10px;background:#4f86ff;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;font-weight:600;color:#e8e8ea">backups</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8fa8d8">NFS4 · 10.0.0.4</div></div>
+      </div>
+      <div style="padding:16px 12px 6px;font-size:9.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:#77787d">Bookmarks</div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px">
+        <span style="width:13px;height:10px;background:#5f6066;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;color:#e8e8ea">media</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8b90">SMB3 · nas.local</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;height:36px;padding:0 12px">
+        <span style="width:13px;height:10px;background:#5f6066;border-radius:2px;flex:none"></span>
+        <div><div style="font-size:12px;color:#e8e8ea">scratch</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8b90">SMB3 · nas.local</div></div>
+      </div>
+      <div style="margin-top:auto;display:flex;gap:1px;border-top:1px solid #1a1b1d">
+        <button style="flex:1;height:28px;border:0;background:transparent;color:#c4c4c8;font-size:13px;cursor:pointer">+</button>
+        <button style="flex:1;height:28px;border:0;background:transparent;color:#c4c4c8;font-size:13px;cursor:pointer">−</button>
+        <button style="flex:1;height:28px;border:0;background:transparent;color:#c4c4c8;font-size:11px;font-family:inherit;cursor:pointer">Edit</button>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#1e1f21">
+      <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;background:#2a2b2e;border-bottom:1px solid #1a1b1d;font-size:10.5px;font-weight:600;color:#9a9ba0">
+        <div style="display:flex;align-items:center;gap:5px">Name <span style="font-size:8px;color:#4f86ff">▲</span></div>
+        <div style="text-align:right">Size</div><div>Modified</div><div>Kind</div>
+      </div>
+      <div style="flex:1;overflow:hidden;font-size:12px;color:#e8e8ea">
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #26272a">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:11px;height:9px;background:#7d838c;border-radius:1.5px;flex:none"></span>daily.0</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8b90">—</div><div style="color:#9a9ba0">02 Sep 2026, 03:00</div><div style="color:#9a9ba0">Snapshot</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #26272a">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:11px;height:9px;background:#7d838c;border-radius:1.5px;flex:none"></span>daily.1</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8b90">—</div><div style="color:#9a9ba0">01 Sep 2026, 03:00</div><div style="color:#9a9ba0">Snapshot</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;background:#2f6df6;color:#fff;border-bottom:1px solid #2f6df6">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid rgba(255,255,255,.7);border-radius:1.5px;flex:none"></span>workstation-2026-09-01.tar.zst</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px">412 GB</div><div>01 Sep 2026, 04:18</div><div>Zstd Archive</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #26272a">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #7d838c;border-radius:1.5px;flex:none"></span>manifest.json</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#9a9ba0">18 KB</div><div style="color:#9a9ba0">01 Sep 2026, 04:18</div><div style="color:#9a9ba0">JSON</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 96px 156px 128px;column-gap:16px;height:24px;align-items:center;padding:0 12px;border-bottom:1px solid #26272a">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:9px;height:11px;border:1px solid #7d838c;border-radius:1.5px;flex:none"></span>restore.log</div>
+          <div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#9a9ba0">3.1 MB</div><div style="color:#9a9ba0">28 Aug 2026, 19:02</div><div style="color:#9a9ba0">Log File</div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;height:24px;padding:0 12px;background:#2a2b2e;border-top:1px solid #1a1b1d;font-size:11px;color:#9a9ba0">
+        <span style="display:flex;align-items:center;gap:5px;padding:2px 6px;background:#4a4b50;color:#e8e8ea;border-radius:3px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;font-weight:500;letter-spacing:.04em">RO</span>
+        <span>Read-only — export mapped <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#c4c4c8">ro,root_squash</span></span>
+        <span style="width:1px;height:12px;background:#3a3b3f"></span>
+        <span>5 items · 1 selected · 412 GB</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:7px">
+          <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px">NFSv4.2 · krb5p</span>
+          <span style="width:6px;height:6px;border-radius:50%;background:#2f9e5f"></span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="1c">
+<div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>New connection</div>
+<div class="dv-card" style="width:460px">
+  <div style="display:flex;align-items:center;height:34px;padding:0 12px;background:linear-gradient(#f7f7f8,#eeeef0);border-bottom:1px solid #d6d6d9;font-size:12px;font-weight:600;color:#4a4a50;justify-content:center">New Connection</div>
+  <div style="padding:16px 18px 18px;background:#f4f4f5">
+    <div style="display:flex;gap:1px;padding:2px;background:#e2e2e5;border-radius:6px;margin-bottom:16px">
+      <button style="flex:1;height:24px;border:0;border-radius:4px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12);color:#1a1a1c;font-size:11.5px;font-weight:600;font-family:inherit;cursor:pointer">SMB / CIFS</button>
+      <button style="flex:1;height:24px;border:0;border-radius:4px;background:transparent;color:#6a6a70;font-size:11.5px;font-family:inherit;cursor:pointer">NFS</button>
+    </div>
+    <div style="display:grid;grid-template-columns:96px 1fr;gap:9px 12px;align-items:center;font-size:11.5px;color:#3a3a40">
+      <label style="text-align:right;color:#6a6a70">Server</label>
+      <input value="nas.local" style="height:24px;padding:0 8px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#1a1a1c">
+      <label style="text-align:right;color:#6a6a70">Share</label>
+      <input value="media" style="height:24px;padding:0 8px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#1a1a1c">
+      <label style="text-align:right;color:#6a6a70">Username</label>
+      <input value="dorian" style="height:24px;padding:0 8px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;font-size:11.5px;color:#1a1a1c">
+      <label style="text-align:right;color:#6a6a70">Password</label>
+      <input type="password" value="········" style="height:24px;padding:0 8px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;font-size:11.5px;color:#1a1a1c">
+      <span></span>
+      <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#6a6a70"><input type="checkbox" checked>Save in keychain</label>
+      <label style="text-align:right;color:#6a6a70">Mount as</label>
+      <div style="display:flex;gap:14px;font-size:11.5px">
+        <label style="display:flex;align-items:center;gap:5px"><input type="radio" name="mo" checked>Read &amp; write</label>
+        <label style="display:flex;align-items:center;gap:5px"><input type="radio" name="mo">Read-only</label>
+      </div>
+    </div>
+    <div style="margin-top:12px;padding:8px 10px;background:#fff;border:1px solid #dcdcde;border-radius:5px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#6a6a70">smb://dorian@nas.local/media</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:16px">
+      <button style="height:26px;padding:0 11px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11.5px;font-family:inherit;cursor:pointer">Test</button>
+      <span style="font-size:11px;color:#2f9e5f">Reachable · SMB3 · signing on</span>
+      <button style="margin-left:auto;height:26px;padding:0 13px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11.5px;font-family:inherit;cursor:pointer">Cancel</button>
+      <button style="height:26px;padding:0 15px;border:1px solid #2f6df6;border-radius:5px;background:#2f6df6;color:#fff;font-size:11.5px;font-weight:500;font-family:inherit;cursor:pointer">Connect</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="1d">
+<div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Transfer queue</div>
+<div class="dv-card" style="width:560px">
+  <div style="display:flex;align-items:center;height:34px;padding:0 12px;background:linear-gradient(#f7f7f8,#eeeef0);border-bottom:1px solid #d6d6d9">
+    <div style="font-size:12px;font-weight:600;color:#4a4a50">Transfers</div>
+    <div style="margin-left:auto;display:flex;gap:5px">
+      <button style="height:22px;padding:0 9px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11px;font-family:inherit;cursor:pointer">Pause all</button>
+      <button style="height:22px;padding:0 9px;border:1px solid #c9c9cd;border-radius:5px;background:#fff;color:#1a1a1c;font-size:11px;font-family:inherit;cursor:pointer">Clear finished</button>
+    </div>
+  </div>
+  <div style="background:#fff">
+    <div style="display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-bottom:1px solid #f2f2f3">
+      <div style="display:flex;align-items:baseline;gap:8px;font-size:11.5px">
+        <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;padding:1px 5px;background:#e8effd;color:#2f6df6;border-radius:3px;font-weight:500">↑ UP</span>
+        <span style="color:#1a1a1c;font-weight:500">Dune.Part.Two.2160p.mkv</span>
+        <span style="margin-left:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#6a6a70">41.2 / 61.7 GB · 112 MB/s · 3m 04s</span>
+      </div>
+      <div style="height:4px;background:#e8e8eb;border-radius:2px;overflow:hidden"><div style="width:67%;height:100%;background:#2f6df6"></div></div>
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8a90">smb://nas.local/media/Movies/</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-bottom:1px solid #f2f2f3">
+      <div style="display:flex;align-items:baseline;gap:8px;font-size:11.5px">
+        <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;padding:1px 5px;background:#f0f0f2;color:#6a6a70;border-radius:3px;font-weight:500">↓ DOWN</span>
+        <span style="color:#1a1a1c">workstation-2026-09-01.tar.zst</span>
+        <span style="margin-left:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#6a6a70">queued</span>
+      </div>
+      <div style="height:4px;background:#e8e8eb;border-radius:2px"></div>
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;color:#8a8a90">nfs://10.0.0.4/export/backups/</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-bottom:1px solid #f2f2f3">
+      <div style="display:flex;align-items:baseline;gap:8px;font-size:11.5px">
+        <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;padding:1px 5px;background:#fdeaea;color:#c0392b;border-radius:3px;font-weight:500">↑ UP</span>
+        <span style="color:#1a1a1c">poster-heat.jpg</span>
+        <span style="margin-left:auto;font-size:11px;color:#c0392b">Permission denied — mount is read-only</span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button style="height:20px;padding:0 8px;border:1px solid #c9c9cd;border-radius:4px;background:#fff;color:#1a1a1c;font-size:10.5px;font-family:inherit;cursor:pointer">Retry</button>
+        <button style="height:20px;padding:0 8px;border:1px solid #c9c9cd;border-radius:4px;background:#fff;color:#1a1a1c;font-size:10.5px;font-family:inherit;cursor:pointer">Remount as RW</button>
+      </div>
+    </div>
+    <div style="display:flex;align-items:baseline;gap:8px;padding:10px 12px;font-size:11.5px;opacity:.6">
+      <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9.5px;padding:1px 5px;background:#f0f0f2;color:#6a6a70;border-radius:3px;font-weight:500">↓ DOWN</span>
+      <span style="color:#1a1a1c">Arrival.2016.en.srt</span>
+      <span style="margin-left:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#2f9e5f">done · 84 KB</span>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;height:24px;padding:0 12px;background:#f7f7f8;border-top:1px solid #dcdcde;font-size:11px;color:#6a6a70">
+    <span>1 active · 1 queued · 1 failed</span>
+    <span style="margin-left:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px">112 MB/s aggregate</span>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="1e">
+<div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Quick Look + Edit handoff</div>
+<div class="dv-card" style="width:440px">
+  <div style="display:flex;align-items:center;height:30px;padding:0 10px;background:#2a2b2e;color:#e8e8ea;font-size:11.5px;gap:8px">
+    <span style="font-weight:500">index.nfo</span>
+    <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#9a9ba0">2 KB · text/plain</span>
+    <button style="margin-left:auto;height:20px;padding:0 8px;border:1px solid #45464b;border-radius:4px;background:#35363a;color:#e8e8ea;font-size:10.5px;font-family:inherit;cursor:pointer">Open in editor</button>
+    <button style="width:20px;height:20px;border:1px solid #45464b;border-radius:4px;background:#35363a;color:#e8e8ea;font-size:10px;cursor:pointer">✕</button>
+  </div>
+  <div style="padding:14px;background:#1e1f21;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;line-height:1.8;color:#c4c4c8">
+    <div><span style="color:#63646a;user-select:none">1  </span>title = Arrival</div>
+    <div><span style="color:#63646a;user-select:none">2  </span>year  = 2016</div>
+    <div><span style="color:#63646a;user-select:none">3  </span>source = UHD remux</div>
+    <div><span style="color:#63646a;user-select:none">4  </span>audio = TrueHD 7.1 Atmos</div>
+    <div><span style="color:#63646a;user-select:none">5  </span>subs  = en, fr, ja</div>
+    <div><span style="color:#63646a;user-select:none">6  </span></div>
+    <div><span style="color:#63646a;user-select:none">7  </span>checked = 2026-08-31</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;height:24px;padding:0 10px;background:#2a2b2e;border-top:1px solid #1a1b1d;font-size:10.5px;color:#9a9ba0">
+    <span style="padding:1px 5px;background:#2f6df6;color:#fff;border-radius:3px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:9px;font-weight:500">RW</span>
+    <span>Editable in place · saves back over SMB</span>
+    <span style="margin-left:auto;font-family:'JetBrains Mono',ui-monospace,monospace">Space to close</span>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="1f">
+<div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Rows A — 24px columns (used in <a class="dv-oid" href="#1a">1a</a>)</div>
+<div class="dv-card" style="width:520px">
+  <div style="display:grid;grid-template-columns:1fr 88px 120px;column-gap:16px;height:22px;align-items:center;padding:0 10px;background:#f4f4f5;border-bottom:1px solid #dcdcde;font-size:10px;font-weight:600;color:#6a6a70"><div>Name</div><div style="text-align:right">Size</div><div>Modified</div></div>
+  <div style="display:grid;grid-template-columns:1fr 88px 120px;column-gap:16px;height:24px;align-items:center;padding:0 10px;border-bottom:1px solid #f2f2f3;font-size:12px"><div style="display:flex;gap:8px;align-items:center"><span style="width:11px;height:9px;background:#8a8f98;border-radius:1.5px"></span>4K HDR</div><div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a90">—</div><div style="color:#6a6a70;font-size:11.5px">14 Aug 09:12</div></div>
+  <div style="display:grid;grid-template-columns:1fr 88px 120px;column-gap:16px;height:24px;align-items:center;padding:0 10px;border-bottom:1px solid #f2f2f3;font-size:12px"><div style="display:flex;gap:8px;align-items:center"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px"></span>Arrival.2016.2160p.mkv</div><div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">48.2 GB</div><div style="color:#6a6a70;font-size:11.5px">31 Aug 18:24</div></div>
+  <div style="display:grid;grid-template-columns:1fr 88px 120px;column-gap:16px;height:24px;align-items:center;padding:0 10px;border-bottom:1px solid #f2f2f3;font-size:12px"><div style="display:flex;gap:8px;align-items:center"><span style="width:9px;height:11px;border:1px solid #a8adb5;border-radius:1.5px"></span>index.nfo</div><div style="text-align:right;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6a6a70">2 KB</div><div style="color:#6a6a70;font-size:11.5px">24 Aug 07:55</div></div>
+  <div style="padding:7px 10px;font-size:10.5px;color:#8a8a90;background:#fafafb">Densest. Sorting and scanning win; long names truncate.</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1g">
+<div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Rows B — name-led, metadata as one mono line</div>
+<div class="dv-card" style="width:520px">
+  <div style="display:flex;align-items:center;height:22px;padding:0 10px;background:#f4f4f5;border-bottom:1px solid #dcdcde;font-size:10px;font-weight:600;color:#6a6a70">Name · sorted A–Z</div>
+  <div style="display:flex;gap:9px;align-items:center;padding:6px 10px;border-bottom:1px solid #f2f2f3"><span style="width:16px;height:13px;background:#8a8f98;border-radius:2px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#1a1a1c">4K HDR</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#8a8a90">folder · 12 items · 14 Aug 09:12</div></div></div>
+  <div style="display:flex;gap:9px;align-items:center;padding:6px 10px;border-bottom:1px solid #f2f2f3;background:#e8effd"><span style="width:13px;height:16px;border:1px solid #7f9fe0;border-radius:2px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#1a1a1c;font-weight:500">Arrival.2016.2160p.mkv</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#4a6ba8">48.2 GB · mkv · 31 Aug 18:24</div></div></div>
+  <div style="display:flex;gap:9px;align-items:center;padding:6px 10px;border-bottom:1px solid #f2f2f3"><span style="width:13px;height:16px;border:1px solid #a8adb5;border-radius:2px;flex:none"></span><div style="min-width:0"><div style="font-size:12.5px;color:#1a1a1c">index.nfo</div><div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#8a8a90">2 KB · text · 24 Aug 07:55</div></div></div>
+  <div style="padding:7px 10px;font-size:10.5px;color:#8a8a90;background:#fafafb">Half the rows per screen, but names never truncate and no column dragging.</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1h">
+<div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Rows C — mono grid, terminal-adjacent</div>
+<div class="dv-card" style="width:520px;background:#1a1b1d;border-color:#000">
+  <div style="display:grid;grid-template-columns:1fr 78px 108px;height:22px;align-items:center;padding:0 10px;background:#26272a;border-bottom:1px solid #000;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#8a8b90;letter-spacing:.05em"><div>NAME</div><div style="text-align:right">SIZE</div><div style="text-align:right">MTIME</div></div>
+  <div style="display:grid;grid-template-columns:1fr 78px 108px;height:22px;align-items:center;padding:0 10px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#c4c4c8"><div><span style="color:#4f86ff">d</span> 4K HDR/</div><div style="text-align:right;color:#6a6b70">-</div><div style="text-align:right;color:#8a8b90">08-14 09:12</div></div>
+  <div style="display:grid;grid-template-columns:1fr 78px 108px;height:22px;align-items:center;padding:0 10px;background:#2f6df6;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#fff"><div><span style="opacity:.7">-</span> Arrival.2016.2160p.mkv</div><div style="text-align:right">48.2G</div><div style="text-align:right">08-31 18:24</div></div>
+  <div style="display:grid;grid-template-columns:1fr 78px 108px;height:22px;align-items:center;padding:0 10px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#c4c4c8"><div><span style="color:#6a6b70">-</span> index.nfo</div><div style="text-align:right;color:#9a9ba0">2.0K</div><div style="text-align:right;color:#8a8b90">08-24 07:55</div></div>
+  <div style="padding:7px 10px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#77787d;background:#202124">Everything aligns; kind collapses into a leading type char.</div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">Try next: "put <a class="dv-oid" href="#1g">1g</a> rows into <a class="dv-oid" href="#1a">1a</a>" · "add a Get Info panel with POSIX mode" · "show the disconnected / reconnecting state"</p>
+</section>
+</x-dc>
+</body>
+</html>
