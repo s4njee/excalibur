@@ -14,10 +14,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
-use excalibur_engine::backend::xsync::XsyncBackend;
+use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{ConnectionSpec, Protocol, ShareBackend};
 use excalibur_engine::{
-    Connector, KeyringStore, Listing, MountInfo, Result, Secret, SecretStore, SessionManager,
+    hostkeys, Connector, EngineError, KeyringStore, KnownHosts, Listing, MountInfo, Result, Secret,
+    SecretStore, SessionManager, Trust,
 };
 use tauri::Emitter;
 
@@ -28,14 +29,58 @@ use tauri::Emitter;
 /// get started — a keychain entry, a host key, a port — and the shape of that
 /// should come from the second real backend rather than be guessed before the
 /// first.
-struct ProtocolConnector;
+struct ProtocolConnector {
+    known_hosts: KnownHosts,
+}
 
 #[async_trait]
 impl Connector for ProtocolConnector {
     async fn connect(&self, spec: &ConnectionSpec) -> Result<Arc<dyn ShareBackend>> {
         match spec.protocol {
             Protocol::Xsync => {
-                let backend = XsyncBackend::connect_ssh(&spec.host, &spec.share, None).await?;
+                let port = spec.port.unwrap_or(hostkeys::DEFAULT_SSH_PORT);
+                // Decided before `ssh` runs, so an unknown or changed key
+                // reaches the window as something it can render rather than as
+                // OpenSSH's own prompt, which has no terminal to appear on.
+                match hostkeys::verify(&hostkeys::Keyscan, &self.known_hosts, &spec.host, port)
+                    .await?
+                {
+                    Trust::Trusted => {}
+                    Trust::Unknown { offered } => {
+                        return Err(EngineError::HostKeyUnknown {
+                            host: spec.host.clone(),
+                            port,
+                            algorithm: offered.algorithm.clone(),
+                            fingerprint: offered.fingerprint(),
+                        })
+                    }
+                    Trust::Changed { offered, stored } => {
+                        return Err(EngineError::HostKeyChanged {
+                            host: spec.host.clone(),
+                            port,
+                            algorithm: offered.algorithm.clone(),
+                            fingerprint: offered.fingerprint(),
+                            expected: stored.fingerprint(),
+                        })
+                    }
+                    Trust::Revoked { offered } => {
+                        return Err(EngineError::HostKeyChanged {
+                            host: spec.host.clone(),
+                            port,
+                            algorithm: offered.algorithm.clone(),
+                            fingerprint: offered.fingerprint(),
+                            expected: "a key you revoked".to_owned(),
+                        })
+                    }
+                }
+                let target = SshTarget {
+                    host: &spec.host,
+                    port,
+                    username: spec.username.as_deref(),
+                    known_hosts: self.known_hosts.path(),
+                    rsh: None,
+                };
+                let backend = XsyncBackend::connect_ssh(&target, &spec.share).await?;
                 Ok(Arc::new(backend))
             }
             // SMB, NFS and SFTP arrive with E4, E5 and E6. Until then a spec
@@ -53,6 +98,9 @@ struct AppState {
     /// The OS credential store. Written to from the window, never read back to
     /// it: see the commands below.
     secrets: Arc<dyn SecretStore>,
+    /// Accepted SSH host keys. Shared with the connector, which is what
+    /// enforces them.
+    known_hosts: KnownHosts,
     /// Serves the design's fixed data until a real share is mounted, so the
     /// window has something to draw on first run.
     demo: Arc<dyn ShareBackend>,
@@ -78,14 +126,65 @@ struct CommandError {
     message: String,
     surface: excalibur_engine::error::Surface,
     transient: bool,
+    /// Set for the two host-key failures.
+    ///
+    /// The message already says all of this in a sentence, but a fingerprint is
+    /// something the user compares character by character against what the
+    /// server operator told them. That needs its own element, in a monospace
+    /// font, not a substring of a paragraph — so it travels as data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_key: Option<HostKeyProblem>,
+}
+
+/// The host-key detail behind a [`CommandError`].
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostKeyProblem {
+    host: String,
+    port: u16,
+    algorithm: String,
+    fingerprint: String,
+    /// The previously accepted fingerprint, when the key changed. `None` means
+    /// the host is simply unknown, which is a question rather than an alarm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected: Option<String>,
 }
 
 impl From<excalibur_engine::EngineError> for CommandError {
     fn from(error: excalibur_engine::EngineError) -> Self {
+        let host_key = match &error {
+            EngineError::HostKeyUnknown {
+                host,
+                port,
+                algorithm,
+                fingerprint,
+            } => Some(HostKeyProblem {
+                host: host.clone(),
+                port: *port,
+                algorithm: algorithm.clone(),
+                fingerprint: fingerprint.clone(),
+                expected: None,
+            }),
+            EngineError::HostKeyChanged {
+                host,
+                port,
+                algorithm,
+                fingerprint,
+                expected,
+            } => Some(HostKeyProblem {
+                host: host.clone(),
+                port: *port,
+                algorithm: algorithm.clone(),
+                fingerprint: fingerprint.clone(),
+                expected: Some(expected.clone()),
+            }),
+            _ => None,
+        };
         Self {
             message: error.to_string(),
             surface: error.surface(),
             transient: error.transient(),
+            host_key,
         }
     }
 }
@@ -184,6 +283,50 @@ async fn forget_secret(
         .map_err(Into::into)
 }
 
+/// Accept a host's SSH key, after the user compared its fingerprint.
+///
+/// Takes the host and port rather than the fingerprint the window was shown:
+/// re-scanning means the key that gets recorded is one the host is offering
+/// now, so a stale prompt left open on screen cannot be used to trust a key
+/// the host has already stopped presenting.
+#[tauri::command]
+async fn trust_host_key(
+    state: tauri::State<'_, AppState>,
+    host: String,
+    port: u16,
+) -> std::result::Result<(), CommandError> {
+    let known = state.known_hosts.clone();
+    let scanned = hostkeys::HostKeyScanner::scan(&hostkeys::Keyscan, &host, port).await?;
+    blocking(move || {
+        let Some(key) = scanned.first() else {
+            return Err(EngineError::Disconnected(format!(
+                "{host}:{port} offered no SSH host keys"
+            )));
+        };
+        known.trust(key)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+/// Forget every accepted key for a host, so the next connection asks again.
+///
+/// This is the deliberate second step behind a changed key: the banner that
+/// reports the change does not call it, and cannot. The bookmark editor does,
+/// which means clearing the alarm takes leaving the failure and going to find
+/// the entry it belongs to.
+#[tauri::command]
+async fn forget_host_key(
+    state: tauri::State<'_, AppState>,
+    host: String,
+    port: u16,
+) -> std::result::Result<(), CommandError> {
+    let known = state.known_hosts.clone();
+    blocking(move || known.forget(&host, port))
+        .await
+        .map_err(Into::into)
+}
+
 /// Whether a host is answering, for the sidebar's dimmed rows.
 ///
 /// Deliberately weaker than mounting: this runs for every saved bookmark on a
@@ -225,16 +368,24 @@ async fn set_active(
 ///
 /// # Panics
 ///
-/// Panics if the webview cannot be created, which is not a condition the app
-/// can continue from.
+/// Panics if the platform has no data directory to keep accepted host keys in,
+/// or if the webview cannot be created. Neither is a condition the app can
+/// continue from.
 pub fn run() {
-    let sessions = Arc::new(SessionManager::new(Arc::new(ProtocolConnector)));
+    // A store that cannot be located is a fatal misconfiguration rather than
+    // something to degrade around: without it there is nowhere to record a
+    // trust decision, and every SSH connection would ask again forever.
+    let known_hosts = KnownHosts::app_default().expect("no data directory for known_hosts");
+    let sessions = Arc::new(SessionManager::new(Arc::new(ProtocolConnector {
+        known_hosts: known_hosts.clone(),
+    })));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(AppState {
             sessions: Arc::clone(&sessions),
             secrets: Arc::new(KeyringStore),
+            known_hosts,
             demo: Arc::new(MockBackend::media_share()),
         })
         .setup(move |app| {
@@ -259,6 +410,8 @@ pub fn run() {
             keychain_available,
             save_secret,
             forget_secret,
+            trust_host_key,
+            forget_host_key,
             mount,
             unmount,
             set_active

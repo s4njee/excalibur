@@ -78,7 +78,20 @@ as a transitive dependency of these.
 | `thiserror` | engine | The engine's error enum. |
 | `keyring` | engine | E3-S3. The OS credential store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Chosen over writing three platform bindings because the workspace denies `unsafe_code` and all three need FFI. |
 | `zeroize` | engine | E3-S3. Wipes a password's heap allocation on drop, so a credential does not outlive its use in a core file. |
+| `sha2` | engine | E3-S4. SHA-256 for SSH host key fingerprints. |
+| `base64` | engine | E3-S4. Decodes `known_hosts` key material and encodes the fingerprint the way OpenSSH prints it. |
+| `dirs` | engine | E3-S4. Locates the per-platform data directory the `known_hosts` file lives in. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync integration tests. |
+
+### On `sha2`, `base64` and `dirs`
+
+All three were already in the tree — `sha2` and `base64` through several
+dependencies, `dirs` through `keyring` — so naming them directly added no
+packages and no licences. They are here rather than hand-rolled because a
+fingerprint that does not match `ssh-keygen -lf` byte for byte is worse than
+useless: the whole point is that a user compares it against what the server
+operator told them. There is a test pinning ours to a real key's published
+fingerprint.
 
 ### On `keyring`
 

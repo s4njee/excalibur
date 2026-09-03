@@ -206,3 +206,58 @@
   color: var(--text-tertiary);
   font-size: 11px;
 }
+
+/* Host key trust prompt (E3-S4).
+   Inside the dialog rather than stacked on top of it: it is a step in the
+   connection the user just asked for, not a separate interruption. */
+.trust,
+.keyChanged {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--hairline-chrome);
+  background: var(--segment-track);
+}
+
+.keyChanged {
+  border-color: var(--error);
+  background: var(--error-chip-bg);
+}
+
+.trustTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.keyChanged .trustTitle {
+  color: var(--error);
+}
+
+.trustBody {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* The fingerprint is the whole point of the prompt: it is what the user
+   compares, character by character, against what the server operator told
+   them. It gets its own line and a monospace font so that comparison is
+   actually possible. */
+.fingerprint {
+  display: block;
+  margin: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  user-select: all;
+  word-break: break-all;
+}
+
+.trustActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}

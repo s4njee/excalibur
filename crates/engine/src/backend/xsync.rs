@@ -28,15 +28,96 @@ pub struct XsyncBackend {
     root_label: String,
 }
 
+/// Everything needed to reach an `xs --server` over SSH.
+///
+/// Grouped into a struct because the host-key file is not optional and should
+/// not be easy to leave out: a call site that forgets it would silently fall
+/// back to OpenSSH's own trust store and prompt behaviour, which is the thing
+/// this story removes.
+#[derive(Debug, Clone)]
+pub struct SshTarget<'a> {
+    /// Host as the user typed it. Also the name the key is trusted under.
+    pub host: &'a str,
+    /// Port `ssh` should connect to.
+    pub port: u16,
+    /// Remote username, or `None` for `ssh`'s own default.
+    pub username: Option<&'a str>,
+    /// The app's `known_hosts` file. See [`crate::hostkeys::KnownHosts`].
+    pub known_hosts: &'a std::path::Path,
+    /// An alternative to the `ssh` binary, for tests.
+    pub rsh: Option<&'a str>,
+}
+
 impl XsyncBackend {
     /// Connect over SSH and mount the export at `root`.
     ///
+    /// The `ssh` command line is built here rather than by `xsync-client`
+    /// because the host-key policy is Excalibur's to set: this passes the app's
+    /// own `known_hosts` and `StrictHostKeyChecking=yes`, so `ssh` enforces the
+    /// decision the user made in the trust prompt and nothing else. It is also
+    /// the only way to pass a port or a username, which the client's
+    /// convenience method has no argument for.
+    ///
+    /// Call [`crate::hostkeys::verify`] first. Reaching a `Trust::Unknown` host
+    /// here produces `Host key verification failed` from `ssh` and nothing
+    /// useful for the window to show, which is exactly the failure E3-S4
+    /// exists to remove.
+    ///
     /// # Errors
     ///
-    /// Fails when the remote shell cannot start `xs`, the peer does not speak
-    /// protocol v3, or the export cannot be mounted.
-    pub async fn connect_ssh(host: &str, root: &str, rsh: Option<&str>) -> Result<Self> {
-        let client = Client::connect_ssh(host, root, rsh)
+    /// Fails when the remote shell cannot start `xs`, the host key is not in
+    /// `known_hosts`, the peer does not speak protocol v3, or the export cannot
+    /// be mounted.
+    pub async fn connect_ssh(target: &SshTarget<'_>, root: &str) -> Result<Self> {
+        let mut command = tokio::process::Command::new(target.rsh.unwrap_or("ssh"));
+        command
+            .arg("-p")
+            .arg(target.port.to_string())
+            // Never fall back to OpenSSH's own prompt. There is no terminal to
+            // answer it on, so the choice is between failing here with a key we
+            // can describe and hanging on a question nobody can see.
+            .arg("-o")
+            .arg("StrictHostKeyChecking=yes")
+            .arg("-o")
+            // Quoted, because OpenSSH reads this option as a space-separated
+            // *list* of files. The default data directory on macOS is
+            // `~/Library/Application Support`, so an unquoted path splits into
+            // two names that both do not exist, and every connection fails with
+            // "No host key is known" for a key that was just recorded.
+            .arg(format!(
+                "UserKnownHostsFile=\"{}\"",
+                target.known_hosts.display()
+            ))
+            // Same reasoning for credentials: a password or passphrase prompt
+            // would go to a terminal that is not there. BatchMode turns that
+            // hang into an immediate, reportable failure. Key and agent auth,
+            // which is what `xs` over SSH is set up for, are unaffected.
+            .arg("-o")
+            .arg("BatchMode=yes");
+        if let Some(username) = target.username {
+            command.arg("-l").arg(username);
+        }
+        command
+            .arg(target.host)
+            .arg(format!(
+                "PATH=\"$HOME/.local/bin:$PATH\" 'xs' '--server' '{}'",
+                root.replace('\'', "'\\''")
+            ))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit());
+        let mut child = command
+            .spawn()
+            .map_err(|error| EngineError::Io(format!("could not start ssh: {error}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| EngineError::Io("ssh stdout was not piped".to_owned()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| EngineError::Io("ssh stdin was not piped".to_owned()))?;
+        let client = Client::from_split(stdout, stdin, 0)
             .await
             .map_err(|error| map_error(&error))?;
         Self::mount(client, root).await

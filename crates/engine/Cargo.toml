@@ -18,6 +18,9 @@ async-trait = { workspace = true }
 # targets: Apple Keychain, Secret Service over zbus, and Windows.
 keyring = { workspace = true }
 zeroize = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+dirs = { workspace = true }
 # A path dependency while xsync's v3 branch is local. E7-S0 wants a pinned git
 # revision with a documented `[patch]` override for development; that needs the
 # branch pushed somewhere first.

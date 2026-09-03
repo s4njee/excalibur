@@ -31,6 +31,10 @@ export interface Backend {
   saveSecret(account: string, secret: string): Promise<void>;
   /** Forget a credential: the box was unticked, or the bookmark removed. */
   forgetSecret(account: string): Promise<void>;
+  /** Accept a host's SSH key, after the user compared its fingerprint. */
+  trustHostKey(host: string, port: number): Promise<void>;
+  /** Forget a host's keys, so the next connection asks again. */
+  forgetHostKey(host: string, port: number): Promise<void>;
 }
 
 /** True when running inside the Tauri shell rather than a plain browser. */
@@ -39,7 +43,46 @@ function inTauri(): boolean {
 }
 
 /** Serves the committed fixture, optionally read-only, with optional latency. */
-export function fixtureBackend(options: { readOnly?: boolean; latencyMs?: number } = {}): Backend {
+export function fixtureBackend(
+  options: {
+    readOnly?: boolean;
+    latencyMs?: number;
+    /**
+     * Makes `mount` fail with a host-key error, so the trust prompt and the
+     * changed-key banner can be looked at without an SSH server that happens
+     * to be in the right state. The shapes match what the engine serialises.
+     */
+    hostKey?: "unknown" | "changed";
+  } = {},
+): Backend {
+  const hostKeyFailure = () => {
+    if (options.hostKey === "unknown") {
+      return {
+        message: "unknown host key for nas.local: ssh-ed25519 SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU",
+        surface: "trust-prompt",
+        transient: false,
+        hostKey: {
+          host: "nas.local",
+          port: 22,
+          algorithm: "ssh-ed25519",
+          fingerprint: "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU",
+        },
+      };
+    }
+    return {
+      message: "host key for nas.local has changed",
+      surface: "banner",
+      transient: false,
+      hostKey: {
+        host: "nas.local",
+        port: 22,
+        algorithm: "ssh-ed25519",
+        fingerprint: "SHA256:LP3sPjr9WCCFN5calZOKGOUseYRLPfxCiOpn2FVoZ0E",
+        expected: "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU",
+      },
+    };
+  };
+
   return {
     async listDir(): Promise<Listing> {
       if (options.latencyMs) {
@@ -61,6 +104,8 @@ export function fixtureBackend(options: { readOnly?: boolean; latencyMs?: number
       throw new Error("not connected to the engine — run the desktop app");
     },
     async mount(): Promise<void> {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
     },
     // A browser cannot open a TCP socket, so it cannot answer this. Claiming
@@ -79,6 +124,15 @@ export function fixtureBackend(options: { readOnly?: boolean; latencyMs?: number
     },
     async forgetSecret(): Promise<void> {
       // Nothing was ever stored, so forgetting is already true.
+    },
+    // A browser cannot run ssh-keyscan, so there is no key to accept. The
+    // preview reaches the prompt only through `?screen=trust`, which supplies
+    // its own fixed fingerprint.
+    async trustHostKey(): Promise<void> {
+      throw new Error("no ssh-keyscan in the browser preview");
+    },
+    async forgetHostKey(): Promise<void> {
+      // Nothing was ever trusted.
     },
   };
 }
@@ -113,6 +167,14 @@ function tauriBackend(): Backend {
     async forgetSecret(account: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("forget_secret", { account });
+    },
+    async trustHostKey(host: string, port: number): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("trust_host_key", { host, port });
+    },
+    async forgetHostKey(host: string, port: number): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("forget_host_key", { host, port });
     },
   };
 }

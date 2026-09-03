@@ -1159,8 +1159,11 @@ name = "excalibur-engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "dirs",
  "keyring",
  "serde",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

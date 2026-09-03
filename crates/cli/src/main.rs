@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use excalibur_engine::backend::mock::MockBackend;
-use excalibur_engine::backend::xsync::XsyncBackend;
-use excalibur_engine::ShareBackend;
+use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
+use excalibur_engine::{hostkeys, KnownHosts, ShareBackend, Trust};
 
 const USAGE: &str = "\
 xcal — headless Excalibur engine driver
@@ -29,6 +29,9 @@ export instead:
     --xsync-local PATH    run `xs --server PATH` and speak v3 over its pipes
     --xs BINARY           which xs to run (default: xs on PATH)
     --xsync-ssh HOST:PATH connect over ssh
+    --port N              ssh port (default 22)
+    --user NAME           ssh username
+    --trust               accept an unknown host key and record it
 
 Every command takes --read-only, and --json to print machine-readable
 output.
@@ -43,9 +46,10 @@ async fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let json = arguments.iter().any(|argument| argument == "--json");
     let read_only = arguments.iter().any(|argument| argument == "--read-only");
+    let trust = arguments.iter().any(|argument| argument == "--trust");
     // A flag's value is not a positional argument, so skip whatever follows
     // the flags that take one.
-    let takes_value = ["--xsync-local", "--xsync-ssh", "--xs"];
+    let takes_value = ["--xsync-local", "--xsync-ssh", "--xs", "--port", "--user"];
     let mut positional: Vec<&String> = Vec::new();
     let mut skip_next = false;
     for argument in &arguments {
@@ -79,7 +83,86 @@ async fn main() -> ExitCode {
             eprintln!("xcal: --xsync-ssh wants HOST:PATH");
             return ExitCode::from(2);
         };
-        match XsyncBackend::connect_ssh(host, root, None).await {
+        let port = match value_of("--port").map(|value| value.parse::<u16>()) {
+            None => 22,
+            Some(Ok(port)) => port,
+            Some(Err(error)) => {
+                eprintln!("xcal: --port: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        let username = value_of("--user");
+        let known_hosts = match KnownHosts::app_default() {
+            Ok(known) => known,
+            Err(error) => {
+                eprintln!("xcal: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+
+        // The same verification the window does, before ssh gets a chance to
+        // ask a question no terminal here would necessarily answer. Running it
+        // in the CLI is also how this path gets exercised against real hosts.
+        match hostkeys::verify(&hostkeys::Keyscan, &known_hosts, host, port).await {
+            Ok(Trust::Trusted) => {}
+            Ok(Trust::Unknown { offered }) => {
+                if trust {
+                    if let Err(error) = known_hosts.trust(&offered) {
+                        eprintln!("xcal: could not record host key: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                    eprintln!(
+                        "xcal: trusted {} key {} for {host}:{port}",
+                        offered.algorithm,
+                        offered.fingerprint()
+                    );
+                } else {
+                    eprintln!(
+                        "xcal: {host}:{port} is not a known host.\n  \
+                         {} key fingerprint is {}\n  \
+                         Check that against the server, then re-run with --trust.",
+                        offered.algorithm,
+                        offered.fingerprint()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+            Ok(Trust::Changed { offered, stored }) => {
+                eprintln!(
+                    "xcal: the {} host key for {host}:{port} has CHANGED.\n  \
+                     expected {}\n  \
+                     got      {}\n  \
+                     Someone may be impersonating the host, or it may have been \
+                     rebuilt. --trust will not override this; remove the old key \
+                     from {} once you know which it is.",
+                    offered.algorithm,
+                    stored.fingerprint(),
+                    offered.fingerprint(),
+                    known_hosts.path().display()
+                );
+                return ExitCode::FAILURE;
+            }
+            Ok(Trust::Revoked { offered }) => {
+                eprintln!(
+                    "xcal: the host key {} for {host}:{port} is marked revoked.",
+                    offered.fingerprint()
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("xcal: could not check the host key for {host}:{port}: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+
+        let target_spec = SshTarget {
+            host,
+            port,
+            username: username.as_deref(),
+            known_hosts: known_hosts.path(),
+            rsh: None,
+        };
+        match XsyncBackend::connect_ssh(&target_spec, root).await {
             Ok(backend) => Arc::new(backend),
             Err(error) => {
                 eprintln!("xcal: could not mount {target} over xsync: {error}");

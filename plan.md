@@ -104,7 +104,7 @@ every `list_dir` so the status bar can never drift.
 | **Privileged NFS source ports** | Many servers default to `secure` (client port < 1024). | E5-S2 detects `EACCES`/`PROG_MISMATCH`, explains `insecure` export option, and offers no privilege escalation. |
 | **xsync Phase 1 scope creep** | It is on the critical path (M-1) and is protocol work under `docs/protocol-ownership.md` review, which is slow by design. | Keep Phase 1 to the story list in E7-S0 — no daemon, no TLS, no locks, no notify; those are M6. Freeze the v3 table only for the types Phase 1 uses; later phases add types, never change them. |
 | **Streaming media previews** | Video needs HTTP range semantics into the webview. | E11-S3 uses a Tauri custom protocol with `Range` support over `open_read(offset)`. |
-| **Linux Secret Service variance** | Headless/no-keyring sessions. | E3-S4 falls back to "don't save" with an explicit message, never to plaintext. |
+| **Linux Secret Service variance** | Headless/no-keyring sessions. | E3-S3 falls back to "don't save" with an explicit message, never to plaintext. |
 
 ---
 
@@ -135,7 +135,8 @@ reconstruct it from git history.
 | M1 | E3-S2 — Bookmarks store | **Done** 2026-09-03 |
 | M1 | E3-S3 — Keychain | **Done** 2026-09-03 |
 | M0 | E0-S3 — Icon set | Not started |
-| M1 | E3-S4, E8, E9, E10 | Not started |
+| M1 | E3-S4 — SSH host keys | **Done** 2026-09-03 |
+| M1 | E8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
@@ -603,17 +604,89 @@ is the same component tree with `mount.writable` false.
 - **A connect path that reads the secret** is what closes the loop, and it arrives with
   the first backend that authenticates with a password (E4 SMB or E6 SFTP). That is also
   when the account key gets exercised against a real bookmark id.
-- **E3-S4 (host keys and TLS pins)** is the other half of connection trust and is next
-  in this epic.
+- **E3-S4 (host keys and TLS pins)** is the other half of connection trust. **Done**,
+  below.
 - Re-prompting when a stored credential is rejected — the share's password changed —
   has no path yet. It belongs with whichever backend first reads a secret.
 
-#### E3-S4 — SSH host keys and TLS pins (SFTP, xsync)
+#### E3-S4 — SSH host keys and TLS pins (SFTP, xsync) — **Done (SSH; TLS has no transport yet)**
+
+*2026-09-03.*
+
 **AC**
-- Unknown host key / server fingerprint → trust prompt showing algorithm and
+- [x] Unknown host key / server fingerprint → trust prompt showing algorithm and
   fingerprint; accepted keys stored in the app data dir (`known_hosts`-compatible for
   SSH); changed key hard-fails with a red banner and no "accept anyway" in the
   banner itself (a deliberate second step in the bookmark editor).
+- [ ] TLS pins. **Not built:** there is no TLS transport to pin. `xs serve` over TLS is
+  `xsyncv3.md` E2-S1 and arrives with M6; SFTP has no TLS at all. Building a pin store
+  against no connection would be guessing at its shape.
+
+**Results**
+
+- **This fixed a live bug, not just an absent feature.** `xs` is reached by spawning
+  `ssh`, and `ssh` verifies host keys by asking on a terminal. A GUI has no terminal,
+  so the question could not be answered: every first connection to a new host died with
+  `Host key verification failed.` on an inherited stderr nobody was reading. The
+  decision now happens before `ssh` runs, where it can be shown.
+- The flow is: `ssh-keyscan` asks the host what keys it has → `verify` compares them
+  against the app's own `known_hosts` → the window prompts or refuses → the connection
+  itself then runs with `StrictHostKeyChecking=yes` against that same file. **The last
+  step is what makes the first one safe.** `ssh-keyscan` opens its own connection, so an
+  attacker could answer the scan with the real key and the session with theirs — and
+  gain nothing, because the session is checked against what the scan stored. The scan
+  decides *what to ask about*; it never decides what to trust.
+- **A changed key and an unknown key are deliberately different shapes on screen**, and
+  that difference is enforced in the engine rather than in the markup: `HostKeyUnknown`
+  has `Surface::TrustPrompt` and `HostKeyChanged` has `Surface::Banner`, with a test
+  asserting it. An unknown host is a question with a fingerprint to check and a button
+  that answers it. A changed key is not a question — no fact available in that dialog
+  distinguishes an impersonated host from a rebuilt one — so it renders with **zero
+  buttons inside the banner**, verified in the browser.
+- **`~/.ssh/known_hosts` is deliberately neither read nor written.** Writing it would
+  mean an app silently editing the file every other SSH tool depends on. Reading it
+  means implementing hashed entries (`HashKnownHosts` is on by default on most Linux
+  distros), which is HMAC-SHA1 over a salt — and getting that subtly wrong would either
+  hard-fail a host whose key never changed or fail to notice one that did. Asking the
+  user once more is a much cheaper mistake than either.
+- **Testing against a real host found a bug that would have hit every macOS user.**
+  OpenSSH reads `UserKnownHostsFile` as a *space-separated list*, and the default data
+  directory on macOS is `~/Library/Application Support`. Unquoted, the path split into
+  two filenames that both did not exist, and `ssh` reported "No host key is known" for a
+  key it had just been handed. The path is quoted now. No unit test would have caught
+  this; running `xcal` against `github.com` did, on the first try.
+- The stored file is genuinely `known_hosts`-compatible, not merely similar:
+  `ssh-keygen -lf` reads it and prints the same fingerprint the prompt showed.
+- `BatchMode=yes` goes on the ssh command line for the same reason as the strict
+  checking: a password or passphrase prompt would go to a terminal that is not there.
+  It converts a hang into an immediate, reportable failure. Key and agent auth, which is
+  what `xs` over SSH is set up for, are unaffected.
+- A revoked key (`@revoked` in the file) is refused even when the host also offers a good
+  one, and a host that merely *added* an algorithm stays trusted rather than alarming —
+  the case that would otherwise train users to click through key warnings.
+- `xcal --xsync-ssh HOST:PATH [--trust]` runs the same verification on the terminal,
+  which is how the whole path was exercised against a real server. `--trust` accepts an
+  unknown key and, by design, does nothing at all to a changed one.
+- The frontend now parses the engine's error object instead of `String(error)`-ing it.
+  That had been quietly turning every Tauri-side failure into `[object Object]`;
+  `src/state/errors.ts` is the one place that knows the shape, with tests.
+- Both states are viewable without a server: `?screen=trust` and `?screen=keychanged`.
+
+**Next steps**
+
+- **Forgetting a key from the bookmark editor** is the other half of the changed-key
+  path. `forget_host_key` exists and is registered; the editor has no control wired to
+  it yet, so today the recovery is to edit the file. That control belongs with the
+  bookmark editor's own story rather than being bolted onto the banner — which is
+  exactly the separation the AC asked for, but it does mean the second step is currently
+  manual.
+- **TLS pinning** waits on a TLS transport (`xsyncv3.md` E2-S1, M6).
+- `ssh` stderr is still inherited, so an *auth* failure is as invisible as a host-key
+  failure used to be. Capturing it is E15-S2's job (the auth failure loop guard), and it
+  wants the same treatment this story gave host keys.
+- SFTP (E6-S1) reaches SSH through `russh` rather than a subprocess, so it will need the
+  same `KnownHosts` store driven from a host-key callback instead of from `ssh-keyscan`.
+  The store was written with that in mind; `verify` is the part that will not transfer.
 
 ### E4 — SMB backend
 
