@@ -124,24 +124,39 @@ reconstruct it from git history.
 |---|---|---|
 | M0 | E0-S1 — Workspace and toolchain | **Done** 2026-09-03 |
 | M0 | E0-S2 — Design tokens and typography | **Done** (fonts outstanding) |
-| M0 | E0-S4 — Headless CLI (`xcal`) | **Done** (mock only) |
+| M0 | E0-S3 — Icon set | Not started (glyphs are placeholders, tinted per category) |
+| M0 | E0-S4 — Headless CLI (`xcal`) | **Done** |
 | M0 | E1-S1 — Window chrome and four-row layout | **Done** 2026-09-03 |
-| M0 | E1-S2 — Toolbar | **Done** (navigation inert) |
-| M0 | E1-S3 — Sidebar | **Done** (fixed rows) |
+| M0 | E1-S2 — Toolbar | **Done** |
+| M0 | E1-S3 — Sidebar | **Done** |
 | M0 | E2-S1 — `ShareBackend` trait and mock | **Done** 2026-09-03 |
-| M0 | E2-S3 — Tauri commands and events | **Done** (`list_dir`, `mount_info`) |
-| M1 | E7-S2 — xsync v3 backend | **Done** 2026-09-03 |
 | M0 | E2-S2 — Session manager | **Done** 2026-09-03 |
-| M1 | E3-S1 — New Connection dialog | **Done** 2026-09-03 |
-| M1 | E3-S2 — Bookmarks store | **Done** 2026-09-03 |
-| M1 | E3-S3 — Keychain | **Done** 2026-09-03 |
-| M0 | E0-S3 — Icon set | Not started |
-| M1 | E3-S4 — SSH host keys | **Done** 2026-09-03 |
-| M1 | E8-S1 — Listing state and loading | **Done** 2026-09-03 |
-| M1 | E8-S7 — Navigation and history | **Done** 2026-09-03 |
-| M1 | E8-S2 — Column layout `1f` | **Done** 2026-09-03 |
-| M1 | E8-S5/S6/S8, E9, E10 | Not started |
-| M2+ | everything else | Not started |
+| M0 | E2-S3 — Tauri commands and events | **Done** |
+| **M1** | E3-S1 — New Connection dialog | **Done** 2026-09-03 |
+| **M1** | E3-S2 — Bookmarks store | **Done** 2026-09-03 |
+| **M1** | E3-S3 — Keychain | **Done** 2026-09-03 |
+| **M1** | E3-S4 — SSH host keys | **Done** 2026-09-03 |
+| **M1** | E7-S2 — xsync v3 backend | **Done** 2026-09-03 |
+| **M1** | E8-S1 — Listing state and loading | **Done** 2026-09-03 |
+| **M1** | E8-S2 — Column layout `1f` | **Done** 2026-09-03 |
+| **M1** | E8-S5 — Kind detection | **Done** 2026-09-03 |
+| **M1** | E8-S6 — Sort and filter | **Done** 2026-09-03 |
+| **M1** | E8-S7 — Navigation and history | **Done** 2026-09-03 |
+| **M1** | E8-S8 — Selection model | **Done** 2026-09-03 |
+| **M1** | E9-S1/S2/S3 — Permission gating | **Done** 2026-09-03 |
+| **M1** | E10-S1 — Status bar | **Done** 2026-09-03 |
+| **M2** | E11-S1/S2/S3/S4 — Quick Look | **Done** 2026-09-03 |
+| **M2** | E12-S1 — Edit in place | **Done** 2026-09-03 |
+| **M2** | E13-S1/S2/S3/S4 — Transfers | **Done** 2026-09-03 |
+| **M2** | E13-S5 — Drag and drop | **Partly done** (inbound only) |
+| **M2** | E13-S6 — Conflicts and resume | **Partly done** |
+| **M2** | E14-S1 — New folder, rename, delete | **Done** 2026-09-03 |
+| **M2** | E15-S1 — Banner | **Done** 2026-09-03 |
+| **M2** | E15-S2 — Auth failure loop guard | **Done** 2026-09-03 |
+| M3+ | SFTP, SMB, NFS, polish, packaging | Not started |
+
+Every "partly done" and every unchecked AC bullet above is written up under its own
+story, with the reason it was left. Nothing here is done-but-unmentioned.
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
 theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. A user can
@@ -1957,7 +1972,7 @@ placeholder story that only records the request:
 | **M-1 xsyncv3 Phase 1** *(in `../xsync`)* | `xsyncv3.md` §5 Phase 1; E7-S0 here | `xs --server` speaks v3: open/read/write at offset, full attrs, statfs, advertised writability; `xsync-client` crate with a conformance fixture. |
 | **M0 Skeleton** | E0, E1-S1–S3, E2-S1–S3 (mock backend) | Pixel-matched `1a` and `1b` with fake data; theme switch; sidebar. |
 | **M1 First real share (xsync)** — **Done 2026-09-03** | E7-S2, E3-S1 (xsync tab, "via SSH"), E3-S2, E3-S4, E8-S1/S2/S5–S8, E9, E10 | Connect to `ssh host xs --server`, browse, RW/RO from `MountInfo`, capacity from `StatFs`, status bar live. |
-| **M2 Read, edit, move** | E11, E12, E13, E14, E15 *(fully unblocked 2026-09-03: `xsyncv3.md` E5-S4 gave E14 its verbs, E4-S6/S7 gave E12 its CAS and E13 its resumable uploads)* | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
+| **M2 Read, edit, move** — **Done 2026-09-03** *(bar drag-out and two partials)* | E11, E12, E13, E14, E15 | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
 | **M3 Other protocols** | E6 (SFTP, ports Kestrel), E4-S1–S6 (SMB), E5-S1–S4 (NFS), E3-S3 keychain | The handoff's SMB/NFS plus SFTP behind the trait xsync shaped; Docker fixtures arrive here. |
 | **M4 Polish** | E8-S3/S4/S9, E16, E17, E1-S4/S5, E19, E7-S1 (reduced mode), E7-S3 | Row variants, shortcuts, a11y, prefs, test matrix green, older-`xs` fallback. |
 | **M5 Release** | E18 | Signed macOS + Linux builds. |
