@@ -1,0 +1,346 @@
+//! The xsync protocol v3 backend.
+//!
+//! This is the adapter the plan called for building *before* extracting a trait
+//! on the xsync side: what it needs, and what it has to work around, is the
+//! evidence for what `xsync_client::Fs` should eventually contain.
+//!
+//! Two things it cannot do today, and says so rather than pretending:
+//! `rename` and `mkdir` have no v3 message yet (`xsyncv3.md` E5-S4), so they
+//! are refused as unsupported and `Caps::atomic_rename` is false.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use xsync_client::{attr_presence, Access, Client, Mount, OpenFile, CREATE, READ, TRUNC, WRITE};
+
+use super::{
+    Attrs, Capacity, Caps, Entry, EntryKind, Health, Listing, MountInfo, MountStatus, ShareBackend,
+    WriteMode,
+};
+use crate::error::{EngineError, Result};
+use crate::kind::label_for;
+
+/// A mounted xsync export.
+pub struct XsyncBackend {
+    mount: Mount,
+    /// Kept so the connection's tasks outlive every request made through it.
+    _client: Arc<Client>,
+    root_label: String,
+}
+
+impl XsyncBackend {
+    /// Connect over SSH and mount the export at `root`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the remote shell cannot start `xs`, the peer does not speak
+    /// protocol v3, or the export cannot be mounted.
+    pub async fn connect_ssh(host: &str, root: &str, rsh: Option<&str>) -> Result<Self> {
+        let client = Client::connect_ssh(host, root, rsh)
+            .await
+            .map_err(|error| map_error(&error))?;
+        Self::mount(client, root).await
+    }
+
+    /// Run `xs --server` locally and mount the directory at `root`.
+    ///
+    /// The same protocol over a pipe instead of a socket. It is how the backend
+    /// is exercised without a second machine, and it is a real deployment for a
+    /// share on the same host.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect_ssh`], plus failure to spawn `xs` itself.
+    pub async fn connect_local(program: &str, root: &str, read_only: bool) -> Result<Self> {
+        let mut command = tokio::process::Command::new(program);
+        command.arg("--server").arg(root);
+        if read_only {
+            command.arg("--read-only");
+        }
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|error| EngineError::Io(format!("could not start {program}: {error}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| EngineError::Io("xs stdout was not piped".to_owned()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| EngineError::Io("xs stdin was not piped".to_owned()))?;
+        let client = Client::from_split(stdout, stdin, 0)
+            .await
+            .map_err(|error| map_error(&error))?;
+        Self::mount(client, root).await
+    }
+
+    async fn mount(client: Client, root: &str) -> Result<Self> {
+        // The empty export name is the one `xs --server` serves; named exports
+        // arrive with the daemon.
+        let mount = client
+            .mount(b"", Access::ReadWrite)
+            .await
+            .map_err(|error| map_error(&error))?;
+        Ok(Self {
+            mount,
+            _client: Arc::new(client),
+            root_label: root.to_owned(),
+        })
+    }
+
+    /// The export root, for the status bar's plain-language restatement.
+    #[must_use]
+    pub fn root_label(&self) -> &str {
+        &self.root_label
+    }
+
+    /// Open one file with exactly the access asked for.
+    ///
+    /// A write-class open is refused here as well as by the server, so a UI bug
+    /// that offers a write on a read-only mount costs a local error rather than
+    /// a round trip.
+    async fn open(&self, path: &str, flags: u32) -> Result<OpenFile> {
+        const WRITE_CLASS: u32 = WRITE | CREATE | TRUNC;
+        if flags & WRITE_CLASS != 0 && !self.mount.info().writable {
+            return Err(EngineError::ReadOnly(self.mount.info().reason.clone()));
+        }
+        self.mount
+            .open(path.trim_matches('/').as_bytes(), flags)
+            .await
+            .map_err(|error| map_error(&error))
+    }
+}
+
+/// Translate a client error into the engine's taxonomy.
+///
+/// The mapping is by `io::ErrorKind` rather than by protocol code, because the
+/// client already does that translation and doing it twice would be two places
+/// to keep in step.
+fn map_error(error: &xsync_client::Error) -> EngineError {
+    use std::io::ErrorKind;
+    let message = error.to_string();
+    match error.kind() {
+        ErrorKind::NotFound => EngineError::NotFound(message),
+        ErrorKind::PermissionDenied => {
+            // The client folds EACCES and EROFS together as "denied"; only the
+            // second means the UI should have disabled the affordance, so the
+            // protocol code is what decides here.
+            if matches!(
+                error,
+                xsync_client::Error::Server {
+                    code: xsync_client::ErrorCode::ReadOnly,
+                    ..
+                }
+            ) {
+                EngineError::ReadOnly(message)
+            } else {
+                EngineError::PermissionDenied(message)
+            }
+        }
+        ErrorKind::AlreadyExists => EngineError::AlreadyExists(message),
+        ErrorKind::BrokenPipe => EngineError::Disconnected(message),
+        ErrorKind::Unsupported => EngineError::Unsupported(message),
+        _ => EngineError::Io(message),
+    }
+}
+
+const fn kind_of(kind: u8) -> EntryKind {
+    match kind {
+        1 => EntryKind::File,
+        2 => EntryKind::Dir,
+        3 => EntryKind::Symlink,
+        _ => EntryKind::Other,
+    }
+}
+
+/// The mask a listing asks for: enough to fill every column, and no more.
+///
+/// Each optional block costs the server work per entry, so asking for
+/// everything would make a 10,000-entry directory pay for fields no column
+/// shows.
+const LISTING_MASK: u32 = attr_presence::SYMLINK_TARGET;
+
+fn attrs_of(attrs: &xsync_client::Attrs) -> Attrs {
+    Attrs {
+        kind: kind_of(attrs.kind),
+        size: attrs.size,
+        // The wire carries nanoseconds; the UI works in milliseconds.
+        modified_ms: Some(attrs.mtime_ns / 1_000_000),
+        mode: Some(attrs.mode),
+        link_target: attrs
+            .symlink_target
+            .as_ref()
+            .map(|target| String::from_utf8_lossy(target).into_owned()),
+    }
+}
+
+#[async_trait]
+impl ShareBackend for XsyncBackend {
+    fn mount_info(&self) -> MountInfo {
+        let info = self.mount.info();
+        MountInfo {
+            status: MountStatus::Ready,
+            writable: info.writable,
+            reason: info.reason.clone(),
+            protocol_label: "xsync v3".to_owned(),
+            // The transport's own security label needs `SecurityInfo`, which
+            // arrives with the TLS transport. Over SSH it is OpenSSH's business
+            // and saying "ssh" is the honest amount to claim.
+            security_label: "ssh".to_owned(),
+            options: info.options.clone(),
+            capacity: None,
+            caps: self.caps(),
+        }
+    }
+
+    fn caps(&self) -> Caps {
+        let info = self.mount.info();
+        Caps {
+            random_access: true,
+            resume_write: true,
+            // No rename verb in v3 yet, so a temp-then-rename upload cannot
+            // promote atomically here (`xsyncv3.md` E5-S4).
+            atomic_rename: false,
+            symlinks: info.supports & xsync_client::supports::SYMLINKS != 0,
+            watch: info.supports & xsync_client::supports::NOTIFY != 0,
+        }
+    }
+
+    async fn capacity(&self) -> Result<Capacity> {
+        let usage = self
+            .mount
+            .statfs()
+            .await
+            .map_err(|error| map_error(&error))?;
+        Ok(Capacity {
+            // `available` rather than `free`: the root-only reserve is not
+            // space this session can use, so showing it would overstate.
+            free: usage.available_bytes,
+            total: usage.total_bytes,
+        })
+    }
+
+    async fn list_dir(&self, path: &str) -> Result<Listing> {
+        let relative = path.trim_matches('/');
+        let directory = self
+            .mount
+            .open(relative.as_bytes(), READ | xsync_client::DIRECTORY)
+            .await
+            .map_err(|error| map_error(&error))?;
+        let listed = directory
+            .read_dir_all(LISTING_MASK)
+            .await
+            .map_err(|error| map_error(&error));
+        // Closed whether or not the listing worked: a handle leaked per failed
+        // listing would exhaust the session's table.
+        let closed = directory.close().await;
+        let listed = listed?;
+        closed.map_err(|error| map_error(&error))?;
+
+        let entries = listed
+            .into_iter()
+            .map(|entry| {
+                let name = String::from_utf8_lossy(&entry.name).into_owned();
+                let attrs = attrs_of(&entry.attrs);
+                Entry {
+                    kind_label: match attrs.kind {
+                        EntryKind::Dir => "Folder".to_owned(),
+                        EntryKind::Symlink => "Alias".to_owned(),
+                        _ if name.starts_with('.') => "Hidden".to_owned(),
+                        _ => label_for(&name),
+                    },
+                    hidden: name.starts_with('.'),
+                    path: if relative.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{relative}/{name}")
+                    },
+                    name,
+                    attrs,
+                }
+            })
+            .collect();
+
+        Ok(Listing {
+            entries,
+            mount: self.mount_info(),
+        })
+    }
+
+    async fn stat(&self, path: &str) -> Result<Attrs> {
+        let attrs = self
+            .mount
+            .stat(path.trim_matches('/').as_bytes(), false, LISTING_MASK)
+            .await
+            .map_err(|error| map_error(&error))?;
+        Ok(attrs_of(&attrs))
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, length: u32) -> Result<Vec<u8>> {
+        let file = self.open(path, READ).await?;
+        // Verified: the server hashes what it sends and the client checks it
+        // before handing the bytes over, which is the whole reason the digest
+        // is on the wire.
+        let chunk = file
+            .read_verified(offset, length)
+            .await
+            .map_err(|error| map_error(&error));
+        let closed = file.close().await;
+        let chunk = chunk?;
+        closed.map_err(|error| map_error(&error))?;
+        Ok(chunk.data)
+    }
+
+    async fn write_range(&self, path: &str, mode: WriteMode, data: &[u8]) -> Result<u64> {
+        // `Create` truncates, as its name says; `Resume` must not, or resuming
+        // an interrupted upload would discard what had already landed. Both
+        // create the file when it is missing, which is what a caller writing to
+        // a new path means.
+        let (flags, offset) = match mode {
+            WriteMode::Create => (WRITE | CREATE | TRUNC, 0),
+            WriteMode::Resume { offset } => (WRITE | CREATE, offset),
+        };
+        let file = self.open(path, flags).await?;
+        let written = file
+            .write(offset, data)
+            .await
+            .map_err(|error| map_error(&error));
+        let flushed = file.flush().await;
+        let closed = file.close().await;
+        let written = written?;
+        flushed.map_err(|error| map_error(&error))?;
+        closed.map_err(|error| map_error(&error))?;
+        Ok(u64::from(written.bytes))
+    }
+
+    async fn mkdir(&self, _path: &str) -> Result<()> {
+        Err(EngineError::Unsupported(
+            "xsync protocol v3 has no directory-creation message yet (E5-S4)".to_owned(),
+        ))
+    }
+
+    async fn rename(&self, _from: &str, _to: &str, _replace: bool) -> Result<()> {
+        Err(EngineError::Unsupported(
+            "xsync protocol v3 has no rename message yet (E5-S4)".to_owned(),
+        ))
+    }
+
+    async fn remove(&self, _path: &str, _recursive: bool) -> Result<()> {
+        Err(EngineError::Unsupported(
+            "xsync protocol v3 has no unlink message yet (E5-S4)".to_owned(),
+        ))
+    }
+
+    async fn ping(&self) -> Result<Health> {
+        // `StatFs` is the cheapest round trip that proves the session still
+        // answers; there is no dedicated ping verb, and a keepalive is not
+        // routed back to a caller.
+        match self.mount.statfs().await {
+            Ok(_) => Ok(Health::Healthy),
+            Err(_) => Ok(Health::Failed),
+        }
+    }
+}

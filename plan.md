@@ -129,13 +129,16 @@ reconstruct it from git history.
 | M0 | E1-S3 — Sidebar | **Done** (fixed rows) |
 | M0 | E2-S1 — `ShareBackend` trait and mock | **Done** 2026-09-03 |
 | M0 | E2-S3 — Tauri commands and events | **Done** (`list_dir`, `mount_info`) |
+| M1 | E7-S2 — xsync v3 backend | **Done** 2026-09-03 |
 | M0 | E0-S3 — Icon set | Next |
 | M0 | E2-S2 — Session manager | Next |
-| M1 | E7-S2, E3-S1/S2/S4, E8, E9, E10 | Not started |
+| M1 | E3-S1/S2/S4, E8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
-theme switch and the sidebar — is met. `?screen=1b` is the one worth looking at: it
+theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`;
+what stands between it and the GUI is the session manager (E2-S2), which is what would
+let the app hold something other than the mock. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -583,15 +586,70 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 - `writable` = `true` unless the probe returns `permission denied` on a create-probe;
   `protocol_label` = `xsync v2`; `security_label` = `ssh`.
 
-#### E7-S2 — v3 backend
+#### E7-S2 — v3 backend — **Done (what v3 offers today)**
+
+*2026-09-03.*
+
 **AC**
-- `xsync-client` `Fs` → `ShareBackend` adapter; `MountInfo` maps from xsync
-  `MountInfo` (`effective_writable`, `reason`, `options` → status-bar restatement,
-  `SecurityInfo` → `xsync3 · tls1.3-aes-128-gcm`).
-- Range reads/writes, staged resumable uploads (`StageOpen/Write/Commit`), CAS on
-  edit write-back (`expect_cookie`), `StatFs` → capacity.
-- `watch` → live listing refresh (E8-S9) when the server advertises `NOTIFY`.
-- Session `Resume` within grace is surfaced as a `reconnecting` blip, not a banner.
+- [x] `xsync-client` → `ShareBackend` adapter; `MountInfo` maps from xsync's
+  (`effective_writable` → `writable`, `reason`, `options`). *(No `SecurityInfo` to map:
+  that arrives with the TLS transport, `xsyncv3.md` E2-S1. Over SSH the label is `ssh`,
+  which is the honest amount to claim — the security is OpenSSH's and this backend
+  cannot describe it.)*
+- [x] Range reads and writes; `StatFs` → capacity.
+- [ ] Staged resumable uploads and CAS on write-back. **Deferred:** `StageOpen/Write/
+  Commit` and `expect_cookie` are `xsyncv3.md` E4-S6/E4-S7 and do not exist yet. Plain
+  positional writes are what v3 has, so `Caps::atomic_rename` is false and the transfer
+  worker will use the safe path.
+- [ ] `watch` → live listing refresh. **Deferred** with E7 on the xsync side; `Caps::watch`
+  reads the `NOTIFY` support bit, which no server sets yet, so it is already wired to
+  turn on by itself.
+- [ ] Session `Resume` as a `reconnecting` blip. **Deferred** with E3-S2 on the xsync
+  side; there is no session identity to resume against.
+
+**Results**
+
+- **This is the first real protocol backend, and it works end to end.** `xcal ls
+  --xsync-local <dir> --xs <binary>` spawns `xs --server`, negotiates v3, mounts, lists,
+  reads with digest verification, and writes. Three integration tests cover it against a
+  real server, skipped unless `EXCALIBUR_XS` names an `xs` binary — mocking the protocol
+  here would only test the mock.
+- **The adapter earned its place immediately by finding two bugs**, which is the reason
+  `xsyncv3.md` E9-S1 deliberately left the `Fs` trait unbuilt until something consumed
+  the client:
+  - `Mount::open` sent `mode: 0`, so a created file landed as `----------` and the next
+    read of it was `EACCES`. The server was doing exactly as asked; the *convenience*
+    method should not ask for that. It now passes `0o666` before umask when the flags
+    create, like an ordinary `open(2)`. Fixed upstream, because every consumer would
+    have hit it.
+  - The client had no way to drive a session over separate read and write halves, which
+    is what a child process and an SSH channel both are. `Client::from_split` is now
+    public; `connect_ssh` was already doing this internally.
+- **Three verbs are refused as `Unsupported` rather than emulated**: `mkdir`, `rename`
+  and `remove` have no v3 message (`xsyncv3.md` E5-S4). A UI reads that and disables the
+  verb, which is better than offering it and reporting a confusing failure. It is also
+  the clearest possible statement of what E5-S4 is for.
+- A write-class open is refused locally *and* by the server. The local check saves a
+  round trip; the server's is what makes a bug in the local one harmless.
+- `capacity` reports `available_bytes`, not `free_bytes`: the root-only reserve is not
+  space this session can use, and showing it would overstate what a user can write.
+- Handles are closed on the failure path as well as the success path. A leaked handle
+  per failed listing would exhaust the session's table, and the failure that leaks is
+  the one that repeats.
+- The listing asks for one optional attribute block (`SYMLINK_TARGET`), not all of them.
+  Each block costs the server work per entry, so asking for everything would make a
+  large directory pay for columns nothing shows.
+
+**Next steps**
+
+- **Extract `xsync_client::Fs` now.** This adapter is the evidence E9-S1 was waiting
+  for: the methods it actually needed are list/stat/read/write/statfs/capacity, and the
+  ones it could not use say as much about the trait as the ones it could.
+- The dependency is a path dep to a sibling checkout. E7-S0 wants a pinned git revision
+  with a documented `[patch]` override; that needs xsync's `v3` branch pushed somewhere
+  first, so it is blocked rather than skipped.
+- **E2-S2 (session manager)** is what lets the app hold this backend rather than the
+  mock, and is the next thing between here and a GUI showing a real share.
 
 #### E7-S3 — Export picker
 **AC**

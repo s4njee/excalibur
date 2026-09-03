@@ -6,7 +6,10 @@
 
 use std::process::ExitCode;
 
+use std::sync::Arc;
+
 use excalibur_engine::backend::mock::MockBackend;
+use excalibur_engine::backend::xsync::XsyncBackend;
 use excalibur_engine::ShareBackend;
 
 const USAGE: &str = "\
@@ -16,26 +19,77 @@ USAGE:
     xcal ls [PATH]        list a directory of the mock share
     xcal stat PATH        metadata for one path
     xcal mount            the mount facts a status bar would show
+    xcal cat PATH         read a file through the backend
+    xcal write PATH TEXT  write a file through the backend
     xcal df               capacity
 
-Every command takes --read-only to serve the mock share read-only, and
---json to print machine-readable output.
+By default these run against the in-memory mock. To drive a real xsync
+export instead:
+
+    --xsync-local PATH    run `xs --server PATH` and speak v3 over its pipes
+    --xs BINARY           which xs to run (default: xs on PATH)
+    --xsync-ssh HOST:PATH connect over ssh
+
+Every command takes --read-only, and --json to print machine-readable
+output.
 ";
 
 #[tokio::main]
+// Argument parsing, backend selection and one arm per command, read top to
+// bottom. A CLI this small does not gain from being spread across helpers; it
+// grows a proper parser when it grows a proper set of commands.
+#[allow(clippy::too_many_lines)]
 async fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let json = arguments.iter().any(|argument| argument == "--json");
     let read_only = arguments.iter().any(|argument| argument == "--read-only");
-    let positional: Vec<&String> = arguments
-        .iter()
-        .filter(|argument| !argument.starts_with("--"))
-        .collect();
+    // A flag's value is not a positional argument, so skip whatever follows
+    // the flags that take one.
+    let takes_value = ["--xsync-local", "--xsync-ssh", "--xs"];
+    let mut positional: Vec<&String> = Vec::new();
+    let mut skip_next = false;
+    for argument in &arguments {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if argument.starts_with("--") {
+            skip_next = takes_value.contains(&argument.as_str());
+            continue;
+        }
+        positional.push(argument);
+    }
 
-    let backend = if read_only {
-        MockBackend::media_share().read_only("export is read-only")
+    let value_of = |flag: &str| -> Option<String> {
+        let index = arguments.iter().position(|argument| argument == flag)?;
+        arguments.get(index + 1).cloned()
+    };
+
+    let backend: Arc<dyn ShareBackend> = if let Some(root) = value_of("--xsync-local") {
+        let program = value_of("--xs").unwrap_or_else(|| "xs".to_owned());
+        match XsyncBackend::connect_local(&program, &root, read_only).await {
+            Ok(backend) => Arc::new(backend),
+            Err(error) => {
+                eprintln!("xcal: could not mount {root} over xsync: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if let Some(target) = value_of("--xsync-ssh") {
+        let Some((host, root)) = target.split_once(':') else {
+            eprintln!("xcal: --xsync-ssh wants HOST:PATH");
+            return ExitCode::from(2);
+        };
+        match XsyncBackend::connect_ssh(host, root, None).await {
+            Ok(backend) => Arc::new(backend),
+            Err(error) => {
+                eprintln!("xcal: could not mount {target} over xsync: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if read_only {
+        Arc::new(MockBackend::media_share().read_only("export is read-only"))
     } else {
-        MockBackend::media_share()
+        Arc::new(MockBackend::media_share())
     };
 
     let Some(command) = positional.first() else {
@@ -95,6 +149,28 @@ async fn main() -> ExitCode {
                 serde_json::to_string_pretty(&backend.mount_info()).expect("mount serialises")
             );
             Ok(())
+        }
+        "cat" => {
+            let Some(path) = positional.get(1) else {
+                eprintln!("cat needs a path");
+                return ExitCode::from(2);
+            };
+            // Reads go through the backend's verified path where the protocol
+            // has one, so this also exercises the digest check.
+            backend.read_range(path, 0, 64 * 1024).await.map(|bytes| {
+                use std::io::Write as _;
+                let _ = std::io::stdout().write_all(&bytes);
+            })
+        }
+        "write" => {
+            let (Some(path), Some(text)) = (positional.get(1), positional.get(2)) else {
+                eprintln!("write needs a path and some text");
+                return ExitCode::from(2);
+            };
+            backend
+                .write_range(path, excalibur_engine::WriteMode::Create, text.as_bytes())
+                .await
+                .map(|count| println!("wrote {count} bytes"))
         }
         "df" => backend.capacity().await.map(|capacity| {
             println!("{} free of {}", capacity.free, capacity.total);

@@ -51,6 +51,28 @@ cargo run --bin xcal -- ls          # the mock share, as the engine sees it
 cargo run --bin xcal -- ls --read-only --json
 ```
 
+### Against a real xsync export
+
+The xsync backend is connected. With an `xs` binary built from the sibling
+[`xsync`](../xsync) checkout:
+
+```bash
+XS=../xsync/target/debug/xs
+cargo run --bin xcal -- ls   --xsync-local /path/to/share --xs "$XS"
+cargo run --bin xcal -- cat  notes.txt --xsync-local /path/to/share --xs "$XS"
+cargo run --bin xcal -- ls   --xsync-ssh nas.local:/srv/media
+```
+
+`--xsync-local` runs `xs --server` and speaks protocol v3 over its pipes, which
+is the same protocol a remote session uses. Add `--read-only` to see the mount
+refuse writes and say why.
+
+The backend's tests run against a real server and are skipped without one:
+
+```bash
+EXCALIBUR_XS=../xsync/target/debug/xs cargo test -p excalibur-engine
+```
+
 ## Checks
 
 ```bash
