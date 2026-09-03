@@ -30,10 +30,14 @@ const latencyMs = screen === "slow" ? 1500 : undefined;
 // carry. Nothing else about the window changes.
 const rows = screen === "huge" ? 100_000 : undefined;
 
+// `banner` renders E15-S1's connection failure: the strip under the toolbar,
+// the dimmed list and the red health dot, all from one dropped mount event.
+const dropped = screen === "banner";
+
 render(
   () =>
-    hostKey || latencyMs || rows ? (
-      <App backend={fixtureBackend({ hostKey, latencyMs, rows })} />
+    hostKey || latencyMs || rows || dropped ? (
+      <App backend={fixtureBackend({ hostKey, latencyMs, rows, dropped })} />
     ) : (
       <App readOnly={readOnly} />
     ),

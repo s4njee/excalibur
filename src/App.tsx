@@ -11,7 +11,15 @@ import {
   type BookmarkStore,
 } from "./state/bookmarks";
 import { toSpec, type Draft } from "./state/connection";
-import { FileList, shellStyles as styles, Sidebar, StatusBar, TitleBar, Toolbar } from "./components/Shell";
+import {
+  Banner,
+  FileList,
+  shellStyles as styles,
+  Sidebar,
+  StatusBar,
+  TitleBar,
+  Toolbar,
+} from "./components/Shell";
 import { defaultBackend, fixtureBackend, writeGuarded, type Backend } from "./state/backend";
 import type { Bookmark, Entry, MountEvent, MountInfo, Theme } from "./state/types";
 import { createListing } from "./state/listing";
@@ -275,6 +283,13 @@ export default function App(props: {
   };
 
   const [remounting, setRemounting] = createSignal(false);
+  /**
+   * A connection-level failure, shown in the banner under the toolbar.
+   *
+   * Only `Surface::Banner` reaches here. The engine classifies its own errors,
+   * so a per-item failure goes to the transfer queue and a validation failure
+   * to its field, without this deciding which is which.
+   */
   const [problem, setProblem] = createSignal<string | null>(null);
   // The last thing the engine said about the active mount. Held separately
   // from the listing because a mount that has *dropped* has no listing to
@@ -302,7 +317,15 @@ export default function App(props: {
       // be re-read rather than trusted — a reconnected share can be read-only
       // now. Re-listing rather than taking them from the event keeps the badge
       // and the rows sourced from one place.
-      if (event.status === "ready") listingState.load(path());
+      if (event.status === "ready") {
+        // Back, so the banner goes and the facts are re-read together.
+        setProblem(null);
+        listingState.load(path());
+      } else if (event.status === "reconnecting" || event.status === "error") {
+        setProblem(
+          event.reason ?? "The connection to this share dropped. Reconnecting…",
+        );
+      }
     });
     onCleanup(stop);
   });
@@ -316,7 +339,10 @@ export default function App(props: {
    */
   const mountFacts = (fallback: MountInfo): MountInfo => {
     const event = mountEvent();
-    return event === null ? fallback : { ...fallback, status: event.status };
+    // A banner and a green health dot at the same time would be the window
+    // disagreeing with itself, so the dot follows whichever is worse.
+    const status = event?.status ?? (problem() === null ? fallback.status : "error");
+    return { ...fallback, status };
   };
 
   /**
@@ -608,6 +634,16 @@ export default function App(props: {
             onAscend={ascend}
             onCrumb={onCrumb}
           />
+          <Show when={problem()}>
+            {(message) => (
+              <Banner
+                message={message()}
+                reconnecting={remounting()}
+                onReconnect={remountAction()}
+                onDismiss={() => setProblem(null)}
+              />
+            )}
+          </Show>
           <div class={styles.body}>
             <Sidebar
               bookmarks={bookmarks()}
@@ -622,7 +658,7 @@ export default function App(props: {
                 if (bookmark) setConnecting(toDraft(bookmark));
               }}
             />
-            <div class={styles.listColumn}>
+            <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
               <FileList
                 entries={entries()}
                 selected={selected}
@@ -651,18 +687,6 @@ export default function App(props: {
               />
             </div>
           </div>
-          {/* A connection failure has no home until E15-S1's banner. A toast
-              is not that banner, but it beats swallowing the error. */}
-          <Show when={problem()}>
-            {(message) => (
-              <div class={styles.toast}>
-                <span>{message()}</span>
-                <button class={styles.toastAction} onClick={() => setProblem(null)}>
-                  Dismiss
-                </button>
-              </div>
-            )}
-          </Show>
           <Show when={pendingDelete()}>
             {(pending) => (
               <div class={styles.toast}>

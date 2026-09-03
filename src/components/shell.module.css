@@ -732,3 +732,57 @@
   border-color: var(--error);
   color: #ffffff;
 }
+
+/* Connection banner (E15-S1), to the handoff's §Errors prose. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 26px;
+  padding: 4px 10px;
+  background: var(--error-chip-bg);
+  border-bottom: 1px solid var(--error);
+  color: var(--error);
+  font-size: 11.5px;
+}
+
+.bannerMessage {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bannerAction {
+  flex: none;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--error);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--error);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.bannerAction:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bannerDismiss {
+  flex: none;
+  border: 0;
+  background: none;
+  color: var(--error);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* The list dims while the connection is in trouble, so nothing on screen
+   reads as current. */
+.listDimmed {
+  opacity: 0.5;
+}

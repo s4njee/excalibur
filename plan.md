@@ -149,7 +149,7 @@ open the dialog, pick a protocol, connect, and have the bookmark persist. The di
 password field now reaches the OS keychain when "Save in keychain" is ticked, though no
 backend authenticates with it yet (E4/E6). Browsing is live: double-click descends,
 Back/Forward/↑ and the breadcrumb all work, and a slow listing dims rather than blanks.
-Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge`.
+Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge` / `banner`.
 `?screen=1b` is now the permission-gating screen too: Edit and Upload disabled with the
 server's reason as their tooltip, Quick Look and Download still live, and a
 `Remount as RW` recovery button in the status bar. `?screen=1b` is the one worth looking at: it
@@ -1539,14 +1539,49 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E15 — Connection health and errors *(handoff §Errors — "not mocked yet")*
 
-#### E15-S1 — Banner
+#### E15-S1 — Banner — **Done**
+
+*2026-09-03.*
+
 **AC**
-- Connection-level failures (unreachable, auth rejected, stale handle, TLS/host-key
-  changed) show a strip under the toolbar `#fdeaea`/`#c0392b` with the message and a
-  `Reconnect` button; list dims to `opacity: .5`; health dot flips to `#c0392b`.
-- Banner clears on successful reconnect; `writable` and capacity re-read.
-- Built to the handoff's prose; screenshot attached to `docs/design-gaps.md` for
-  sign-off.
+- [x] Connection-level failures show a strip under the toolbar `#fdeaea`/`#c0392b` with
+  the message and a `Reconnect` button; list dims to `opacity: .5`; health dot flips to
+  `#c0392b`.
+- [x] Banner clears on successful reconnect; `writable` and capacity re-read.
+- [x] Built to the handoff's prose; recorded in `docs/design-gaps.md` for sign-off —
+  as a **live preview route** rather than a screenshot, see below.
+
+**Results**
+
+- **The banner has a real source, not a synthetic one.** It is raised by the mount event
+  stream E10-S1 connected: a `reconnecting` or `error` event puts it up, and a `ready`
+  event takes it down *and* re-lists, so `writable` and capacity are re-read from the
+  listing rather than patched. That is the AC's second bullet falling out of E10's
+  design rather than needing its own mechanism.
+- **Only `Surface::Banner` reaches it.** The engine classifies its own errors, so a
+  per-item failure goes to the transfer queue and a validation failure to its field
+  without this deciding which is which. That classification has been in `EngineError`
+  since M0 and this is the first thing to use it for routing.
+- **The health dot follows the banner.** A red strip above a green dot would be the
+  window disagreeing with itself, so the dot takes whichever of the two is worse.
+- Every literal checked from computed style on the rendered page: `#fdeaea` ground,
+  `#c0392b` line and text, list at `0.5`, dot at `#c0392b`.
+- It **replaces two placeholders**: E9-S3's failure toast and the design-gaps entry that
+  recorded it. That entry is now the banner's own sign-off note.
+- `?screen=banner` renders the state from a real dropped-mount event. The AC asked for a
+  screenshot; a route that goes through the same path a real failure takes seemed more
+  useful than an image that goes stale — and that substitution is flagged in
+  `docs/design-gaps.md` rather than made quietly.
+
+**Next steps**
+
+- `Reconnect` calls **E9-S3**'s `remount_read_write`, which asks for read-write. That is
+  right for the read-only recovery it was built for and slightly wrong here: a plain
+  reconnect should ask for whatever the bookmark asked for. Worth a distinct engine call.
+- **E15-S2** (auth failure loop guard) is the other half of this epic: a rejected
+  credential should open the connection editor rather than retry.
+- A `reconnecting` mount shows the banner but nothing indicates the retry is in flight
+  on its own timer. The engine backs off internally; the window only sees the events.
 
 #### E15-S2 — Auth failure loop guard
 **AC**

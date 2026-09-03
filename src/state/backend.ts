@@ -80,6 +80,12 @@ export function fixtureBackend(
      * 100k files is not something to keep in a fixture.
      */
     rows?: number;
+    /**
+     * Emit a `reconnecting` mount event shortly after subscribing, so E15-S1's
+     * banner can be seen. It goes through the real event stream rather than a
+     * fake, because the wiring is the part worth looking at.
+     */
+    dropped?: boolean;
   } = {},
 ): Backend {
   const hostKeyFailure = () => {
@@ -193,9 +199,22 @@ export function fixtureBackend(
     async remove(): Promise<void> {
       throw new Error("not connected to the engine — run the desktop app");
     },
-    // Nothing changes state in a browser: the fixture is one fixed mount.
-    onMountChanged(): () => void {
-      return () => undefined;
+    // Nothing changes state in a browser unless the preview asked for it.
+    onMountChanged(handler: (event: MountEvent) => void): () => void {
+      if (!options.dropped) return () => undefined;
+      const timer = setTimeout(
+        () =>
+          handler({
+            // The demo share's bookmark id, so this passes the same
+            // active-mount filter a real event does.
+            id: "smb:nas.local:media",
+            status: "reconnecting",
+            mount: null,
+            reason: "nas.local stopped answering",
+          }),
+        400,
+      );
+      return () => clearTimeout(timer);
     },
     // A browser cannot open a TCP socket, so it cannot answer this. Claiming
     // "reachable" would dim nothing and claiming "unreachable" would dim

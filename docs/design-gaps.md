@@ -29,14 +29,26 @@ only from a transfer that failed because of it. The engine call
 (`remount_read_write`) is shared either way; removing the button is deleting one
 element.
 
-## Connection failures as a toast *(E9-S3, 2026-09-03)*
+## Connection banner *(E15-S1, 2026-09-03)*
 
-**The mock** routes connection-level failures to a banner under the toolbar
-(§Errors), which the handoff describes in prose but does not draw.
+**The mock** does not draw it. §Errors describes it in prose and says "build to
+this description or ask for the mock".
 
-**What was built:** a temporary toast, reusing the undo toast's styling, so a
-failed remount is visible rather than swallowed. **E15-S1** builds the real
-banner to the handoff's prose and replaces this.
+**What was built**, to that description exactly: a strip under the toolbar,
+`#fdeaea` on a `#c0392b` line with `#c0392b` text, carrying the failure message,
+a `Reconnect` button and a dismiss. The list dims to `opacity: .5` and the
+status-bar health dot flips from `#2f9e5f` to `#c0392b`.
+
+**Sign-off:** rather than a static screenshot, the state is live at
+`?screen=banner` — it renders from a real dropped-mount event through the same
+path a real failure takes, so what a designer sees is what the app does. The
+AC asked for a screenshot; a reproducible route seemed more useful than an
+image that goes stale, and that substitution is itself worth a nod.
+
+**For the designer:** two judgement calls. The banner is full width, so it sits
+above the sidebar as well as the list rather than only over the list. And it is
+dismissible — a user who knows the share is down should be able to get the strip
+out of the way without reconnecting.
 
 ## Rename and delete confirmations *(E14-S1, 2026-09-03)*
 
