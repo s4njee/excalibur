@@ -6,7 +6,7 @@
 // actually produces — regenerate it rather than editing it.
 
 import fixture from "./fixture.json";
-import type { Listing, MountEvent, MountInfo } from "./types";
+import type { Conflict, Listing, MountEvent, MountInfo, Transfer } from "./types";
 
 /** A connection spec, as the engine takes it. Never carries a secret. */
 export type Spec = Record<string, unknown>;
@@ -52,6 +52,30 @@ export interface Backend {
   rename(from: string, to: string, replace: boolean): Promise<void>;
   /** Remove a file, or a directory and everything under it. */
   remove(path: string, recursive: boolean): Promise<void>;
+  /**
+   * Every transfer, oldest first.
+   *
+   * Read on open and after any gap in the event stream. A broadcast channel
+   * drops messages for a slow consumer without saying so, so there has to be
+   * a way back to the truth.
+   */
+  transfers(): Promise<Transfer[]>;
+  /** Queue a download of each path into a local folder. */
+  enqueueDownloads(paths: string[], destination: string): Promise<string[]>;
+  /** Queue an upload of each local path into a share folder. */
+  enqueueUploads(paths: string[], destination: string): Promise<string[]>;
+  pauseTransfer(id: string): Promise<void>;
+  cancelTransfer(id: string): Promise<void>;
+  /** Put a paused or failed transfer back in the queue. */
+  retryTransfer(id: string): Promise<void>;
+  pauseAllTransfers(): Promise<void>;
+  clearFinishedTransfers(): Promise<void>;
+  /** Where downloads land by default. */
+  downloadFolder(): Promise<string>;
+  /** Which destinations are taken, and what "Keep both" would call them. */
+  checkConflicts(paths: string[], destination: string, upload: boolean): Promise<Conflict[]>;
+  /** Subscribe to queue changes. Returns an unsubscribe. */
+  onTransferChanged(handler: (transfer: Transfer) => void): () => void;
   /** Accept a host's SSH key, after the user compared its fingerprint. */
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
@@ -86,6 +110,11 @@ export function fixtureBackend(
      * fake, because the wiring is the part worth looking at.
      */
     dropped?: boolean;
+    /**
+     * Seed the queue so E13's panel can be looked at. These are fixed rows,
+     * not a simulation — the worker is Rust and does not run in a browser.
+     */
+    queue?: Transfer[];
   } = {},
 ): Backend {
   const hostKeyFailure = () => {
@@ -187,6 +216,32 @@ export function fixtureBackend(
       await new Promise((resolve) => setTimeout(resolve, 250));
       if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
+    },
+    // A browser has no queue and nothing to move it with. Empty rather than
+    // invented: a preview showing fake transfers would be a preview of
+    // something the app does not do.
+    async transfers(): Promise<Transfer[]> {
+      return options.queue ?? [];
+    },
+    async enqueueDownloads(): Promise<string[]> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async enqueueUploads(): Promise<string[]> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async pauseTransfer(): Promise<void> {},
+    async cancelTransfer(): Promise<void> {},
+    async retryTransfer(): Promise<void> {},
+    async pauseAllTransfers(): Promise<void> {},
+    async clearFinishedTransfers(): Promise<void> {},
+    async downloadFolder(): Promise<string> {
+      return "~/Downloads";
+    },
+    async checkConflicts(): Promise<Conflict[]> {
+      return [];
+    },
+    onTransferChanged(): () => void {
+      return () => undefined;
     },
     // The preview has no filesystem behind it. Refusing is honest; pretending
     // to succeed would leave the list showing something that is not there.
@@ -317,6 +372,66 @@ function tauriBackend(): Backend {
     async remove(path: string, recursive: boolean): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("remove", { path, recursive });
+    },
+    async transfers(): Promise<Transfer[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<Transfer[]>("transfers");
+    },
+    async enqueueDownloads(paths: string[], destination: string): Promise<string[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string[]>("enqueue_downloads", { paths, destination });
+    },
+    async enqueueUploads(paths: string[], destination: string): Promise<string[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string[]>("enqueue_uploads", { paths, destination });
+    },
+    async pauseTransfer(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("pause_transfer", { id });
+    },
+    async cancelTransfer(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("cancel_transfer", { id });
+    },
+    async retryTransfer(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("retry_transfer", { id });
+    },
+    async pauseAllTransfers(): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("pause_all_transfers");
+    },
+    async clearFinishedTransfers(): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("clear_finished_transfers");
+    },
+    async downloadFolder(): Promise<string> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string>("download_folder");
+    },
+    async checkConflicts(
+      paths: string[],
+      destination: string,
+      upload: boolean,
+    ): Promise<Conflict[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<Conflict[]>("check_conflicts", { paths, destination, upload });
+    },
+    onTransferChanged(handler: (transfer: Transfer) => void): () => void {
+      let stop: (() => void) | null = null;
+      let cancelled = false;
+      void import("@tauri-apps/api/event").then(({ listen }) =>
+        listen<{ transfer: Transfer }>("transfer://progress", (message) =>
+          handler(message.payload.transfer),
+        ).then((unlisten) => {
+          if (cancelled) unlisten();
+          else stop = unlisten;
+        }),
+      );
+      return () => {
+        cancelled = true;
+        stop?.();
+      };
     },
     async trustHostKey(host: string, port: number): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");

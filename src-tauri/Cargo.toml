@@ -22,6 +22,8 @@ workspace = true
 [dependencies]
 async-trait = { workspace = true }
 excalibur-engine = { path = "../crates/engine" }
+# The default download folder (E13-S4). Already in the tree via the engine.
+dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
@@ -30,3 +32,4 @@ tauri = { version = "2", features = [] }
 # directory.
 tauri-plugin-store = "2"
 tokio = { workspace = true }
+tauri-plugin-dialog = "2.7.3"

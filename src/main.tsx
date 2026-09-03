@@ -34,10 +34,46 @@ const rows = screen === "huge" ? 100_000 : undefined;
 // the dimmed list and the red health dot, all from one dropped mount event.
 const dropped = screen === "banner";
 
+/**
+ * `transfers` renders E13's queue with one row of each state, which is the
+ * only way to look at "failed with a Remount button" without breaking a share.
+ */
+const queue =
+  screen === "transfers"
+    ? [
+        {
+          id: "1", direction: "down" as const, name: "Arrival.2016.mkv",
+          sourcePath: "Arrival.2016.mkv", destPath: "/Users/me/Downloads/Arrival.2016.mkv",
+          bytesDone: 41_200_000_000, bytesTotal: 61_700_000_000,
+          rate: 112_000_000, etaSeconds: 184, status: "running" as const,
+          error: null, queuedAtMs: 1,
+        },
+        {
+          id: "2", direction: "up" as const, name: "notes.txt",
+          sourcePath: "/Users/me/notes.txt", destPath: "media/notes.txt",
+          bytesDone: 0, bytesTotal: 4096, rate: null, etaSeconds: null,
+          status: "queued" as const, error: null, queuedAtMs: 2,
+        },
+        {
+          id: "3", direction: "down" as const, name: "cover-art.jpg",
+          sourcePath: "cover-art.jpg", destPath: "/Users/me/Downloads/cover-art.jpg",
+          bytesDone: 84_000, bytesTotal: 84_000, rate: null, etaSeconds: null,
+          status: "done" as const, error: null, queuedAtMs: 3,
+        },
+        {
+          id: "4", direction: "up" as const, name: "report.pdf",
+          sourcePath: "/Users/me/report.pdf", destPath: "media/report.pdf",
+          bytesDone: 0, bytesTotal: 120_000, rate: null, etaSeconds: null,
+          status: "failed" as const,
+          error: "read-only mount: export mapped `ro,root_squash`", queuedAtMs: 4,
+        },
+      ]
+    : undefined;
+
 render(
   () =>
-    hostKey || latencyMs || rows || dropped ? (
-      <App backend={fixtureBackend({ hostKey, latencyMs, rows, dropped })} />
+    hostKey || latencyMs || rows || dropped || queue ? (
+      <App backend={fixtureBackend({ hostKey, latencyMs, rows, dropped, queue })} />
     ) : (
       <App readOnly={readOnly} />
     ),

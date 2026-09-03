@@ -13,6 +13,7 @@
 //! them would spend more time drawing than copying. Every update goes through
 //! [`Progress`], which decides whether the window is told.
 
+pub mod conflict;
 pub mod queue;
 pub mod rate;
 pub mod worker;

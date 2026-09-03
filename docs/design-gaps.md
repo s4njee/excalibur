@@ -102,3 +102,18 @@ overlapping the file list, which is what an in-window panel is.
 
 **For the designer:** if it should be a real window that can be dragged outside
 the app and left open beside it, that is a different thing and worth saying so.
+
+## Transfers as a sheet, not a second window *(E13-S1, 2026-09-03)*
+
+**The mock** (§Screens/4) draws a 560px panel. `plan.md` reads it as "a
+separate window (default) or slide-down sheet (preference)".
+
+**What was built:** the sheet only. The preference that would offer the other
+has nowhere to live until E17 brings a preferences store with a UI, and a
+second Tauri window costs an entry point and an IPC bridge for a choice nobody
+can currently make. The panel is the same 560px and the same content either way.
+
+**For the designer:** if the separate window is the important one — because it
+can be left open beside the browser while working — that changes the priority
+and is worth saying. Same question as Quick Look's panel, and probably the same
+answer for both.

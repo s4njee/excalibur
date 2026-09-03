@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { formatCapacity, formatCounts, formatModified, formatSize } from "./format";
+import {
+  formatCapacity,
+  formatCounts,
+  formatDuration,
+  formatModified,
+  formatSize,
+  formatTransferStatus,
+} from "./format";
 
 describe("the strings the design specifies", () => {
   it("renders the mock's own figures", () => {
@@ -58,5 +65,61 @@ describe("formatCounts with a filter", () => {
 
   it("is unchanged when no total is given", () => {
     expect(formatCounts(13, 0, 0)).toBe("13 items");
+  });
+});
+
+describe("transfer row strings", () => {
+  const running = {
+    status: "running",
+    bytesDone: 41_200_000_000,
+    bytesTotal: 61_700_000_000,
+    rate: 112_000_000,
+    etaSeconds: 184,
+  };
+
+  it("produces the design's running string", () => {
+    expect(formatTransferStatus(running)).toBe("41.2 / 61.7 GB · 112 MB/s · 3m 04s");
+  });
+
+  it("shows the unit once, on the total", () => {
+    // "41.2 GB / 61.7 GB" is what a naive version produces and is not what
+    // the design shows.
+    expect(formatTransferStatus(running)).not.toContain("GB /");
+  });
+
+  it("leaves out what it cannot say rather than filling it in", () => {
+    // A row reading "· — · —" is noise.
+    expect(
+      formatTransferStatus({ ...running, rate: null, etaSeconds: null }),
+    ).toBe("41.2 / 61.7 GB");
+  });
+
+  it("says queued and done exactly as the design does", () => {
+    expect(formatTransferStatus({ ...running, status: "queued" })).toBe("queued");
+    expect(
+      formatTransferStatus({ ...running, status: "done", bytesDone: 84_000 }),
+    ).toBe("done · 84 KB");
+  });
+
+  it("falls back to a plain count when the size is unknown", () => {
+    expect(
+      formatTransferStatus({ ...running, bytesTotal: 0, rate: null, etaSeconds: null }),
+    ).toBe("41.2 GB");
+  });
+});
+
+describe("formatDuration", () => {
+  it("uses at most two units", () => {
+    expect(formatDuration(12)).toBe("12s");
+    expect(formatDuration(184)).toBe("3m 04s");
+    expect(formatDuration(3720)).toBe("1h 02m");
+  });
+
+  it("pads the second field, so a column of them lines up", () => {
+    expect(formatDuration(65)).toBe("1m 05s");
+  });
+
+  it("does not report a negative remaining time", () => {
+    expect(formatDuration(-5)).toBe("0s");
   });
 });

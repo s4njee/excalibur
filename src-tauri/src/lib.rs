@@ -16,9 +16,12 @@ use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{ConnectionSpec, Protocol, ShareBackend};
+use excalibur_engine::transfer::conflict::{self, Conflict};
+use excalibur_engine::transfer::queue::TransferQueue;
+use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::{
-    hostkeys, Connector, EngineError, KeyringStore, KnownHosts, Listing, MountInfo, Result, Secret,
-    SecretStore, SessionManager, Trust,
+    hostkeys, Connector, Direction, EngineError, KeyringStore, KnownHosts, Listing, MountInfo,
+    Result, Secret, SecretStore, SessionManager, Transfer, TransferStatus, Trust,
 };
 use tauri::http;
 use tauri::{Emitter, Manager};
@@ -93,6 +96,28 @@ impl Connector for ProtocolConnector {
     }
 }
 
+/// The worker's window onto the session manager.
+///
+/// A thin adapter rather than the worker taking a `SessionManager` directly:
+/// the worker should not know how a mount is chosen, only that there is one,
+/// which is what lets a transfer survive a reconnect that swapped the backend
+/// underneath it.
+struct ActiveMount {
+    sessions: Arc<SessionManager>,
+    demo: Arc<dyn ShareBackend>,
+}
+
+#[async_trait]
+impl BackendSource for ActiveMount {
+    async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
+        Ok(self
+            .sessions
+            .active_backend()
+            .await
+            .unwrap_or_else(|_| Arc::clone(&self.demo)))
+    }
+}
+
 /// What the shell holds: the mounts, and a demo share when there are none.
 struct AppState {
     sessions: Arc<SessionManager>,
@@ -102,6 +127,10 @@ struct AppState {
     /// Accepted SSH host keys. Shared with the connector, which is what
     /// enforces them.
     known_hosts: KnownHosts,
+    /// Everything moving, or waiting to.
+    transfers: Arc<TransferQueue>,
+    /// Moves it. Held so a new enqueue can wake it.
+    worker: Arc<Worker>,
     /// Serves the design's fixed data until a real share is mounted, so the
     /// window has something to draw on first run.
     demo: Arc<dyn ShareBackend>,
@@ -368,6 +397,198 @@ async fn remove(
         .map_err(Into::into)
 }
 
+/// Everything in the queue, oldest first.
+///
+/// The window reads this on open and after any lag on the event stream. A
+/// broadcast channel drops messages for a slow consumer without telling it, so
+/// there has to be a way back to the truth — the sibling engine has none, and
+/// its queue view can desync permanently.
+#[tauri::command]
+async fn transfers(state: tauri::State<'_, AppState>) -> std::result::Result<Vec<Transfer>, ()> {
+    Ok(state.transfers.all().await)
+}
+
+/// Queue a download of each path, and start moving.
+#[tauri::command]
+async fn enqueue_downloads(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    destination: String,
+) -> std::result::Result<Vec<String>, CommandError> {
+    let backend = state.backend().await;
+    let mut ids = Vec::new();
+    for path in paths {
+        // The size comes from a stat rather than the listing the window had:
+        // a progress bar built on a number that has since changed is worse
+        // than one that admits it does not know.
+        let size = backend.stat(&path).await.map_or(0, |attrs| attrs.size);
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let id = new_id();
+        state
+            .transfers
+            .add(Transfer::new(
+                id.clone(),
+                Direction::Down,
+                path,
+                format!("{}/{name}", destination.trim_end_matches('/')),
+                size,
+            ))
+            .await;
+        ids.push(id);
+    }
+    run_queue(&state);
+    Ok(ids)
+}
+
+/// Queue an upload of each local path into `destination` on the share.
+#[tauri::command]
+async fn enqueue_uploads(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    destination: String,
+) -> std::result::Result<Vec<String>, CommandError> {
+    let mut ids = Vec::new();
+    for path in paths {
+        let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+        let dest = if destination.is_empty() {
+            name
+        } else {
+            format!("{}/{name}", destination.trim_end_matches('/'))
+        };
+        let id = new_id();
+        state
+            .transfers
+            .add(Transfer::new(id.clone(), Direction::Up, path, dest, size))
+            .await;
+        ids.push(id);
+    }
+    run_queue(&state);
+    Ok(ids)
+}
+
+/// Pause one transfer. It keeps its partial, which is its resume point.
+#[tauri::command]
+async fn pause_transfer(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), ()> {
+    state.worker.stop(&id, TransferStatus::Paused).await;
+    Ok(())
+}
+
+/// Cancel one transfer. Its partial is not kept.
+#[tauri::command]
+async fn cancel_transfer(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), ()> {
+    state.worker.stop(&id, TransferStatus::Cancelled).await;
+    Ok(())
+}
+
+/// Put a paused or failed transfer back in the queue.
+#[tauri::command]
+async fn retry_transfer(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), ()> {
+    state
+        .transfers
+        .update(&id, |transfer| {
+            if !matches!(transfer.status, TransferStatus::Running) {
+                transfer.status = TransferStatus::Queued;
+                transfer.error = None;
+            }
+        })
+        .await;
+    run_queue(&state);
+    Ok(())
+}
+
+/// Pause everything unfinished.
+#[tauri::command]
+async fn pause_all_transfers(state: tauri::State<'_, AppState>) -> std::result::Result<(), ()> {
+    for transfer in state.transfers.pause_all().await {
+        state
+            .worker
+            .stop(&transfer.id, TransferStatus::Paused)
+            .await;
+    }
+    Ok(())
+}
+
+/// Drop everything finished or cancelled.
+#[tauri::command]
+async fn clear_finished_transfers(
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<(), ()> {
+    state.transfers.clear_finished().await;
+    Ok(())
+}
+
+/// The folder downloads land in by default.
+#[tauri::command]
+fn download_folder() -> String {
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Whether a destination is already taken, and what `Keep both` would call it.
+///
+/// Answered by the engine rather than the window because the naming rule —
+/// the suffix goes before the extension, numbering skips what is taken — is
+/// the kind of thing two implementations would disagree about.
+#[tauri::command]
+async fn check_conflicts(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    destination: String,
+    upload: bool,
+) -> std::result::Result<Vec<Conflict>, CommandError> {
+    let backend = state.backend().await;
+    let mut conflicts = Vec::new();
+    for path in paths {
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+        let dest = format!("{}/{name}", destination.trim_end_matches('/'));
+        let exists = if upload {
+            backend.stat(&dest).await.is_ok()
+        } else {
+            std::path::Path::new(&dest).exists()
+        };
+        if !exists {
+            continue;
+        }
+        // `taken` is answered against the same side the file is going to, so
+        // the suggested name is one that is actually free there.
+        let directory = destination.trim_end_matches('/').to_owned();
+        let mut used = Vec::new();
+        if upload {
+            if let Ok(listing) = backend.list_dir(&directory).await {
+                used.extend(listing.entries.into_iter().map(|entry| entry.name));
+            }
+        } else if let Ok(entries) = std::fs::read_dir(&directory) {
+            used.extend(
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned()),
+            );
+        }
+        let keep_both_as = conflict::keep_both_name(&name, &|candidate| {
+            used.iter().any(|taken| taken == candidate)
+        });
+        conflicts.push(Conflict {
+            transfer_id: String::new(),
+            name,
+            dest_path: dest,
+            keep_both_as,
+        });
+    }
+    Ok(conflicts)
+}
+
 /// Whether a host is answering, for the sidebar's dimmed rows.
 ///
 /// Deliberately weaker than mounting: this runs for every saved bookmark on a
@@ -447,6 +668,26 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Start the worker on whatever is queued, unless it is already running.
+///
+/// Spawned rather than awaited: `enqueue` returns as soon as the rows exist,
+/// so the window paints them immediately and the bytes move behind it.
+fn run_queue(state: &tauri::State<'_, AppState>) {
+    let worker = Arc::clone(&state.worker);
+    tauri::async_runtime::spawn(async move { worker.drain().await });
+}
+
+/// An id unique enough to name one transfer for the life of a queue.
+fn new_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or_default();
+    format!("{now:x}-{:x}", SEQUENCE.fetch_add(1, Ordering::Relaxed))
+}
+
 /// The scheme previews and media are served over.
 ///
 /// A custom protocol rather than a command, because **file bytes must never
@@ -455,6 +696,12 @@ fn percent_decode(raw: &str) -> String {
 /// it. This streams a byte range straight from the backend to the `<video>`
 /// element that asked for it.
 const STREAM_SCHEME: &str = "excalibur-stream";
+
+/// Transfers moving at once.
+///
+/// Three is the design's default. More saturates a link without finishing
+/// anything sooner, and makes every row's ETA worse at the same time.
+const DEFAULT_CONCURRENCY: usize = 3;
 
 /// Bytes served per request when the webview does not ask for a range.
 ///
@@ -596,8 +843,28 @@ pub fn run() {
         known_hosts: known_hosts.clone(),
     })));
 
+    let demo: Arc<dyn ShareBackend> = Arc::new(MockBackend::media_share());
+    // Beside the known hosts, for the same reason: it is app state that has to
+    // outlive the process, and the engine is what changes it.
+    let queue_path = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("excalibur")
+        .join("transfers.json");
+    let queue = Arc::new(TransferQueue::open(queue_path));
+    let worker = Arc::new(Worker::new(
+        Arc::clone(&queue),
+        Arc::new(ActiveMount {
+            sessions: Arc::clone(&sessions),
+            demo: Arc::clone(&demo),
+        }),
+        DEFAULT_CONCURRENCY,
+    ));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        // The Upload picker (E13-S4). The webview's own file input yields
+        // `File` objects, and the engine needs paths.
+        .plugin(tauri_plugin_dialog::init())
         // Previews and media read through here, never through a command.
         .register_asynchronous_uri_scheme_protocol(STREAM_SCHEME, |context, request, responder| {
             let sessions = Arc::clone(&context.app_handle().state::<AppState>().sessions);
@@ -619,7 +886,9 @@ pub fn run() {
             sessions: Arc::clone(&sessions),
             secrets: Arc::new(KeyringStore),
             known_hosts,
-            demo: Arc::new(MockBackend::media_share()),
+            transfers: Arc::clone(&queue),
+            worker: Arc::clone(&worker),
+            demo: Arc::clone(&demo),
         })
         .setup(move |app| {
             // Mount changes reach the window as events rather than by polling,
@@ -633,6 +902,21 @@ pub fn run() {
                     let _ = handle.emit("mount://changed", &event);
                 }
             });
+
+            // Queue changes reach the window the same way. A lagged receiver
+            // drops events silently, which is why `transfers` exists as a
+            // command: the window can always ask for the truth.
+            let handle = app.handle().clone();
+            let mut moved = queue.events();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(event) = moved.recv().await {
+                    let _ = handle.emit("transfer://progress", &event);
+                }
+            });
+
+            // Anything restored from the last run is queued, so it starts.
+            let resuming = Arc::clone(&worker);
+            tauri::async_runtime::spawn(async move { resuming.drain().await });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -648,6 +932,16 @@ pub fn run() {
             forget_secret,
             trust_host_key,
             forget_host_key,
+            transfers,
+            enqueue_downloads,
+            enqueue_uploads,
+            pause_transfer,
+            cancel_transfer,
+            retry_transfer,
+            pause_all_transfers,
+            clear_finished_transfers,
+            download_folder,
+            check_conflicts,
             mount,
             unmount,
             remount_read_write,

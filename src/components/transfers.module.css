@@ -1,0 +1,199 @@
+/* The transfer queue, to the handoff's §Screens/4. */
+
+.panel {
+  position: absolute;
+  top: var(--height-titlebar);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+  max-height: 70%;
+  border: 1px solid var(--hairline-chrome);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--list-bg);
+  box-shadow: var(--shadow-window);
+  z-index: 15;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 34px;
+  padding: 0 10px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--hairline-chrome);
+}
+
+.title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.headerAction {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.row {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline-row);
+}
+
+/* Finished rows drop their bar and recede, per the design. */
+.rowFinished {
+  opacity: 0.6;
+}
+
+.rowTop,
+.rowBottom,
+.rowFailure {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rowBottom,
+.rowFailure {
+  margin-top: 4px;
+}
+
+.chip {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: var(--radius-chip);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.chipUp {
+  background: var(--chip-accent-bg);
+  color: var(--accent);
+}
+
+.chipDown {
+  background: var(--chip-neutral-bg);
+  color: var(--text-secondary);
+}
+
+.chipFailed {
+  background: var(--error-chip-bg);
+  color: var(--error);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nameActive {
+  font-weight: 500;
+}
+
+.status {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.statusDone {
+  color: var(--success);
+}
+
+.track {
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: #e8e8eb;
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width var(--transition-state);
+}
+
+.dest {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--error);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowAction {
+  flex: none;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  background: var(--statusbar-bg);
+  border-top: 1px solid var(--hairline-chrome);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.aggregate {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}

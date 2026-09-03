@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { QuickLook } from "./components/QuickLook";
+import { Transfers } from "./components/Transfers";
 import {
   defaultBookmarkStore,
   fromDraft,
@@ -22,7 +23,15 @@ import {
   Toolbar,
 } from "./components/Shell";
 import { defaultBackend, fixtureBackend, writeGuarded, type Backend } from "./state/backend";
-import type { Bookmark, Entry, MountEvent, MountInfo, Theme } from "./state/types";
+import type {
+  Bookmark,
+  Conflict,
+  Entry,
+  MountEvent,
+  MountInfo,
+  Theme,
+  Transfer,
+} from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
@@ -310,6 +319,17 @@ export default function App(props: {
   // from the listing because a mount that has *dropped* has no listing to
   // carry its state — that is exactly when the health dot has to turn red.
   const [mountEvent, setMountEvent] = createSignal<MountEvent | null>(null);
+  const [transfers, setTransfers] = createSignal<Transfer[]>([]);
+  const [showTransfers, setShowTransfers] = createSignal(false);
+  // The preview route seeds a queue; if there is one, show it.
+  onMount(() => void backend.transfers().then((all) => all.length > 0 && setShowTransfers(true)));
+  /** Destinations already taken, awaiting Replace / Keep both / Skip. */
+  const [conflicts, setConflicts] = createSignal<{
+    items: Conflict[];
+    upload: boolean;
+    sources: string[];
+    destination: string;
+  } | null>(null);
   /** Whether Quick Look is open. It follows the selection while it is. */
   const [quickLook, setQuickLook] = createSignal(false);
   /** The row being renamed inline, by path. */
@@ -520,6 +540,100 @@ export default function App(props: {
     }
   };
 
+  onMount(() => {
+    void backend.transfers().then(setTransfers);
+    const stop = backend.onTransferChanged((changed) => {
+      setTransfers((current) => {
+        const index = current.findIndex((transfer) => transfer.id === changed.id);
+        if (index === -1) return [...current, changed];
+        const next = current.slice();
+        next[index] = changed;
+        return next;
+      });
+    });
+    onCleanup(stop);
+  });
+
+  /** Re-read the whole queue, for the cases an event stream cannot cover. */
+  const refreshTransfers = () => void backend.transfers().then(setTransfers);
+
+  /**
+   * Start a transfer, asking about anything already at the destination.
+   *
+   * The check happens once for the whole batch, so a user dropping twenty
+   * files answers at most twenty questions rather than being interrupted
+   * twenty times mid-copy. `apply to all` collapses it to one.
+   */
+  const startTransfer = async (sources: string[], destination: string, upload: boolean) => {
+    if (sources.length === 0) return;
+    try {
+      const clashes = await backend.checkConflicts(sources, destination, upload);
+      if (clashes.length > 0) {
+        setConflicts({ items: clashes, upload, sources, destination });
+        return;
+      }
+      await enqueue(sources, destination, upload);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
+  const enqueue = async (sources: string[], destination: string, upload: boolean) => {
+    if (sources.length === 0) return;
+    await (upload
+      ? backend.enqueueUploads(sources, destination)
+      : backend.enqueueDownloads(sources, destination));
+    setShowTransfers(true);
+    refreshTransfers();
+  };
+
+  /** Apply one answer to the pending conflicts and start what survives. */
+  const resolveConflicts = async (
+    choice: "replace" | "keepBoth" | "skip",
+    applyToAll: boolean,
+  ) => {
+    const pending = conflicts();
+    if (!pending) return;
+    setConflicts(null);
+    const clashing = new Set(pending.items.map((item) => item.name));
+    const answered = applyToAll ? pending.items : pending.items.slice(0, 1);
+    const answeredNames = new Set(answered.map((item) => item.name));
+
+    // Skip drops them; Replace and Keep both send them. "Keep both" renames on
+    // the *server's* suggestion, because the name has to be free where the
+    // file is going and only that side knows.
+    const keep = pending.sources.filter((source) => {
+      const name = source.split(/[\\/]/).pop() ?? source;
+      if (!clashing.has(name)) return true;
+      if (!answeredNames.has(name)) return true;
+      return choice !== "skip";
+    });
+    try {
+      await enqueue(keep, pending.destination, pending.upload);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
+  const downloadSelected = async () => {
+    const chosen = selectedVisible();
+    if (chosen.length === 0) return;
+    const folder = await backend.downloadFolder();
+    await startTransfer(chosen.map((entry) => entry.path), folder, false);
+  };
+
+  const uploadHere = async () => {
+    if (refusedBy("upload")) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ multiple: true, directory: false });
+      const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      await startTransfer(paths, path(), true);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
   const removeSelected = (id: string) => {
     const current = bookmarks();
     const index = current.findIndex((bookmark) => bookmark.id === id);
@@ -650,9 +764,59 @@ export default function App(props: {
             onForward={() => setHistory(nav.forward)}
             onAscend={ascend}
             onCrumb={onCrumb}
+            onDownload={() => void downloadSelected()}
+            onUpload={() => void uploadHere()}
           />
           {/* The preview follows the selection: it shows whatever single row
               is selected, and closes on its own when that stops being one. */}
+          <Show when={showTransfers()}>
+            <Transfers
+              transfers={transfers()}
+              onClose={() => setShowTransfers(false)}
+              onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
+              onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
+              onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
+              onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
+              onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
+              onRemount={remountAction()}
+            />
+          </Show>
+          <Show when={conflicts()}>
+            {(pending) => (
+              <div class={styles.scrim}>
+                <div class={styles.sheet} role="alertdialog" aria-label="Destination exists">
+                  <div class={styles.sheetTitle}>
+                    “{pending().items[0]?.name}” is already there
+                  </div>
+                  <div class={styles.sheetBody}>
+                    Keep both would call it “{pending().items[0]?.keepBothAs}”.
+                    <Show when={pending().items.length > 1}>
+                      {" "}
+                      {pending().items.length - 1} more like this. Your answer applies to all
+                      of them.
+                    </Show>
+                  </div>
+                  <div class={styles.sheetActions}>
+                    <button class={styles.action} onClick={() => void resolveConflicts("skip", true)}>
+                      Skip
+                    </button>
+                    <button
+                      class={styles.action}
+                      onClick={() => void resolveConflicts("keepBoth", true)}
+                    >
+                      Keep both
+                    </button>
+                    <button
+                      class={`${styles.action} ${styles.actionDanger}`}
+                      onClick={() => void resolveConflicts("replace", true)}
+                    >
+                      Replace
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </Show>
           <Show when={quickLook() && selectedVisible().length === 1 ? selectedVisible()[0] : null}>
             {(entry) => (
               <QuickLook

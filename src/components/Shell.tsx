@@ -79,6 +79,7 @@ function Verb(props: {
   context: Context;
   label: string;
   primary?: boolean;
+  onClick?: () => void;
 }) {
   const state = () => gate(props.affordance, props.context);
   return (
@@ -86,6 +87,7 @@ function Verb(props: {
       class={`${styles.button} ${props.primary ? styles.primary : ""}`}
       disabled={state().disabled}
       title={state().reason ?? undefined}
+      onClick={props.onClick}
     >
       {props.label}
     </button>
@@ -150,6 +152,8 @@ export function Toolbar(props: {
   onForward: () => void;
   onAscend: () => void;
   onCrumb: (depth: number) => void;
+  onDownload?: () => void;
+  onUpload?: () => void;
 }) {
   const context = (): Context => ({
     writable: props.mount.writable,
@@ -197,8 +201,19 @@ export function Toolbar(props: {
             ends up gated on something that is not the mount. */}
         <Verb affordance="quickLook" context={context()} label="Quick Look" />
         <Verb affordance="edit" context={context()} label="Edit" />
-        <Verb affordance="download" context={context()} label="Download" />
-        <Verb affordance="upload" context={context()} label="Upload" primary />
+        <Verb
+          affordance="download"
+          context={context()}
+          label="Download"
+          onClick={props.onDownload}
+        />
+        <Verb
+          affordance="upload"
+          context={context()}
+          label="Upload"
+          primary
+          onClick={props.onUpload}
+        />
       </div>
       <input
         class={styles.filter}

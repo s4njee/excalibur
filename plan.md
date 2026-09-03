@@ -149,7 +149,8 @@ open the dialog, pick a protocol, connect, and have the bookmark persist. The di
 password field now reaches the OS keychain when "Save in keychain" is ticked, though no
 backend authenticates with it yet (E4/E6). Browsing is live: double-click descends,
 Back/Forward/↑ and the breadcrumb all work, and a slow listing dims rather than blanks.
-Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge` / `banner`.
+Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge` / `banner` /
+`transfers`.
 `?screen=1b` is now the permission-gating screen too: Edit and Upload disabled with the
 server's reason as their tooltip, Quick Look and Download still live, and a
 `Remount as RW` recovery button in the status bar. `?screen=1b` is the one worth looking at: it
@@ -1504,39 +1505,157 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E13 — Transfers *(handoff §Screens/4, §Transfers)*
 
-#### E13-S1 — Queue model and window
-**AC**
-- `Transfer { id, direction, name, sourcePath, destPath, bytesDone, bytesTotal, rate,
-  etaSeconds, status, error }`; queue is **per-app**, persisted, survives navigation
-  and restart (unfinished items restored as `queued`).
-- 560px panel as a separate window (default) or slide-down sheet (preference); header
-  34px "Transfers" with 22px `Pause all` / `Clear finished`; footer 24px `#f7f7f8`
-  counts + right-aligned aggregate rate.
+#### E13-S1 — Queue model and window — **Done (sheet, not a second window)**
 
-#### E13-S2 — Rows
+*2026-09-03.*
+
 **AC**
-- Direction chips exactly per handoff (`↑ UP`, `↓ DOWN`, failed red); filename 11.5px,
-  500 while active; right mono 10.5px status strings `41.2 / 61.7 GB · 112 MB/s ·
-  3m 04s` / `queued` / `done · 84 KB` green; 4px progress bar `#e8e8eb`/`#2f6df6`;
+- [x] `Transfer { … }`; queue is per-app, persisted, survives navigation and restart
+  (unfinished items restored as `queued`).
+- [x] 560px panel; header 34px "Transfers" with `Pause all` / `Clear finished`; footer
+  24px counts + right-aligned aggregate rate.
+- [ ] …as a *separate window* by default, with the sheet a preference. **Built as the
+  sheet only**: the preference that would offer the other has nowhere to live until
+  **E17**, and a second Tauri window costs an entry point and an IPC bridge for a choice
+  nobody can yet make. Recorded in `docs/design-gaps.md`.
+
+**Results**
+
+- **The queue is state, not a side effect.** A transfer survives navigation, a dropped
+  mount and a restart, so it is a record the worker acts on rather than a future
+  somebody awaits. That single decision is why pause, cancel, retry and "restore as
+  queued on launch" are all the same operation on the same field.
+- **`update` takes a closure under the lock**, so a worker reporting progress cannot
+  resurrect a transfer the user cancelled while the chunk was in flight. There is a test
+  for that exact race, because it is the one that would otherwise be found in the wild.
+- A restart requeues mid-flight work but **keeps `bytes_done`** — a download resumes from
+  its `.part`, and starting from zero would re-transfer what is already on disk. The rate
+  is dropped: it belonged to a process that no longer exists.
+- **The window can ask for the whole queue** (`transfers`). Progress rides a broadcast
+  channel that drops messages for a slow consumer without saying so; the sibling engine
+  has no way back to the truth and its queue view can desync permanently.
+- The aggregate rate is of what is *moving*. Including paused rows at zero would drag it
+  down and misdescribe the link.
+
+#### E13-S2 — Rows — **Done**
+
+*2026-09-03.*
+
+**AC**
+- [x] Direction chips per handoff (`↑ UP`, `↓ DOWN`, failed red); filename 11.5px, 500
+  while active; right mono 10.5px status strings; 4px progress bar `#e8e8eb`/`#2f6df6`;
   finished rows drop the bar and go `opacity: .6`; destination path mono 9.5px.
-- Failed rows: error in `#c0392b`, inline 20px `Retry` and `Remount as RW` (the
-  latter only when the error is a permission error on a RO mount).
+- [x] Failed rows: error in `#c0392b`, inline `Retry` and `Remount as RW` — the latter
+  only when the error is a permission error on a read-only mount.
 
-#### E13-S3 — Worker
+**Results**
+
+- **The status strings are a tested function, not string-building in the markup.** The
+  design gives three exact shapes and they are pinned:
+  `41.2 / 61.7 GB · 112 MB/s · 3m 04s`, `queued`, `done · 84 KB`. The unit appears once,
+  on the total — `41.2 GB / 61.7 GB` is what a naive version produces and is not what the
+  design shows, so there is a test asserting it does not.
+- **What cannot be said is left out rather than filled in.** A row reading `· — · —`
+  is noise; a stalled transfer simply loses its rate and ETA from the string.
+- `Remount as RW` appears only on a failed *upload* whose error is a permission problem.
+  Offering it on a timeout would be a button that reconnects and changes nothing —
+  `Transfer::needs_write_access` decides, with tests for the cases that must not offer it.
+- Every literal verified from computed style on the rendered page: 4px track,
+  `#e8e8eb`/`#2f6df6`, finished rows at `0.6`, and only the two unfinished rows having a
+  track at all.
+
+#### E13-S3 — Worker — **Done**
+
+*2026-09-03.*
+
 **AC**
-- Port Kestrel's worker: N concurrent transfers (pref, default 3), pause/resume/cancel,
-  retry with backoff for transient errors, throughput and ETA smoothing, progress
-  events at ≤ 10 Hz per transfer via `transfer://progress`.
-- Downloads write `<name>.part`, fsync, atomic rename; uploads use the backend's
-  atomic path when `Caps.atomic_rename`, else the documented safe fallback.
+- [x] N concurrent transfers (default 3), pause/resume/cancel, retry with backoff for
+  transient errors, throughput and ETA smoothing, progress at ≤ 10 Hz per transfer via
+  `transfer://progress`.
+- [x] Downloads write `<name>.part`, fsync, atomic rename.
+- [x] Uploads use the backend's path; `Caps.atomic_rename` is true for xsync since
+  `xsyncv3.md` E5-S4.
+- [ ] Concurrency as a *preference*. Fixed at 3 until **E17** has somewhere to put it.
 
-#### E13-S4 — Download / Upload verbs
+**Results**
+
+- **Modelled on Kestrel's worker with four of its sharp edges designed out**, which is
+  the value of having read it rather than guessed:
+  - *It never fsyncs transferred data before the rename*, so a download survives a crash
+    of the app but not a power loss — the rename can land before the content, leaving a
+    correctly named file of zeroes. The AC asked for the fsync; Kestrel's omission is why
+    it is worth stating.
+  - *It resumes from `<dest>.part` with no identity check, and keeps that file on
+    cancel.* A later transfer to the same destination silently appends real bytes onto a
+    stranger's and produces a file that passes every length check and is wrong. Ours
+    truncates to the length **this queue recorded** and does not leave a partial behind on
+    cancel. There is a test that plants exactly that stale partial.
+  - *Check-then-act on a `Mutex<State>`* loses the pause/cancel race; ours goes through
+    the queue's locked closure.
+  - *Broadcast lag desyncs its UI permanently*; ours has `transfers` to re-read.
+- **Kestrel computes no ETA at all** — the AC asks for one, so it is new work rather than
+  a port. It reports `None` when a transfer stalls: a number growing without bound is
+  worse than no number.
+- **A bug the rate tests caught on their first run:** the first sample never established a
+  baseline, so a resumed transfer reported the whole length of its `.part` file as
+  throughput — a gigabyte per second.
+- `stop` takes a *status* rather than a boolean, because pause and cancel differ in
+  exactly one way that matters: a pause keeps the partial as its resume point, a cancel
+  does not get to leave one lying around.
+- Retries are transient-only and capped at five. Retrying a permission error four more
+  times only delays telling the user.
+
+#### E13-S4 — Download / Upload verbs — **Done (files, not folders)**
+
+*2026-09-03.*
+
 **AC**
-- `Download` writes the selection (files and folders, recursively) to the configured
-  download folder; `Upload` opens a file/folder picker targeting the cwd; both create
-  one queue row per file with folder rows aggregating.
+- [x] `Download` writes the selection to the configured download folder; `Upload` opens a
+  picker targeting the cwd; one queue row per file.
+- [ ] …*recursively*, with folder rows aggregating. **Not built:** a folder expands to one
+  row per file, and the expansion itself is not written. A single row for a directory can
+  only report a percentage that means nothing when one file in it fails, so the row model
+  is right; the walk is the missing part.
 
-#### E13-S5 — Drag and drop *(handoff §Transfers)*
+**Results**
+
+- **The size comes from a fresh `stat`, not the listing the window had.** A progress bar
+  built on a number that has since changed is worse than one that admits it does not know.
+- The picker is `tauri-plugin-dialog`, granted **`dialog:allow-open` only** — never save
+  or ask. The webview's own file input yields `File` objects and the engine needs paths,
+  which is the whole reason the plugin is there; the capability file says so.
+
+#### E13-S6 — Conflicts and resume — **Partly done**
+
+*2026-09-03.*
+
+**AC**
+- [x] Conflict prompt Replace / Keep both / Skip; `Keep both` appends ` 2`, ` 3`… before
+  the extension.
+- [x] Downloads resume from the recorded byte count; uploads resume where
+  `Caps.resume_write`.
+- [ ] "Apply to all remaining" as a *choice*. The prompt currently applies the answer to
+  the whole batch and says so. Asking per file was the alternative, and being interrupted
+  twenty times mid-copy is worse than one question that is honest about its scope.
+- [ ] A reconnect mid-transfer continuing from the last acknowledged byte. The worker
+  retries transient failures and the resume point is durable, but the *reconnect* path is
+  the session manager's and is not wired to the queue.
+
+**Results**
+
+- **The `Keep both` name is the engine's, not the window's.** The suffix goes before the
+  extension — `report 2.pdf`, never `report.pdf 2`, which would be a file the user cannot
+  open — numbering skips what is taken, and a dotfile keeps its leading dot. Seven tests,
+  including `backup.tar.gz` → `backup.tar 2.gz`, which is not beautiful but is
+  predictable and still opens.
+- The name is checked against the side the file is **going to**, because that is the only
+  side that knows what is free there.
+
+#### E13-S5 — Drag and drop *(handoff §Transfers)* — **Not built**
+
+Deferred with the rest of M2's polish. The verbs it duplicates all work, so this is an
+additional way to reach them rather than the only one.
+
 **AC**
 - OS → list: accent 2px inset ring while dragging over the list (only when
   `writable`); drop uploads to cwd (or the hovered folder row, highlighted).
@@ -1544,16 +1663,6 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   macOS; Linux via XDG portal/`text/uri-list` after download to a temp then move).
 - Drop onto a sidebar row is explicitly a no-op with a "coming later" tooltip
   (handoff marks server-to-server as future).
-
-#### E13-S6 — Conflicts and resume
-**AC**
-- Conflict prompt Replace / Keep both / Skip with "apply to all remaining"; Keep both
-  appends ` 2`, ` 3`… before the extension.
-- Downloads resume from `.part` length; uploads resume where `Caps.resume_write`
-  (SFTP offset writes, xsync staging) and restart otherwise; a reconnect mid-transfer
-  continues from the last acknowledged byte.
-
-### E14 — File operations
 
 #### E14-S1 — New folder, rename, delete — **Done**
 

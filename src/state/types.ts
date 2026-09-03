@@ -89,6 +89,35 @@ export interface MountEvent {
   reason: string | null;
 }
 
+export type TransferDirection = "up" | "down";
+export type TransferStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
+
+/** One file moving in one direction. A folder expands to one of these per file. */
+export interface Transfer {
+  id: string;
+  direction: TransferDirection;
+  name: string;
+  sourcePath: string;
+  destPath: string;
+  bytesDone: number;
+  /** `0` when the size is not known, which the progress bar must handle. */
+  bytesTotal: number;
+  rate: number | null;
+  etaSeconds: number | null;
+  status: TransferStatus;
+  error: string | null;
+  queuedAtMs: number;
+}
+
+/** A destination that already exists, awaiting a decision. */
+export interface Conflict {
+  transferId: string;
+  name: string;
+  destPath: string;
+  /** What "Keep both" would call it — the engine decides the name. */
+  keepBothAs: string;
+}
+
 export interface Listing {
   entries: Entry[];
   mount: MountInfo;

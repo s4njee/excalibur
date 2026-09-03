@@ -79,3 +79,70 @@ export function formatCounts(
 export function formatCapacity(free: number, total: number): string {
   return `${formatSize(free)} free of ${formatSize(total)}`;
 }
+
+/**
+ * A duration as the transfer rows show it: `3m 04s`, `1h 02m`, `12s`.
+ *
+ * Two units at most. "1h 02m 33s" is more precise than anyone reading a
+ * progress row needs, and the extra field makes the ones that matter harder
+ * to find.
+ */
+export function formatDuration(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.floor(whole / 60);
+  if (minutes < 60) return `${minutes}m ${String(whole % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/** Throughput as the rows show it: `112 MB/s`. */
+export function formatRate(bytesPerSecond: number): string {
+  return `${formatSize(bytesPerSecond)}/s`;
+}
+
+/**
+ * The right-hand status string on a transfer row.
+ *
+ * The design gives three shapes, and this produces exactly those:
+ * `41.2 / 61.7 GB · 112 MB/s · 3m 04s` while running, `queued` while waiting,
+ * `done · 84 KB` when finished. Anything it cannot say it leaves out rather
+ * than filling with a placeholder — a row reading `· — · —` is noise.
+ */
+export function formatTransferStatus(transfer: {
+  status: string;
+  bytesDone: number;
+  bytesTotal: number;
+  rate: number | null;
+  etaSeconds: number | null;
+}): string {
+  switch (transfer.status) {
+    case "queued":
+      return "queued";
+    case "paused":
+      return "paused";
+    case "cancelled":
+      return "cancelled";
+    case "done":
+      return `done · ${formatSize(transfer.bytesDone)}`;
+    case "failed":
+      return "failed";
+    default:
+      break;
+  }
+  const parts: string[] = [];
+  if (transfer.bytesTotal > 0) {
+    // The unit appears once, on the total: "41.2 / 61.7 GB" rather than
+    // "41.2 GB / 61.7 GB", which is what the design shows.
+    const total = formatSize(transfer.bytesTotal);
+    const unit = total.slice(total.indexOf(" "));
+    const done = formatSize(transfer.bytesDone);
+    const doneNumber = done.endsWith(unit) ? done.slice(0, -unit.length) : done;
+    parts.push(`${doneNumber} / ${total}`);
+  } else {
+    parts.push(formatSize(transfer.bytesDone));
+  }
+  if (transfer.rate !== null && transfer.rate > 0) parts.push(formatRate(transfer.rate));
+  if (transfer.etaSeconds !== null) parts.push(formatDuration(transfer.etaSeconds));
+  return parts.join(" · ");
+}

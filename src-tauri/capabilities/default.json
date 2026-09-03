@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the browser window may ask the Rust side to do. Deliberately narrow: every filesystem and network operation goes through this app's own commands, not through a plugin the webview can call directly.",
+  "description": "What the browser window may ask the Rust side to do. Deliberately narrow: every filesystem and network operation goes through this app's own commands, not through a plugin the webview can call directly. The one exception is the dialog plugin's open picker, which is how Upload learns a path — the webview's own file input yields File objects, and it is granted open only, never save or ask.",
   "windows": ["main"],
-  "permissions": ["core:default", "store:default"]
+  "permissions": [
+    "core:default",
+    "store:default",
+    "dialog:allow-open"
+  ]
 }
