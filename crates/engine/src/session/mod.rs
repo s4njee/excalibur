@@ -17,7 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::{broadcast, RwLock};
 
-use crate::backend::{ConnectionSpec, MountInfo, MountStatus, ShareBackend};
+use crate::backend::{Access, ConnectionSpec, MountInfo, MountStatus, ShareBackend};
 use crate::error::{EngineError, Result};
 
 /// Builds a backend for a connection.
@@ -188,6 +188,56 @@ impl SessionManager {
                 Err(error)
             }
         }
+    }
+
+    /// Reconnect a mount asking for read-write, and report what came back.
+    ///
+    /// The recovery path behind "Remount as RW". It re-runs `connect` with
+    /// `mount_preference = Rw` and re-reads `writable` from the result.
+    ///
+    /// **It does not retry, and it does not report failure when the server says
+    /// no.** A share that comes back read-only again returns `Ok` with
+    /// `writable == false` and the server's reason, because that is not an
+    /// error — it is the answer. Treating it as one is how a recovery button
+    /// becomes a loop: the caller sees a failure, offers the same button, and
+    /// the user presses it forever. The design is explicit that the error text
+    /// updates to the server's reason instead.
+    ///
+    /// The stored spec is updated on success, so a later reconnect keeps asking
+    /// for read-write rather than quietly reverting to what was first typed.
+    ///
+    /// # Errors
+    ///
+    /// Only when the connection itself fails. A refused *upgrade* is `Ok`.
+    pub async fn remount_read_write(&self, id: &str) -> Result<MountInfo> {
+        let mut spec = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(id)
+                .ok_or_else(|| EngineError::NotFound(format!("no mount {id}")))?
+                .spec
+                .clone()
+        };
+        spec.mount_preference = Access::Rw;
+
+        let backend = self.connector.connect(&spec).await?;
+        let info = backend.mount_info();
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(id) {
+                session.spec = spec;
+                session.backend = Some(Arc::clone(&backend));
+                session.status = MountStatus::Ready;
+                session.mount = Some(info.clone());
+            }
+        }
+        self.publish(SessionEvent {
+            id: id.to_owned(),
+            status: MountStatus::Ready,
+            mount: Some(info.clone()),
+            reason: None,
+        });
+        Ok(info)
     }
 
     /// Connect, read the mount facts, and disconnect again.

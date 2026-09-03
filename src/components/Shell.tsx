@@ -7,6 +7,7 @@ import type { Bookmark, Category, Entry, MountInfo, SortColumn } from "../state/
 import type { Sort } from "../state/sort";
 import { template, type Divider, type Widths } from "../state/columns";
 import { rowsInBand, visibleRange } from "../state/virtual";
+import { gate, type Affordance, type Context } from "../state/permissions";
 import { formatCapacity, formatCounts, formatModified } from "../state/format";
 import { formatSize } from "../state/format";
 
@@ -66,6 +67,32 @@ function PathField(props: {
 }
 
 /**
+ * One toolbar verb, drawn from the permission gate.
+ *
+ * The tooltip is the server's own reason, verbatim. Paraphrasing it loses the
+ * detail that tells a user whether it is their export or their credentials —
+ * "Read-only — export mapped `ro,root_squash`" is actionable; "not allowed" is
+ * not.
+ */
+function Verb(props: {
+  affordance: Affordance;
+  context: Context;
+  label: string;
+  primary?: boolean;
+}) {
+  const state = () => gate(props.affordance, props.context);
+  return (
+    <button
+      class={`${styles.button} ${props.primary ? styles.primary : ""}`}
+      disabled={state().disabled}
+      title={state().reason ?? undefined}
+    >
+      {props.label}
+    </button>
+  );
+}
+
+/**
  * The verbs act on the selection; the write ones are disabled from
  * `mount.writable` alone.
  */
@@ -85,6 +112,12 @@ export function Toolbar(props: {
   onAscend: () => void;
   onCrumb: (depth: number) => void;
 }) {
+  const context = (): Context => ({
+    writable: props.mount.writable,
+    reason: props.mount.reason,
+    hasSelection: props.hasSelection,
+  });
+
   return (
     <div class={styles.toolbar}>
       <div class={styles.segmented}>
@@ -120,23 +153,13 @@ export function Toolbar(props: {
         onCrumb={props.onCrumb}
       />
       <div class={styles.verbs}>
-        <button class={styles.button} disabled={!props.hasSelection}>
-          Quick Look
-        </button>
-        {/* Edit and Upload write, so they read `writable` and nothing else. */}
-        <button class={styles.button} disabled={!props.hasSelection || !props.mount.writable}>
-          Edit
-        </button>
-        <button class={styles.button} disabled={!props.hasSelection}>
-          Download
-        </button>
-        <button
-          class={`${styles.button} ${styles.primary}`}
-          disabled={!props.mount.writable}
-          title={props.mount.writable ? undefined : props.mount.reason}
-        >
-          Upload
-        </button>
+        {/* Every verb goes through `gate`. None of them reads `writable`
+            directly: an inline condition here is exactly how a write affordance
+            ends up gated on something that is not the mount. */}
+        <Verb affordance="quickLook" context={context()} label="Quick Look" />
+        <Verb affordance="edit" context={context()} label="Edit" />
+        <Verb affordance="download" context={context()} label="Download" />
+        <Verb affordance="upload" context={context()} label="Upload" primary />
       </div>
       <input
         class={styles.filter}
@@ -531,6 +554,10 @@ export function StatusBar(props: {
   selectedBytes: number;
   /** The unfiltered count, when a filter is hiding rows. */
   total?: number;
+  /** Reconnect asking for read-write. Absent when there is no mount to retry. */
+  onRemount?: () => void;
+  /** A remount is in flight. */
+  remounting?: boolean;
 }) {
   return (
     <div class={styles.statusbar}>
@@ -540,7 +567,26 @@ export function StatusBar(props: {
       <span class={styles.truncate}>
         <Show
           when={props.mount.writable}
-          fallback={<span>{props.mount.reason}</span>}
+          fallback={
+            <>
+              <span>{props.mount.reason}</span>
+              {/* The design's only Remount button lives on a failed transfer
+                  row (E13-S2), which does not exist yet — leaving a read-only
+                  mount with no recovery path at all. Recorded in
+                  docs/design-gaps.md for sign-off. */}
+              <Show when={props.onRemount}>
+                {(remount) => (
+                  <button
+                    class={styles.statusAction}
+                    disabled={props.remounting}
+                    onClick={() => remount()()}
+                  >
+                    {props.remounting ? "Remounting…" : "Remount as RW"}
+                  </button>
+                )}
+              </Show>
+            </>
+          }
         >
           Read &amp; write on <span class={styles.statusPath}>{props.path}</span>
         </Show>

@@ -639,3 +639,23 @@
   pointer-events: none;
   z-index: 1;
 }
+
+/* An inline recovery action in the status bar. Sized to the bar rather than to
+   the toolbar: it sits inside a 24px strip and must not grow it. */
+.statusAction {
+  height: 16px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.statusAction:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-border);
+  color: var(--disabled-text);
+}

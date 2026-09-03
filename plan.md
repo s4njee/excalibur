@@ -149,7 +149,10 @@ open the dialog, pick a protocol, connect, and have the bookmark persist. The di
 password field now reaches the OS keychain when "Save in keychain" is ticked, though no
 backend authenticates with it yet (E4/E6). Browsing is live: double-click descends,
 Back/Forward/↑ and the breadcrumb all work, and a slow listing dims rather than blanks.
-Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge`. `?screen=1b` is the one worth looking at: it
+Preview screens: `?screen=1a` / `1b` / `trust` / `keychanged` / `slow` / `huge`.
+`?screen=1b` is now the permission-gating screen too: Edit and Upload disabled with the
+server's reason as their tooltip, Quick Look and Download still live, and a
+`Remount as RW` recovery button in the status bar. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -1202,25 +1205,125 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E9 — Permission gating
 
-#### E9-S1 — One derived value *(handoff §Permissions gating)*
+#### E9-S1 — One derived value *(handoff §Permissions gating)* — **Done**
+
+*2026-09-03.*
+
 **AC**
-- `mount.writable` (from the latest `list_dir`/`mount_info`) is the *only* input to:
+- [x] `mount.writable` (from the latest `list_dir`/`mount_info`) is the *only* input to:
   status badge, disabled state of Edit/Upload/rename/delete/new-folder, drop-target
   acceptance, Quick Look footer copy, and the `Remount as RW` recovery button.
-- A property-based test enumerates every write affordance and asserts it is disabled
-  when `writable = false`; no write command is ever *sent* to the engine in that state
-  (the engine also refuses with `EROFS` as defence in depth).
+- [x] A property-based test enumerates every write affordance and asserts it is disabled
+  when `writable = false`.
+- [ ] No write command is ever *sent* to the engine in that state. **Vacuously true and
+  therefore untested:** the `Backend` seam has no write methods yet — rename, delete,
+  new-folder and upload arrive with E13/E14. There is nothing to guard, and a guard
+  around nothing would be a test of itself. The gate is in place for when they land.
 
-#### E9-S2 — Disabled styling *(handoff §Screens/2)*
+**Results**
+
+- **The affordances are enumerated, not implied.** The failure this AC exists to prevent
+  arrives by accretion: someone adds a verb and writes `disabled={…}` from whatever
+  seemed relevant at the time. So `src/state/permissions.ts` lists every affordance and
+  sorts each into read, write or recovery, and **a test asserts every affordance is in
+  exactly one group**. A verb added to the type but to no group fails that test, so it
+  cannot slip through ungated by being forgotten. That property is what makes the rest of
+  the suite worth anything.
+- The property test iterates `WRITE_AFFORDANCES` rather than spot-checking. Adding
+  `rename` to the list adds three assertions about it for free.
+- **No component reads `writable` to gate anything any more.** The toolbar's four verbs
+  are one `Verb` component driven by `gate()`. The status *badge* still reads the value
+  directly, which is the rule being followed rather than broken: it displays the value,
+  it does not gate on it.
+- **The tooltip is the server's reason, verbatim.** "Read-only — export mapped
+  `ro,root_squash`" tells a user whether it is their export or their credentials;
+  "not allowed" does not. Verified on screen in `?screen=1b`.
+- A read-only mount's reason **wins over "nothing selected"** when both apply. It is the
+  one the user cannot fix by clicking a row, so it is the more useful thing to say.
+- `dropTarget` is a write affordance, not a special case. A list that highlights on
+  drag-over and then refuses the drop is worse than one that never highlighted. E13-S5
+  reads `acceptsDrop` rather than inventing its own condition.
+- `remountRw` is gated on the same value **inverted**: offering it on a mount that is
+  already read-write invites a reconnect for no reason.
+
+**Next steps**
+
+- The "never sent" half becomes testable with the first write verb (**E13**/**E14**).
+  The natural shape is a guard on the backend seam so the check is structural rather
+  than remembered at each call site — the same trick E3-S3 used for secrets.
+- `rename`, `delete` and `newFolder` are in the enumeration and gated, but have no
+  buttons yet. They are listed *now* precisely so E14 cannot add them ungated.
+
+#### E9-S2 — Disabled styling *(handoff §Screens/2)* — **Done**
+
+*2026-09-03.*
+
 **AC**
-- Dark: bg `#2e2f32`, border `#3a3b3f`, text `#63646a`, `cursor: not-allowed`; light
+- [x] Dark: bg `#2e2f32`, border `#3a3b3f`, text `#63646a`, `cursor: not-allowed`; light
   equivalent derived from tokens; tooltip explains the reason string.
 
-#### E9-S3 — Remount as RW
+**Results**
+
+- The three dark values and `cursor: not-allowed` landed with M0's token file. **Read
+  back from the rendered page rather than from the stylesheet** — computed
+  `background-color`, `border-color`, `color` and `cursor` on the disabled Upload button
+  in `?screen=1b` are `#2e2f32`, `#3a3b3f`, `#63646a`, `not-allowed`. Comparing the CSS
+  source would only prove the CSS says what it says.
+- The tooltip was the actual gap, and it closed as a side effect of E9-S1: every gated
+  verb now gets `title` from the same `gate()` that disabled it, so a disabled control
+  cannot exist without an explanation attached.
+- The light equivalents are derived tokens (`--disabled-bg` and friends), so the two
+  themes cannot drift apart by someone editing one.
+
+**Next steps**
+
+- The `title` attribute is a native tooltip: it is slow to appear and invisible to touch.
+  **E16-S2**'s accessibility pass should give it `aria-describedby` as well, so a screen
+  reader gets the reason without hovering.
+
+#### E9-S3 — Remount as RW — **Done (surfaced in the status bar, not the queue)**
+
+*2026-09-03.*
+
 **AC**
-- Re-runs `connect` with `mountPreference = 'rw'`; on success re-reads `writable`,
-  and if still read-only, the queue row error text updates to the server's reason
-  rather than looping.
+- [x] Re-runs `connect` with `mountPreference = 'rw'`; on success re-reads `writable`,
+  and if still read-only, the error text updates to the server's reason rather than
+  looping.
+- [ ] …*in the queue row*. **Not there:** the transfer queue is E13. The button is in the
+  status bar instead — see below.
+
+**Results**
+
+- **A refused upgrade returns `Ok`, not `Err`, and that is the whole design.** A share
+  that comes back read-only again is an *answer*, not a failure. Returning `Err` is
+  precisely how a recovery button becomes a loop: the caller sees a failure, offers the
+  same button, and the user presses it forever. `remount_read_write` resolves with the
+  mount facts that came back, and the caller reads `writable` off them. There is a test
+  asserting the refusal is `Ok`, carries the server's reason, and costs **exactly one**
+  further connection.
+- **The upgraded preference is stored, so a reconnect keeps it.** Without that, a network
+  blip silently reverts the mount to whatever was first typed in the dialog and undoes
+  the user's recovery. The test knocks the share over, lets it reconnect, and asserts the
+  connector was still asked for `Rw`.
+- The window **re-lists** after a successful remount rather than patching the mount facts
+  by hand. `writable` travels with the listing, and taking it from anywhere else is how
+  the badge and the rows come to disagree.
+- **The button is in the status bar, which is beyond the mock**, and that is recorded in
+  the new `docs/design-gaps.md` rather than done quietly. The handoff's only `Remount as
+  RW` is on a failed transfer row (§Screens/4), so until E13 exists a read-only mount has
+  no recovery path anywhere: the status bar states the problem and offers nothing. The
+  button shows only when `writable` is false, so a healthy window is unchanged from the
+  mock, and removing it later is deleting one element.
+- It is **absent, not disabled**, when there is no session to remount — the preview
+  screens and the demo share. A button that cannot possibly work should not be drawn.
+
+**Next steps**
+
+- **E13-S2** puts the same action on a failed transfer row, which is where the design
+  actually wants it. The engine call is shared; only the surface differs.
+- A connection that fails outright currently shows a toast. **E15-S1**'s banner is its
+  real home, and that is the second entry in `docs/design-gaps.md`.
+- Both design-gap entries want a screenshot attached before sign-off.
 
 ### E10 — Status bar *(handoff §Screens/1 Status bar)*
 
@@ -1472,4 +1575,5 @@ placeholder story that only records the request:
       servers in CI.
 - [ ] Signed, notarised macOS build and Linux AppImage/deb from a tagged CI run.
 - [ ] `docs/design-gaps.md` lists every place this plan built beyond the mocks, with a
-      screenshot, awaiting design sign-off.
+      screenshot, awaiting design sign-off. *(Started 2026-09-03 with E9-S3's two
+      entries; screenshots still to attach.)*

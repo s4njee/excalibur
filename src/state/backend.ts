@@ -31,6 +31,13 @@ export interface Backend {
   saveSecret(account: string, secret: string): Promise<void>;
   /** Forget a credential: the box was unticked, or the bookmark removed. */
   forgetSecret(account: string): Promise<void>;
+  /**
+   * Reconnect a mount asking for read-write, and report what came back.
+   *
+   * Resolves even when the server refuses the upgrade — a share that is still
+   * read-only is an answer, not an error. Read `writable` off the result.
+   */
+  remountReadWrite(id: string): Promise<MountInfo>;
   /** Accept a host's SSH key, after the user compared its fingerprint. */
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
@@ -178,6 +185,12 @@ export function fixtureBackend(
     async forgetSecret(): Promise<void> {
       // Nothing was ever stored, so forgetting is already true.
     },
+    // The preview has no session to remount; `?screen=1b` is a fixed
+    // read-only mount rather than one that could be upgraded.
+    async remountReadWrite(): Promise<MountInfo> {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      throw new Error("not connected to the engine — run the desktop app");
+    },
     // A browser cannot run ssh-keyscan, so there is no key to accept. The
     // preview reaches the prompt only through `?screen=trust`, which supplies
     // its own fixed fingerprint.
@@ -220,6 +233,10 @@ function tauriBackend(): Backend {
     async forgetSecret(account: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("forget_secret", { account });
+    },
+    async remountReadWrite(id: string): Promise<MountInfo> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<MountInfo>("remount_read_write", { id });
     },
     async trustHostKey(host: string, port: number): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");

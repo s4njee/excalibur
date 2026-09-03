@@ -16,6 +16,7 @@ use excalibur_engine::backend::{
     Protocol, ShareBackend, WriteMode,
 };
 use excalibur_engine::{Connector, HealthPolicy, Result, SessionManager};
+use tokio::sync::RwLock;
 
 /// A backend whose health the test can flip *after* it has been handed out.
 ///
@@ -90,6 +91,9 @@ struct ScriptedConnector {
     /// Shared with every backend handed out, so a live mount can be knocked
     /// over without touching the session that holds it.
     healthy: Arc<AtomicBool>,
+    /// What the last `connect` asked for, so a test can check that a remount
+    /// actually changed the request rather than reconnecting identically.
+    last_preference: Arc<RwLock<Option<Access>>>,
 }
 
 impl Default for ScriptedConnector {
@@ -99,6 +103,7 @@ impl Default for ScriptedConnector {
             refuse: AtomicBool::new(false),
             read_only: AtomicBool::new(false),
             healthy: Arc::new(AtomicBool::new(true)),
+            last_preference: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -116,12 +121,17 @@ impl ScriptedConnector {
     fn bring_back(&self) {
         self.healthy.store(true, Ordering::SeqCst);
     }
+
+    async fn last_preference(&self) -> Option<Access> {
+        *self.last_preference.read().await
+    }
 }
 
 #[async_trait]
 impl Connector for ScriptedConnector {
     async fn connect(&self, _spec: &ConnectionSpec) -> Result<Arc<dyn ShareBackend>> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
+        *self.last_preference.write().await = Some(_spec.mount_preference);
         if self.refuse.load(Ordering::SeqCst) {
             return Err(excalibur_engine::EngineError::Disconnected(
                 "host is unreachable".to_owned(),
@@ -370,4 +380,84 @@ async fn reachability_gives_up_rather_than_hanging() {
         !excalibur_engine::session::reachable("192.0.2.1", 445, Duration::from_millis(200)).await
     );
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn remounting_read_write_upgrades_a_read_only_share() {
+    let connector = Arc::new(ScriptedConnector::default());
+    connector.read_only.store(true, Ordering::SeqCst);
+    let sessions = SessionManager::new(Arc::clone(&connector) as Arc<dyn Connector>);
+    sessions.mount(spec("media")).await.expect("mount");
+    assert!(!sessions.mount_info("media").await.expect("info").writable);
+
+    // The export is remounted read-write by the server this time.
+    connector.read_only.store(false, Ordering::SeqCst);
+    let info = sessions.remount_read_write("media").await.expect("remount");
+
+    assert!(info.writable);
+    // And the manager's own view agrees, so the status bar is not reading a
+    // stale MountInfo from before the upgrade.
+    assert!(sessions.mount_info("media").await.expect("info").writable);
+    assert_eq!(connector.last_preference().await, Some(Access::Rw));
+}
+
+#[tokio::test]
+async fn a_refused_upgrade_reports_the_reason_rather_than_failing() {
+    // The case the design calls out: the button must not become a loop. A
+    // share that comes back read-only again is an answer, not an error — a
+    // caller that saw `Err` would offer the same button and the user would
+    // press it forever.
+    let connector = Arc::new(ScriptedConnector::default());
+    connector.read_only.store(true, Ordering::SeqCst);
+    let sessions = SessionManager::new(Arc::clone(&connector) as Arc<dyn Connector>);
+    sessions.mount(spec("media")).await.expect("mount");
+    let before = connector.attempts();
+
+    let info = sessions
+        .remount_read_write("media")
+        .await
+        .expect("a refused upgrade is Ok, not Err");
+
+    assert!(!info.writable);
+    assert!(info.reason.contains("root_squash"), "{}", info.reason);
+    // Exactly one further connection: it asked once and reported the answer.
+    assert_eq!(connector.attempts(), before + 1);
+}
+
+#[tokio::test]
+async fn a_remounted_share_keeps_asking_for_read_write_when_it_reconnects() {
+    // Otherwise a drop silently reverts the mount to whatever was first typed
+    // in the dialog, and the user's recovery is undone by a network blip.
+    let connector = Arc::new(ScriptedConnector::default());
+    connector.read_only.store(true, Ordering::SeqCst);
+    let policy = HealthPolicy {
+        interval: Duration::from_millis(20),
+        backoff_initial: Duration::from_millis(10),
+        backoff_max: Duration::from_millis(20),
+    };
+    let sessions =
+        SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
+
+    let mut ro = spec("media");
+    ro.mount_preference = Access::Ro;
+    sessions.mount(ro).await.expect("mount");
+    assert_eq!(connector.last_preference().await, Some(Access::Ro));
+
+    connector.read_only.store(false, Ordering::SeqCst);
+    sessions.remount_read_write("media").await.expect("remount");
+
+    // A drop and a reconnect must not go back to asking for read-only.
+    connector.knock_over();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    connector.bring_back();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(connector.last_preference().await, Some(Access::Rw));
+}
+
+#[tokio::test]
+async fn remounting_a_mount_that_is_not_there_is_an_error() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = SessionManager::new(connector as Arc<dyn Connector>);
+    assert!(sessions.remount_read_write("nothing").await.is_err());
 }

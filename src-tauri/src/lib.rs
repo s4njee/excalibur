@@ -355,6 +355,25 @@ async fn unmount(
     Ok(())
 }
 
+/// Reconnect a mount asking for read-write.
+///
+/// Returns the mount facts that came back, **including when the server refuses
+/// the upgrade**. A share that is still read-only is an answer, not an error:
+/// reporting it as a failure is how the recovery button becomes a loop the user
+/// presses forever. The window reads `writable` off the result and shows the
+/// server's reason if it is still false.
+#[tauri::command]
+async fn remount_read_write(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<MountInfo, CommandError> {
+    state
+        .sessions
+        .remount_read_write(&id)
+        .await
+        .map_err(Into::into)
+}
+
 /// Switch which mount the window is looking at.
 #[tauri::command]
 async fn set_active(
@@ -414,6 +433,7 @@ pub fn run() {
             forget_host_key,
             mount,
             unmount,
+            remount_read_write,
             set_active
         ])
         .run(tauri::generate_context!())

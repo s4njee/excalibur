@@ -18,6 +18,7 @@ import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
 import { filterEntries } from "./state/filter";
+import { engineFailure } from "./state/errors";
 import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
 import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, type Prefs } from "./state/prefs";
@@ -234,6 +235,49 @@ export default function App(props: {
     }
   };
 
+  const [remounting, setRemounting] = createSignal(false);
+  const [problem, setProblem] = createSignal<string | null>(null);
+
+  /** The mount the window is looking at, when there is a real one. */
+  const activeMountId = () => bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
+
+  /**
+   * The read-only recovery path.
+   *
+   * A refused upgrade is not an error: the engine resolves with the mount facts
+   * that came back, and the status bar re-reads the reason from them. Treating
+   * it as a failure is how this button becomes a loop.
+   */
+  const remountReadWrite = async (id: string) => {
+    setRemounting(true);
+    try {
+      await backend.remountReadWrite(id);
+      // Re-list rather than patching the mount facts by hand: `writable`
+      // travels with the listing, and taking it from anywhere else is how the
+      // badge and the rows come to disagree.
+      listingState.load(path());
+    } catch (error) {
+      // A connection that failed outright, as opposed to an upgrade the server
+      // declined. E15-S1's banner is where this belongs; until then it is at
+      // least visible rather than swallowed.
+      setProblem(engineFailure(error).message);
+    } finally {
+      setRemounting(false);
+    }
+  };
+
+  /**
+   * The Remount handler, or nothing when there is no mount to retry.
+   *
+   * Absent rather than disabled: the preview screens and the demo share are not
+   * connected to a session, and a button that cannot possibly work should not
+   * be drawn at all.
+   */
+  const remountAction = () => {
+    const id = activeMountId();
+    return id === null ? undefined : () => void remountReadWrite(id);
+  };
+
   const removeSelected = (id: string) => {
     const current = bookmarks();
     const index = current.findIndex((bookmark) => bookmark.id === id);
@@ -389,10 +433,24 @@ export default function App(props: {
                 items={entries().length}
                 total={totalEntries()}
                 selected={selectedVisible().length}
+                remounting={remounting()}
+                onRemount={remountAction()}
                 selectedBytes={selectedBytes()}
               />
             </div>
           </div>
+          {/* A connection failure has no home until E15-S1's banner. A toast
+              is not that banner, but it beats swallowing the error. */}
+          <Show when={problem()}>
+            {(message) => (
+              <div class={styles.toast}>
+                <span>{message()}</span>
+                <button class={styles.toastAction} onClick={() => setProblem(null)}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </Show>
           <Show when={undo()}>
             {(pending) => (
               <div class={styles.toast}>
