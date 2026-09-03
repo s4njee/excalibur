@@ -17,9 +17,11 @@
 pub mod backend;
 pub mod error;
 pub mod kind;
+pub mod session;
 
 pub use backend::{
     Attrs, Capacity, Caps, ConnectionSpec, Entry, EntryKind, Health, Listing, MountInfo,
     MountStatus, Protocol, ShareBackend, WriteMode,
 };
 pub use error::{EngineError, Result};
+pub use session::{Connector, HealthPolicy, SessionEvent, SessionManager};

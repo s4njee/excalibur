@@ -1,0 +1,325 @@
+//! Mount lifecycle, and what happens when a share goes away.
+//!
+//! The connector is scripted rather than real: the interesting states are a
+//! connection that fails, a mount that stops answering, and a share that comes
+//! back *different*, and a real server is bad at producing any of those on
+//! demand.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use excalibur_engine::backend::mock::MockBackend;
+use excalibur_engine::backend::{
+    Access, Attrs, Capacity, Caps, ConnectionSpec, Health, Listing, MountInfo, MountStatus,
+    Protocol, ShareBackend, WriteMode,
+};
+use excalibur_engine::{Connector, HealthPolicy, Result, SessionManager};
+
+/// A backend whose health the test can flip *after* it has been handed out.
+///
+/// A connector flag is not enough: the session already holds a backend, and the
+/// case being tested is precisely a mount that stops answering while held.
+struct ScriptedBackend {
+    inner: MockBackend,
+    healthy: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl ShareBackend for ScriptedBackend {
+    fn mount_info(&self) -> MountInfo {
+        self.inner.mount_info()
+    }
+    fn caps(&self) -> Caps {
+        self.inner.caps()
+    }
+    async fn capacity(&self) -> Result<Capacity> {
+        self.inner.capacity().await
+    }
+    async fn list_dir(&self, path: &str) -> Result<Listing> {
+        self.inner.list_dir(path).await
+    }
+    async fn stat(&self, path: &str) -> Result<Attrs> {
+        self.inner.stat(path).await
+    }
+    async fn read_range(&self, path: &str, offset: u64, length: u32) -> Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length).await
+    }
+    async fn write_range(&self, path: &str, mode: WriteMode, data: &[u8]) -> Result<u64> {
+        self.inner.write_range(path, mode, data).await
+    }
+    async fn mkdir(&self, path: &str) -> Result<()> {
+        self.inner.mkdir(path).await
+    }
+    async fn rename(&self, from: &str, to: &str, replace: bool) -> Result<()> {
+        self.inner.rename(from, to, replace).await
+    }
+    async fn remove(&self, path: &str, recursive: bool) -> Result<()> {
+        self.inner.remove(path, recursive).await
+    }
+    async fn ping(&self) -> Result<Health> {
+        if self.healthy.load(Ordering::SeqCst) {
+            Ok(Health::Healthy)
+        } else {
+            Ok(Health::Failed)
+        }
+    }
+}
+
+fn spec(id: &str) -> ConnectionSpec {
+    ConnectionSpec {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        protocol: Protocol::Xsync,
+        host: "example".to_owned(),
+        port: None,
+        share: "/srv/share".to_owned(),
+        username: None,
+        mount_preference: Access::Rw,
+    }
+}
+
+/// A connector under the test's control.
+struct ScriptedConnector {
+    attempts: AtomicUsize,
+    /// Refuse to connect at all.
+    refuse: AtomicBool,
+    /// Hand back a read-only mount, as an export flipped while running would.
+    read_only: AtomicBool,
+    /// Shared with every backend handed out, so a live mount can be knocked
+    /// over without touching the session that holds it.
+    healthy: Arc<AtomicBool>,
+}
+
+impl Default for ScriptedConnector {
+    fn default() -> Self {
+        Self {
+            attempts: AtomicUsize::new(0),
+            refuse: AtomicBool::new(false),
+            read_only: AtomicBool::new(false),
+            healthy: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl ScriptedConnector {
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+
+    /// Knock every mount this connector has handed out off the air.
+    fn knock_over(&self) {
+        self.healthy.store(false, Ordering::SeqCst);
+    }
+
+    fn bring_back(&self) {
+        self.healthy.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl Connector for ScriptedConnector {
+    async fn connect(&self, _spec: &ConnectionSpec) -> Result<Arc<dyn ShareBackend>> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        if self.refuse.load(Ordering::SeqCst) {
+            return Err(excalibur_engine::EngineError::Disconnected(
+                "host is unreachable".to_owned(),
+            ));
+        }
+        let inner = MockBackend::media_share();
+        let inner = if self.read_only.load(Ordering::SeqCst) {
+            inner.read_only("export mapped `ro,root_squash`")
+        } else {
+            inner
+        };
+        Ok(Arc::new(ScriptedBackend {
+            inner,
+            healthy: Arc::clone(&self.healthy),
+        }))
+    }
+}
+
+fn manager(connector: &Arc<ScriptedConnector>) -> SessionManager {
+    SessionManager::with_policy(
+        Arc::clone(connector) as Arc<dyn Connector>,
+        HealthPolicy {
+            interval: Duration::from_millis(50),
+            backoff_initial: Duration::from_millis(10),
+            backoff_max: Duration::from_millis(40),
+        },
+    )
+}
+
+#[tokio::test]
+async fn a_mount_becomes_ready_and_publishes_its_facts() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    let mut events = sessions.events();
+
+    sessions.mount(spec("media")).await.expect("mount");
+
+    assert_eq!(sessions.status("media").await, Some(MountStatus::Ready));
+    assert_eq!(sessions.active().await.as_deref(), Some("media"));
+    assert!(sessions.mount_info("media").await.expect("facts").writable);
+
+    // Mounting is two events, not one: a UI shows the row as connecting before
+    // it can show it as ready.
+    let first = events.recv().await.expect("mounting");
+    assert_eq!(first.status, MountStatus::Mounting);
+    let second = events.recv().await.expect("ready");
+    assert_eq!(second.status, MountStatus::Ready);
+    // Every Ready carries the facts, because that is the moment a UI must
+    // re-read `writable` rather than trusting what it had.
+    assert!(second.mount.expect("facts on ready").writable);
+}
+
+#[tokio::test]
+async fn a_refused_connection_keeps_the_row_and_says_why() {
+    let connector = Arc::new(ScriptedConnector::default());
+    connector.refuse.store(true, Ordering::SeqCst);
+    let sessions = manager(&connector);
+
+    let error = sessions.mount(spec("media")).await.expect_err("must fail");
+    assert!(error.to_string().contains("unreachable"));
+    // The row survives, so the UI can show the failure and offer a retry
+    // rather than the bookmark vanishing.
+    assert_eq!(sessions.status("media").await, Some(MountStatus::Error));
+    assert_eq!(sessions.len().await, 1);
+    assert!(sessions.backend("media").await.is_none());
+}
+
+#[tokio::test]
+async fn switching_the_active_mount_does_not_disconnect_the_others() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+
+    sessions.mount(spec("media")).await.expect("first");
+    sessions.mount(spec("backups")).await.expect("second");
+    assert_eq!(sessions.active().await.as_deref(), Some("backups"));
+
+    sessions.set_active("media").await.expect("switch back");
+    assert_eq!(sessions.active().await.as_deref(), Some("media"));
+
+    // Both are still connected: a user switching back should not pay for a
+    // reconnect, and two connections were made, not three.
+    assert!(sessions.backend("media").await.is_some());
+    assert!(sessions.backend("backups").await.is_some());
+    assert_eq!(connector.attempts(), 2);
+
+    assert!(sessions.set_active("nope").await.is_err());
+}
+
+#[tokio::test]
+async fn unmounting_drops_only_that_mount() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    sessions.mount(spec("media")).await.expect("first");
+    sessions.mount(spec("backups")).await.expect("second");
+
+    sessions.unmount("backups").await;
+    assert_eq!(sessions.len().await, 1);
+    assert!(sessions.backend("media").await.is_some());
+    // It was the active one, so nothing is active now rather than something
+    // arbitrary being promoted.
+    assert_eq!(sessions.active().await, None);
+    assert!(sessions.active_backend().await.is_err());
+}
+
+#[tokio::test]
+async fn a_mount_that_stops_answering_reconnects_and_republishes_its_facts() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    let mut events = sessions.events();
+    sessions.mount(spec("media")).await.expect("mount");
+    assert!(sessions.mount_info("media").await.expect("facts").writable);
+
+    // The share goes away, and comes back read-only — an export flipped while
+    // the app was running. This is the case the design cares about: the badge
+    // and every write verb must follow, and a manager that only restored the
+    // connection would leave them wrong.
+    connector.knock_over();
+
+    // Wait until the manager has actually noticed, rather than guessing how
+    // long that takes: bringing the share back before the health check saw it
+    // fail would test nothing.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    macro_rules! next_event {
+        () => {
+            tokio::time::timeout(deadline - tokio::time::Instant::now(), events.recv())
+                .await
+                .expect("the mount never settled")
+                .expect("events")
+        };
+    }
+    loop {
+        if next_event!().status == MountStatus::Reconnecting {
+            break;
+        }
+    }
+
+    // Now it comes back, read-only.
+    connector.read_only.store(true, Ordering::SeqCst);
+    connector.bring_back();
+
+    loop {
+        let event = next_event!();
+        if event.status == MountStatus::Ready {
+            let facts = event.mount.expect("ready carries the facts");
+            assert!(!facts.writable, "the reconnect must re-read writability");
+            assert_eq!(facts.reason, "export mapped `ro,root_squash`");
+            break;
+        }
+    }
+
+    assert_eq!(sessions.status("media").await, Some(MountStatus::Ready));
+    let facts = sessions.mount_info("media").await.expect("facts");
+    assert!(
+        !facts.writable,
+        "the stored facts must match what was published"
+    );
+}
+
+#[tokio::test]
+async fn a_share_that_stays_down_keeps_retrying_without_hammering() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    sessions.mount(spec("media")).await.expect("mount");
+
+    // Down, and staying down.
+    connector.knock_over();
+    connector.refuse.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    assert_eq!(
+        sessions.status("media").await,
+        Some(MountStatus::Reconnecting)
+    );
+    // Backoff caps at 40ms here, so ~400ms of downtime is on the order of ten
+    // attempts. The bound that matters is the upper one: without backoff this
+    // would be a tight loop, and the exact count depends on scheduling.
+    let attempts = connector.attempts();
+    assert!(
+        (2..=40).contains(&attempts),
+        "expected a backed-off retry loop, saw {attempts} attempts"
+    );
+    // Nothing can be done with a mount that is down, and asking says so rather
+    // than handing back a stale backend.
+    assert!(sessions.active_backend().await.is_err());
+}
+
+#[tokio::test]
+async fn dropping_the_manager_stops_its_health_tasks() {
+    let connector = Arc::new(ScriptedConnector::default());
+    {
+        let sessions = manager(&connector);
+        sessions.mount(spec("media")).await.expect("mount");
+        connector.knock_over();
+        connector.refuse.store(true, Ordering::SeqCst);
+    }
+    let after_drop = connector.attempts();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A task that outlived its manager would keep reconnecting to a share
+    // nobody holds.
+    assert_eq!(connector.attempts(), after_drop);
+}

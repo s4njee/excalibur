@@ -130,15 +130,16 @@ reconstruct it from git history.
 | M0 | E2-S1 — `ShareBackend` trait and mock | **Done** 2026-09-03 |
 | M0 | E2-S3 — Tauri commands and events | **Done** (`list_dir`, `mount_info`) |
 | M1 | E7-S2 — xsync v3 backend | **Done** 2026-09-03 |
-| M0 | E0-S3 — Icon set | Next |
-| M0 | E2-S2 — Session manager | Next |
-| M1 | E3-S1/S2/S4, E8, E9, E10 | Not started |
+| M0 | E2-S2 — Session manager | **Done** 2026-09-03 |
+| M1 | E3-S1 — New Connection dialog | Next |
+| M0 | E0-S3 — Icon set | Not started |
+| M1 | E3-S2/S4, E8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
-theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`;
-what stands between it and the GUI is the session manager (E2-S2), which is what would
-let the app hold something other than the mock. `?screen=1b` is the one worth looking at: it
+theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. What
+stands between that and a user mounting a share from the window is the connection
+dialog (E3-S1) and the bookmark store. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -360,14 +361,53 @@ is the same component tree with `mount.writable` false.
   (keychain, host keys, ports) that the shape should come from the second real
   backend, not be guessed before the first.
 
-#### E2-S2 — Session manager
+#### E2-S2 — Session manager — **Done**
+
+*2026-09-03.*
+
 **AC**
-- `mounts: Map<bookmarkId, Mount>` lifecycle `mounting → ready → error |
-  reconnecting`; one backend instance per mount; `activeMountId` switching does not
-  disconnect others.
-- Health loop: `ping` every N seconds; failure flips status to `reconnecting`, emits an
-  event, and attempts reconnect with backoff; on success `mount_info` is re-read and
-  `writable` re-published *(handoff §Permissions gating: "re-read on reconnect")*.
+- [x] `mounts: Map<bookmarkId, Mount>` with the lifecycle `mounting → ready → error |
+  reconnecting`; one backend instance per mount; switching the active mount does not
+  disconnect the others.
+- [x] Health loop: `ping` on an interval; failure flips the status to `reconnecting`,
+  emits an event, and reconnects with exponential backoff; on success `mount_info` is
+  re-read and `writable` re-published.
+
+**Results**
+
+- **Reconnecting is not restoring a connection, it is re-reading the facts.** A share
+  can come back *different* — an export flipped to read-only while the app was
+  running — and a manager that only restored the socket would leave the badge and every
+  write verb wrong. The test that matters knocks a mount over, waits for the
+  `Reconnecting` event, brings it back read-only, and asserts the published facts say
+  so. A simpler design passes every other test in this file and fails that one.
+- `Connector` is a trait rather than a `match` on the protocol, so a test can supply a
+  connector that refuses on demand. The reconnect path most needs testing and a real
+  server is worst at reproducing it.
+- Testing it also needed a backend whose health flips *after* it has been handed out:
+  a connector flag is not enough, because the session already holds the backend and the
+  case under test is a mount that stops answering while held. The first version of the
+  test set a connector flag, and passed while proving nothing.
+- A refused connection keeps its row in `Error` rather than dropping it. The bookmark
+  vanishing on a failed connect would be worse than the failure.
+- Events are a bounded `broadcast`, and every event carries the whole state rather than
+  a delta. A slow subscriber loses old events instead of growing a queue, and losing one
+  costs latency rather than correctness.
+- `SessionManager` aborts its health tasks on drop. Without that they hold `Arc`s to the
+  shared state and keep reconnecting to shares nobody holds; there is a test for it.
+- The shell now holds a real `SessionManager` and forwards `mount://changed` to the
+  window. It falls back to the mock share when nothing is mounted, so the window has
+  something to draw on first run without pretending to be connected.
+
+**Next steps**
+
+- The frontend still reads its fixture; **E3-S1 (the connection dialog)** and the
+  bookmark store are what let a user mount something from the UI rather than from
+  `xcal`.
+- `ProtocolConnector` answers SMB, NFS and SFTP with `Unsupported` until E4, E5 and E6.
+  That is honest, and it is what a UI reads to grey out a protocol tab.
+- The health interval is 15s with a 1s→30s backoff, chosen rather than measured. Worth
+  revisiting against a real flaky link.
 
 #### E2-S3 — Tauri commands and events
 **AC**

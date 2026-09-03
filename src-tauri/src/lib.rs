@@ -12,13 +12,55 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
-use excalibur_engine::{Listing, MountInfo, ShareBackend};
+use excalibur_engine::backend::xsync::XsyncBackend;
+use excalibur_engine::backend::{ConnectionSpec, Protocol, ShareBackend};
+use excalibur_engine::{Connector, Listing, MountInfo, Result, SessionManager};
+use tauri::Emitter;
 
-/// The session's backends. M0 holds exactly one, a mock; the session manager
-/// that holds several and reconnects them is E2-S2.
+/// Builds the backend a `ConnectionSpec` names.
+///
+/// This is where the protocol enum turns into a client. `connect()` is
+/// deliberately not on `ShareBackend`: each protocol needs different things to
+/// get started — a keychain entry, a host key, a port — and the shape of that
+/// should come from the second real backend rather than be guessed before the
+/// first.
+struct ProtocolConnector;
+
+#[async_trait]
+impl Connector for ProtocolConnector {
+    async fn connect(&self, spec: &ConnectionSpec) -> Result<Arc<dyn ShareBackend>> {
+        match spec.protocol {
+            Protocol::Xsync => {
+                let backend = XsyncBackend::connect_ssh(&spec.host, &spec.share, None).await?;
+                Ok(Arc::new(backend))
+            }
+            // SMB, NFS and SFTP arrive with E4, E5 and E6. Until then a spec
+            // naming one is answered honestly rather than silently mocked.
+            other => Err(excalibur_engine::EngineError::Unsupported(format!(
+                "{other:?} is not implemented yet"
+            ))),
+        }
+    }
+}
+
+/// What the shell holds: the mounts, and a demo share when there are none.
 struct AppState {
-    backend: Arc<dyn ShareBackend>,
+    sessions: Arc<SessionManager>,
+    /// Serves the design's fixed data until a real share is mounted, so the
+    /// window has something to draw on first run.
+    demo: Arc<dyn ShareBackend>,
+}
+
+impl AppState {
+    /// The backend a command should use: the active mount, or the demo.
+    async fn backend(&self) -> Arc<dyn ShareBackend> {
+        self.sessions
+            .active_backend()
+            .await
+            .unwrap_or_else(|_| Arc::clone(&self.demo))
+    }
 }
 
 /// Errors as the frontend sees them: a message and where it belongs on screen.
@@ -48,22 +90,50 @@ impl From<excalibur_engine::EngineError> for CommandError {
 async fn list_dir(
     state: tauri::State<'_, AppState>,
     path: String,
-) -> Result<Listing, CommandError> {
-    let backend = Arc::clone(&state.backend);
-    backend.list_dir(&path).await.map_err(Into::into)
+) -> std::result::Result<Listing, CommandError> {
+    state
+        .backend()
+        .await
+        .list_dir(&path)
+        .await
+        .map_err(Into::into)
 }
 
 /// The mount facts alone, for a status bar refresh that does not need a
 /// listing.
 #[tauri::command]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "tauri::command requires State by value"
-)]
-fn mount_info(state: tauri::State<'_, AppState>) -> MountInfo {
-    // `State` is a handle, not a value worth borrowing through; Tauri's macro
-    // requires it by value.
-    state.backend.mount_info()
+async fn mount_info(
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<MountInfo, CommandError> {
+    Ok(state.backend().await.mount_info())
+}
+
+/// Connect a share and make it the active one.
+#[tauri::command]
+async fn mount(
+    state: tauri::State<'_, AppState>,
+    spec: ConnectionSpec,
+) -> std::result::Result<(), CommandError> {
+    state.sessions.mount(spec).await.map_err(Into::into)
+}
+
+/// Disconnect a share.
+#[tauri::command]
+async fn unmount(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), CommandError> {
+    state.sessions.unmount(&id).await;
+    Ok(())
+}
+
+/// Switch which mount the window is looking at.
+#[tauri::command]
+async fn set_active(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), CommandError> {
+    state.sessions.set_active(&id).await.map_err(Into::into)
 }
 
 /// Build and run the desktop app.
@@ -73,11 +143,30 @@ fn mount_info(state: tauri::State<'_, AppState>) -> MountInfo {
 /// Panics if the webview cannot be created, which is not a condition the app
 /// can continue from.
 pub fn run() {
+    let sessions = Arc::new(SessionManager::new(Arc::new(ProtocolConnector)));
+
     tauri::Builder::default()
         .manage(AppState {
-            backend: Arc::new(MockBackend::media_share()),
+            sessions: Arc::clone(&sessions),
+            demo: Arc::new(MockBackend::media_share()),
         })
-        .invoke_handler(tauri::generate_handler![list_dir, mount_info])
+        .setup(move |app| {
+            // Mount changes reach the window as events rather than by polling,
+            // so a share that drops is reflected while the user is looking at
+            // it. Every event carries the whole state, so a missed one costs
+            // nothing but latency.
+            let handle = app.handle().clone();
+            let mut changes = sessions.events();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(event) = changes.recv().await {
+                    let _ = handle.emit("mount://changed", &event);
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_dir, mount_info, mount, unmount, set_active
+        ])
         .run(tauri::generate_context!())
         .expect("the webview failed to start");
 }

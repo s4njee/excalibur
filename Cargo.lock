@@ -839,6 +839,7 @@ dependencies = [
 name = "excalibur"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "excalibur-engine",
  "serde",
  "serde_json",

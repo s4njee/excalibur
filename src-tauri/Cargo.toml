@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 excalibur-engine = { path = "../crates/engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }
