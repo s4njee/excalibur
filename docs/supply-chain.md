@@ -10,7 +10,11 @@ the same discipline, and this file follows its format.
 - `Cargo.lock` is committed and CI builds `--locked`, so CI resolves exactly the
   versions recorded here.
 - The workspace denies `unsafe_code` (`[workspace.lints.rust]` in `Cargo.toml`),
-  and `src-tauri` additionally `#![forbid(unsafe_code)]`s.
+  and `src-tauri` additionally `#![forbid(unsafe_code)]`s. `deny` is the
+  presumption rather than an absolute: a module may allow it for itself where no
+  adequate safe crate exists, under the rules in plan.md's "Decisions taken".
+  **No module does today** — this section is where the first one gets recorded,
+  with the same detail a new dependency gets.
 - `cargo audit` and `cargo deny check` run on every push and pull request and
   fail on any finding not explicitly accepted, with a reason, in `deny.toml`.
 - Everything comes from crates.io. Unknown registries and git sources are denied

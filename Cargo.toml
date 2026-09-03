@@ -12,6 +12,12 @@ license = "MIT OR Apache-2.0"
 # lints below are the same discipline the sibling xsync workspace runs under:
 # a file browser that mishandles a path is a security problem, not a bug.
 [workspace.lints.rust]
+# `deny`, not `forbid`: the presumption, not an absolute. Where no adequate safe
+# crate exists, a module may `#![allow(unsafe_code)]` for itself — never the
+# crate, never the workspace — with a `// SAFETY:` note on every block and a
+# tested safe wrapper around it. See "Decisions taken" in plan.md. Held as an
+# absolute, this lint deleted a feature from the sibling xsync project rather
+# than answering a question about it, which is the wrong way round.
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
