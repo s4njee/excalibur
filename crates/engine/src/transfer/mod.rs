@@ -15,6 +15,7 @@
 
 pub mod queue;
 pub mod rate;
+pub mod worker;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
