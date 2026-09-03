@@ -6,10 +6,17 @@
 // actually produces — regenerate it rather than editing it.
 
 import fixture from "./fixture.json";
-import type { Listing } from "./types";
+import type { Listing, MountInfo } from "./types";
+
+/** A connection spec, as the engine takes it. Never carries a secret. */
+export type Spec = Record<string, unknown>;
 
 export interface Backend {
   listDir(path: string): Promise<Listing>;
+  /** Connect, report what was found, and disconnect again. */
+  testConnection(spec: Spec): Promise<MountInfo>;
+  /** Connect and keep it, making it the active mount. */
+  mount(spec: Spec): Promise<void>;
 }
 
 /** True when running inside the Tauri shell rather than a plain browser. */
@@ -33,6 +40,15 @@ export function fixtureBackend(options: { readOnly?: boolean; latencyMs?: number
       }
       return listing;
     },
+    // A browser has no engine behind it. Refusing rather than inventing a
+    // success keeps the demo honest about what it is.
+    async testConnection(): Promise<MountInfo> {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async mount(): Promise<void> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
   };
 }
 
@@ -42,6 +58,14 @@ function tauriBackend(): Backend {
     async listDir(path: string): Promise<Listing> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<Listing>("list_dir", { path });
+    },
+    async testConnection(spec: Spec): Promise<MountInfo> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<MountInfo>("test_connection", { spec });
+    },
+    async mount(spec: Spec): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("mount", { spec });
     },
   };
 }

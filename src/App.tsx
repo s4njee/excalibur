@@ -1,4 +1,5 @@
 import { createMemo, createResource, createSignal, Show } from "solid-js";
+import { ConnectionDialog } from "./components/ConnectionDialog";
 import { FileList, shellStyles as styles, Sidebar, StatusBar, TitleBar, Toolbar } from "./components/Shell";
 import { defaultBackend, fixtureBackend, type Backend } from "./state/backend";
 import type { Bookmark, Entry, Theme } from "./state/types";
@@ -69,10 +70,11 @@ export default function App(props: { backend?: Backend; theme?: Theme; readOnly?
   // same component tree rather than a separate mock.
   const backend =
     props.backend ?? (props.readOnly ? fixtureBackend({ readOnly: true }) : defaultBackend());
-  const [listing] = createResource(() => backend.listDir(""));
+  const [listing, { refetch }] = createResource(() => backend.listDir(""));
   const [filter, setFilter] = createSignal("");
   const [showHidden] = createSignal(true);
   const [selected, setSelected] = createSignal<Set<string>>(new Set(["Arrival.2016.mkv"]));
+  const [connecting, setConnecting] = createSignal(false);
 
   const entries = createMemo(() => {
     const data = listing();
@@ -126,6 +128,7 @@ export default function App(props: { backend?: Backend; theme?: Theme; readOnly?
               bookmarks={BOOKMARKS}
               activeId="nas-media"
               writable={data().mount.writable}
+              onNewConnection={() => setConnecting(true)}
             />
             <div class={styles.listColumn}>
               <FileList entries={entries()} selected={selected} onSelect={select} />
@@ -138,6 +141,18 @@ export default function App(props: { backend?: Backend; theme?: Theme; readOnly?
               />
             </div>
           </div>
+          <Show when={connecting()}>
+            <ConnectionDialog
+              backend={backend}
+              onCancel={() => setConnecting(false)}
+              onConnected={() => {
+                setConnecting(false);
+                // Re-listing the new mount is E8-S7's navigation; for now the
+                // dialog closes and the mount is held by the session manager.
+                refetch();
+              }}
+            />
+          </Show>
         </div>
       )}
     </Show>

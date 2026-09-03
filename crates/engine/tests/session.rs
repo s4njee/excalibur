@@ -309,6 +309,29 @@ async fn a_share_that_stays_down_keeps_retrying_without_hammering() {
 }
 
 #[tokio::test]
+async fn testing_a_connection_reports_the_facts_without_mounting() {
+    let connector = Arc::new(ScriptedConnector::default());
+    connector.read_only.store(true, Ordering::SeqCst);
+    let sessions = manager(&connector);
+
+    // The dialog's Test button asks the questions a user actually has, which
+    // includes "will I be able to write" — so it reports the mount facts, not
+    // just reachability.
+    let facts = sessions.test(&spec("media")).await.expect("test");
+    assert!(!facts.writable);
+    assert_eq!(facts.reason, "export mapped `ro,root_squash`");
+
+    // Testing is not mounting: nothing is held afterwards.
+    assert!(sessions.is_empty().await);
+    assert_eq!(sessions.active().await, None);
+
+    connector.refuse.store(true, Ordering::SeqCst);
+    let error = sessions.test(&spec("media")).await.expect_err("must fail");
+    assert!(error.to_string().contains("unreachable"));
+    assert!(sessions.is_empty().await);
+}
+
+#[tokio::test]
 async fn dropping_the_manager_stops_its_health_tasks() {
     let connector = Arc::new(ScriptedConnector::default());
     {

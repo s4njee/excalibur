@@ -108,6 +108,15 @@ async fn mount_info(
     Ok(state.backend().await.mount_info())
 }
 
+/// Try a connection and report what it found, without keeping it.
+#[tauri::command]
+async fn test_connection(
+    state: tauri::State<'_, AppState>,
+    spec: ConnectionSpec,
+) -> std::result::Result<MountInfo, CommandError> {
+    state.sessions.test(&spec).await.map_err(Into::into)
+}
+
 /// Connect a share and make it the active one.
 #[tauri::command]
 async fn mount(
@@ -165,7 +174,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            list_dir, mount_info, mount, unmount, set_active
+            list_dir,
+            mount_info,
+            test_connection,
+            mount,
+            unmount,
+            set_active
         ])
         .run(tauri::generate_context!())
         .expect("the webview failed to start");

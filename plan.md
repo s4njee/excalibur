@@ -131,15 +131,16 @@ reconstruct it from git history.
 | M0 | E2-S3 — Tauri commands and events | **Done** (`list_dir`, `mount_info`) |
 | M1 | E7-S2 — xsync v3 backend | **Done** 2026-09-03 |
 | M0 | E2-S2 — Session manager | **Done** 2026-09-03 |
-| M1 | E3-S1 — New Connection dialog | Next |
+| M1 | E3-S1 — New Connection dialog | **Done** 2026-09-03 |
+| M1 | E3-S2 — Bookmarks store | Next |
 | M0 | E0-S3 — Icon set | Not started |
-| M1 | E3-S2/S4, E8, E9, E10 | Not started |
+| M1 | E3-S4, E8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
-theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. What
-stands between that and a user mounting a share from the window is the connection
-dialog (E3-S1) and the bookmark store. `?screen=1b` is the one worth looking at: it
+theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. A user can
+open the dialog, pick a protocol, and connect; what is missing before that is useful is
+the bookmark store (E3-S2), so a connection survives the window closing. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -428,34 +429,66 @@ is the same component tree with `mount.writable` false.
 
 ### E3 — Connections, credentials, bookmarks
 
-#### E3-S1 — New Connection dialog *(handoff §Screens/3)*
+#### E3-S1 — New Connection dialog — **Done (the protocols that exist)** *(handoff §Screens/3)*
+
+*2026-09-03.*
+
 **AC**
-- 460px dialog, title bar 34px "New Connection", body `#f4f4f5` padding `16px 18px 18px`.
-- Protocol segmented control on a 2px-padded `#e2e2e5` track, radius 6px, 24px tabs,
-  active white + shadow + 600; tabs **SMB · NFS · SFTP · xsync**.
-- Form grid `96px 1fr`, gap `9px 12px`, right-aligned 11.5px `#6a6a70` labels. Field
-  sets by protocol:
-  - SMB: Server (mono), Share (mono), Username, Password (masked), Domain (optional),
-    "Save in keychain", Mount as RW/RO.
-  - NFS: Server, Export path (mono), Version (auto/3/4 — v4 disabled with tooltip until
-    E5-S5), Security (`sys` | `krb5` | `krb5i` | `krb5p`, Kerberos options disabled
-    until E5-S5), optional principal; no password; Mount as RW/RO.
-  - SFTP: Server, Port (22), Path (mono), Username, Auth (Password | Private key |
-    Agent), key file picker, passphrase (masked), "Save in keychain", Mount as RW/RO.
-  - xsync: Server, Port (default from `xsyncv3.md` §7), Export (mono, with a
-    "Browse exports…" picker that calls `ListExports` when connected), Auth (SSH key |
-    Password | Token | Guest) *or* "via SSH" toggle that switches to host/user fields;
-    Mount as RW/RO.
-- Live URI preview (`smb://user@host/share`, `nfs://host/export`,
-  `sftp://user@host:port/path`, `xsync://user@host:port/export`) in the white mono
-  box, updating on every keystroke.
-- `Test` runs `test_connection`; result inline: `#2f9e5f` "Reachable · SMB3 · signing
-  on" (protocol-specific label from `MountInfo`) or `#c0392b` with the error text.
-- `Cancel` / primary `Connect` 26px, right-aligned; `Connect` disabled until required
-  fields are valid.
-- "Mount as" is a *preference* passed to the backend (used as SMB/NFS/xsync mount hint
-  where the protocol supports requesting RO); the resulting `writable` still comes from
-  the mount, never from the radio *(handoff §Permissions gating)*.
+- [x] 460px dialog, 34px title bar "New Connection", body `#f4f4f5` padding
+  `16px 18px 18px`.
+- [x] Protocol segmented control on a 2px-padded `#e2e2e5` track, radius 6px, 24px
+  tabs, active white + shadow + 600; tabs **SMB · NFS · SFTP · xsync**.
+- [x] Form grid `96px 1fr`, gap `9px 12px`, right-aligned 11.5px labels, and a field
+  set that changes with the protocol: SMB gains Domain and the keychain checkbox, NFS
+  drops username, password and port entirely, SFTP and xsync carry a port.
+- [ ] NFS's Version and Security controls, and SFTP's auth-method picker and key file.
+  **Not built:** every one of them selects between things that do not exist — NFSv4
+  and Kerberos are E5-S5, key and agent auth are E6-S1. A disabled control that will
+  never enable in this build is a promise, and the notice under the form is a
+  straighter way to say the same thing.
+- [ ] xsync's "Browse exports…" picker. **Deferred** with E7-S3, which needs
+  `ListExports`; `xs --server` has one unnamed export.
+- [x] Live URI preview, built from a partial draft so it moves as fields change.
+- [x] `Test` runs `test_connection`, with the result inline in green or red.
+- [x] `Cancel` and primary `Connect`, 26px, right-aligned; `Connect` disabled until the
+  required fields are valid.
+- [x] "Mount as" is a preference passed to the backend; the mount's actual writability
+  still comes from the server. There is a test that the spec carries the preference and
+  no secret.
+
+**Results**
+
+- **The field set changes rather than greying out.** An inert password box on the NFS
+  tab would tell a user that NFS has a password, which it does not — its identity is a
+  `sec=` mode. Which fields a protocol has is a fact about the protocol, so it lives in
+  `state/connection.ts` next to the validation, not in the component.
+- `Test` connects for real and reports the mount facts, including writability, rather
+  than probing the port. The questions a user is actually asking are "are my credentials
+  right, does this export exist, will I be able to write", and none of them is
+  answerable by a successful TCP connect. Reporting "reachable" from one would be
+  answering an easier question than the one asked.
+- The dialog says plainly which protocols have a backend. `ProtocolConnector` answers
+  the other three with `Unsupported`, and letting someone fill in a form that cannot
+  connect is worse than telling them first.
+- The URI preview is built from a partial draft, so it moves while typing rather than
+  appearing once the form validates. `sftp://host:22` collapses to `sftp://host`,
+  because a default port is noise and a non-default one is information.
+- Nine tests cover the rules — the URI, the per-protocol field sets, validation, and
+  that a password never reaches the spec — without rendering a dialog.
+- Switching protocol keeps the host, username and mount preference. Re-typing a
+  hostname because you changed tab is the kind of small rudeness that makes a dialog
+  feel hostile.
+
+**Next steps**
+
+- **E3-S2 (bookmarks store)** is next: `Connect` currently mounts and closes, but
+  nothing persists, so the sidebar's rows are still fixed.
+- The browser build refuses `Test` and `Connect` with "not connected to the engine".
+  That is honest about what a browser preview is, but it means the dialog's happy path
+  is only exercisable in the desktop app.
+- Password and passphrase fields collect a secret that currently goes nowhere. **They
+  must not be wired up before E3-S3 (keychain)** — an interim path that keeps a
+  password in frontend state or a JSON file is exactly what the design forbids.
 
 #### E3-S2 — Bookmarks store
 **AC**

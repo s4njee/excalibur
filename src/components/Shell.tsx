@@ -103,6 +103,7 @@ export function Sidebar(props: {
   bookmarks: Bookmark[];
   activeId: string;
   writable: boolean;
+  onNewConnection: () => void;
 }) {
   const mounted = createMemo(() => props.bookmarks.filter((bookmark) => bookmark.mounted));
   const saved = createMemo(() => props.bookmarks.filter((bookmark) => !bookmark.mounted));
@@ -162,7 +163,11 @@ export function Sidebar(props: {
       </For>
 
       <div class={styles.sidebarFooter}>
-        <button class={styles.sidebarFooterButton} aria-label="New connection">
+        <button
+          class={styles.sidebarFooterButton}
+          aria-label="New connection"
+          onClick={props.onNewConnection}
+        >
           +
         </button>
         {/* Removing a bookmark is a write to local state, not the share, so it

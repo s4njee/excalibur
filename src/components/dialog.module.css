@@ -1,0 +1,203 @@
+/*
+ * The New Connection dialog. Metrics from the design handoff §Screens/3.
+ */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.dialog {
+  width: 460px;
+  border-radius: var(--radius-window);
+  background: var(--toolbar-bg);
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--height-titlebar);
+  background: var(--titlebar);
+  border-bottom: 1px solid var(--hairline-chrome);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--titlebar-text);
+}
+
+.body {
+  padding: 16px 18px 18px;
+}
+
+/* Protocol segmented control ---------------------------------------------- */
+
+.segmentTrack {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-segment);
+  background: var(--segment-track);
+  margin-bottom: 14px;
+}
+
+.segmentTab {
+  flex: 1;
+  height: var(--height-control);
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-control);
+  transition:
+    background var(--transition-state),
+    color var(--transition-state);
+}
+
+.segmentTabActive {
+  background: var(--control-bg);
+  box-shadow: var(--shadow-segment);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Form -------------------------------------------------------------------- */
+
+.form {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 9px 12px;
+  align-items: center;
+}
+
+.label {
+  text-align: right;
+  font-size: var(--text-control);
+  color: var(--text-secondary);
+}
+
+.input {
+  height: var(--height-control);
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-control);
+  min-width: 0;
+}
+
+/* Anything the user might compare character by character is mono: a host, a
+ * share, a path. */
+.inputMono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.input:disabled {
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
+}
+
+.checkRow,
+.radioRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-control);
+  color: var(--text-primary);
+}
+
+.radioRow {
+  gap: 14px;
+}
+
+.radioOption {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* URI preview ------------------------------------------------------------- */
+
+.preview {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline-chrome);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-status);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Actions ----------------------------------------------------------------- */
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.result {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resultOk {
+  color: var(--success);
+}
+
+.resultError {
+  color: var(--error);
+}
+
+.spacer {
+  margin-left: auto;
+}
+
+.action {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-control);
+  transition:
+    background var(--transition-state),
+    color var(--transition-state),
+    border-color var(--transition-state);
+}
+
+.actionPrimary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.action:disabled,
+.actionPrimary:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-border);
+  color: var(--disabled-text);
+}
+
+.notice {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}

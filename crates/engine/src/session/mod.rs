@@ -190,6 +190,22 @@ impl SessionManager {
         }
     }
 
+    /// Connect, read the mount facts, and disconnect again.
+    ///
+    /// The dialog's `Test` button. It connects for real rather than probing the
+    /// port, because the questions a user is actually asking — are my
+    /// credentials right, does this export exist, will I be able to write — are
+    /// only answerable by mounting it. Reporting "reachable" from a successful
+    /// TCP connect would be answering an easier question than the one asked.
+    ///
+    /// # Errors
+    ///
+    /// Returns the connector's failure, which is the thing worth showing.
+    pub async fn test(&self, spec: &ConnectionSpec) -> Result<MountInfo> {
+        let backend = self.connector.connect(spec).await?;
+        Ok(backend.mount_info())
+    }
+
     /// Drop a mount and stop watching it.
     pub async fn unmount(&self, id: &str) {
         if let Some(task) = self.tasks.write().await.remove(id) {
