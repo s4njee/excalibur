@@ -134,7 +134,7 @@ async fn a_read_only_export_refuses_writes_and_says_why() {
 }
 
 #[tokio::test]
-async fn the_verbs_protocol_v3_lacks_are_refused_as_unsupported() {
+async fn the_namespace_mutations_work_against_a_real_server() {
     let Some(xs) = xs_binary() else {
         eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
         return;
@@ -144,25 +144,87 @@ async fn the_verbs_protocol_v3_lacks_are_refused_as_unsupported() {
         .await
         .expect("mount the export");
 
-    // These are not failures of this backend but gaps in the protocol
-    // (`xsyncv3.md` E5-S4). A UI reads `Unsupported` and disables the verb,
-    // rather than offering it and reporting a confusing error.
-    for error in [
-        backend.mkdir("new").await.expect_err("mkdir"),
-        backend.rename("a", "b", false).await.expect_err("rename"),
-        backend
-            .remove("notes.txt", false)
-            .await
-            .expect_err("remove"),
-    ] {
-        assert!(
-            matches!(error, EngineError::Unsupported(_)),
-            "expected Unsupported, got {error}"
-        );
-    }
+    backend.mkdir("box").await.expect("mkdir");
+    assert!(root.path().join("box").is_dir());
+
+    // `mkdir`, not `mkdir -p`: the parent has to exist, and a caller that
+    // wants the parents makes them itself so it knows what it made.
+    let deep = backend.mkdir("absent/child").await.expect_err("mkdir deep");
     assert!(
-        !backend.caps().atomic_rename,
-        "no rename verb means no atomic promote"
+        matches!(deep, EngineError::NotFound(_)),
+        "expected NotFound, got {deep}"
     );
+
+    backend
+        .write_range("box/note.txt", WriteMode::Create, b"hello")
+        .await
+        .expect("write");
+
+    // `replace: false` refuses an existing destination rather than clobbering
+    // it; the server decides that atomically, so there is no window here.
+    backend
+        .write_range("box/other.txt", WriteMode::Create, b"other")
+        .await
+        .expect("write");
+    let clash = backend
+        .rename("box/other.txt", "box/note.txt", false)
+        .await
+        .expect_err("no-replace rename");
+    assert!(
+        matches!(clash, EngineError::AlreadyExists(_)),
+        "expected AlreadyExists, got {clash}"
+    );
+    backend
+        .rename("box/other.txt", "box/note.txt", true)
+        .await
+        .expect("replacing rename");
+    assert_eq!(
+        std::fs::read(root.path().join("box/note.txt")).unwrap(),
+        b"other"
+    );
+
+    // A non-recursive remove of a directory with entries fails rather than
+    // taking them with it.
+    let not_empty = backend.remove("box", false).await.expect_err("rmdir");
+    assert!(
+        matches!(
+            not_empty,
+            EngineError::Io(_) | EngineError::PermissionDenied(_)
+        ),
+        "expected the server's refusal, got {not_empty}"
+    );
+
+    backend.remove("box", true).await.expect("recursive remove");
+    assert!(!root.path().join("box").exists());
+
+    // The promote path is real now, so the transfer worker may use it.
+    assert!(backend.caps().atomic_rename);
     assert!(backend.caps().random_access);
+}
+
+#[tokio::test]
+async fn a_recursive_remove_clears_a_nested_tree() {
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+        .await
+        .expect("mount the export");
+
+    // Depth matters: the walk removes children before parents, and a version
+    // that got the order wrong would fail on the first non-empty directory.
+    backend.mkdir("a").await.expect("mkdir a");
+    backend.mkdir("a/b").await.expect("mkdir a/b");
+    backend.mkdir("a/b/c").await.expect("mkdir a/b/c");
+    for path in ["a/one.txt", "a/b/two.txt", "a/b/c/three.txt"] {
+        backend
+            .write_range(path, WriteMode::Create, b"x")
+            .await
+            .expect("write");
+    }
+
+    backend.remove("a", true).await.expect("recursive remove");
+    assert!(!root.path().join("a").exists());
 }

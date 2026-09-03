@@ -4,14 +4,17 @@
 //! on the xsync side: what it needs, and what it has to work around, is the
 //! evidence for what `xsync_client::Fs` should eventually contain.
 //!
-//! Two things it cannot do today, and says so rather than pretending:
-//! `rename` and `mkdir` have no v3 message yet (`xsyncv3.md` E5-S4), so they
-//! are refused as unsupported and `Caps::atomic_rename` is false.
+//! The namespace mutations arrived with `xsyncv3.md` E5-S4, so `mkdir`,
+//! `rename` and `remove` are real here now and `Caps::atomic_rename` is true:
+//! the server renames through `renameat2`/`renamex_np` rather than a
+//! check-then-rename this side could only do as a race.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use xsync_client::{attr_presence, Access, Client, Mount, OpenFile, CREATE, READ, TRUNC, WRITE};
+use xsync_client::{
+    attr_presence, Access, Client, Mount, OpenFile, RenameMode, CREATE, READ, TRUNC, WRITE,
+};
 
 use super::{
     Attrs, Capacity, Caps, Entry, EntryKind, Health, Listing, MountInfo, MountStatus, ShareBackend,
@@ -178,6 +181,45 @@ impl XsyncBackend {
         &self.root_label
     }
 
+    /// Remove a directory and everything under it, depth first.
+    ///
+    /// The walk is here rather than on the server because that is what lets a
+    /// caller report progress and stop: a server-side recursive delete is one
+    /// request that either finishes or half-finishes with nothing to show for
+    /// it. `xsyncv3.md` E5-S4 makes the same argument for keeping the verbs
+    /// single-purpose.
+    ///
+    /// Iterative rather than recursive: an `async fn` that calls itself needs
+    /// boxing, and a deep tree would otherwise be bounded by the stack rather
+    /// than by the share.
+    async fn remove_tree(&self, root: &str) -> Result<()> {
+        // Directories in the order found, so unwinding in reverse removes
+        // children before parents.
+        let mut directories = vec![root.to_owned()];
+        let mut index = 0;
+        while index < directories.len() {
+            let directory = directories[index].clone();
+            index += 1;
+            for entry in self.list_dir(&directory).await?.entries {
+                if entry.attrs.kind == EntryKind::Dir {
+                    directories.push(entry.path);
+                } else {
+                    self.mount
+                        .unlink(entry.path.as_bytes())
+                        .await
+                        .map_err(|error| map_error(&error))?;
+                }
+            }
+        }
+        for directory in directories.into_iter().rev() {
+            self.mount
+                .rmdir(directory.as_bytes())
+                .await
+                .map_err(|error| map_error(&error))?;
+        }
+        Ok(())
+    }
+
     /// Open one file with exactly the access asked for.
     ///
     /// A write-class open is refused here as well as by the server, so a UI bug
@@ -193,6 +235,15 @@ impl XsyncBackend {
             .await
             .map_err(|error| map_error(&error))
     }
+}
+
+/// A share-relative path as the wire wants it: no leading or trailing slash.
+///
+/// The engine's paths are already share-relative, but a caller that built one
+/// by joining can leave a stray separator, and the server would then see a
+/// different name from the one the listing reported.
+fn trimmed(path: &str) -> &str {
+    path.trim_matches('/')
 }
 
 /// Translate a client error into the engine's taxonomy.
@@ -284,7 +335,7 @@ impl ShareBackend for XsyncBackend {
             resume_write: true,
             // No rename verb in v3 yet, so a temp-then-rename upload cannot
             // promote atomically here (`xsyncv3.md` E5-S4).
-            atomic_rename: false,
+            atomic_rename: true,
             symlinks: info.supports & xsync_client::supports::SYMLINKS != 0,
             watch: info.supports & xsync_client::supports::NOTIFY != 0,
         }
@@ -394,22 +445,54 @@ impl ShareBackend for XsyncBackend {
         Ok(u64::from(written.bytes))
     }
 
-    async fn mkdir(&self, _path: &str) -> Result<()> {
-        Err(EngineError::Unsupported(
-            "xsync protocol v3 has no directory-creation message yet (E5-S4)".to_owned(),
-        ))
+    async fn mkdir(&self, path: &str) -> Result<()> {
+        // One level, like `mkdir(2)`. Creating missing parents is the caller's
+        // loop, so a caller that asked for `a/b/c` and got `a` and `b` as well
+        // can tell what it made.
+        self.mount
+            .mkdir(trimmed(path).as_bytes(), 0o777)
+            .await
+            .map(|_| ())
+            .map_err(|error| map_error(&error))
     }
 
-    async fn rename(&self, _from: &str, _to: &str, _replace: bool) -> Result<()> {
-        Err(EngineError::Unsupported(
-            "xsync protocol v3 has no rename message yet (E5-S4)".to_owned(),
-        ))
+    async fn rename(&self, from: &str, to: &str, replace: bool) -> Result<()> {
+        // `replace` chooses the mode rather than being emulated: the server
+        // does it atomically through `renameat2`/`renamex_np`, and a
+        // check-then-rename here would be a race across a network.
+        let mode = if replace {
+            RenameMode::Replace
+        } else {
+            RenameMode::NoReplace
+        };
+        self.mount
+            .rename(trimmed(from).as_bytes(), trimmed(to).as_bytes(), mode)
+            .await
+            .map(|_| ())
+            .map_err(|error| map_error(&error))
     }
 
-    async fn remove(&self, _path: &str, _recursive: bool) -> Result<()> {
-        Err(EngineError::Unsupported(
-            "xsync protocol v3 has no unlink message yet (E5-S4)".to_owned(),
-        ))
+    async fn remove(&self, path: &str, recursive: bool) -> Result<()> {
+        let path = trimmed(path);
+        // Which verb depends on what the thing is, and the server refuses the
+        // wrong one rather than guessing — `Unlink` on a directory is an error
+        // even when it is empty.
+        let attrs = self.stat(path).await?;
+        if attrs.kind != EntryKind::Dir {
+            return self
+                .mount
+                .unlink(path.as_bytes())
+                .await
+                .map_err(|error| map_error(&error));
+        }
+        if !recursive {
+            return self
+                .mount
+                .rmdir(path.as_bytes())
+                .await
+                .map_err(|error| map_error(&error));
+        }
+        self.remove_tree(path).await
     }
 
     async fn ping(&self) -> Result<Health> {
