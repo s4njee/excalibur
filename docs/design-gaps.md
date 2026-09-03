@@ -37,3 +37,30 @@ element.
 **What was built:** a temporary toast, reusing the undo toast's styling, so a
 failed remount is visible rather than swallowed. **E15-S1** builds the real
 banner to the handoff's prose and replaces this.
+
+## Rename and delete confirmations *(E14-S1, 2026-09-03)*
+
+**The mock** does not cover either. The handoff lists "rename and delete
+confirmations" under §Not yet designed.
+
+**What was built**, per `plan.md`'s instruction to implement something minimal
+and flag it:
+
+- **Rename** is inline, in the row, with no confirmation. Enter opens it on the
+  one selected row; Enter or clicking away commits; Escape cancels. The initial
+  selection covers the name but not the extension, because renaming
+  `Arrival.2016.mkv` almost never means renaming the `.mkv`.
+- **Delete of five items or fewer** is *deferred*, not undone. The rows
+  disappear at once and the files are removed when the toast expires after
+  eight seconds; Undo cancels before anything is sent. An "Undo" offered after
+  the files were already gone would be a button that cannot do what it says,
+  and there is no filesystem operation that would make it honest.
+- **Delete of more than five** shows a small confirm sheet with a red Delete.
+  Above that count the undo toast stops being a safety net anybody would
+  actually catch.
+
+**For the designer:** the deferral is the part worth a second opinion. It makes
+Undo real, but it means a file the user "deleted" still exists for eight
+seconds, and closing the window inside that window cancels the deletion rather
+than completing it. The alternative — delete immediately, offer no undo — is
+simpler and more predictable, and is a one-line change if that is preferred.

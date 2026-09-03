@@ -659,3 +659,76 @@
   border-color: var(--disabled-border);
   color: var(--disabled-text);
 }
+
+/* Inline rename (E14-S1). Sized to the row so the list does not reflow while
+   a name is being edited. */
+.renameField {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 0 3px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-row);
+}
+
+/* The confirm sheet for a delete the undo toast will not take back. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.25);
+  z-index: 10;
+}
+
+.sheet {
+  width: 320px;
+  padding: 14px;
+  border-radius: var(--radius-window);
+  background: var(--toolbar-bg);
+  box-shadow: var(--shadow-window);
+}
+
+.sheetTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sheetBody {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.sheetActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.action {
+  height: var(--height-control);
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-control);
+  cursor: pointer;
+}
+
+/* Destructive, and it looks it: this is the one button in the app that does
+   something the user cannot take back. */
+.actionDanger {
+  background: var(--error);
+  border-color: var(--error);
+  color: #ffffff;
+}

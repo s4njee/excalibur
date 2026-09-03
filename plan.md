@@ -1218,10 +1218,9 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   acceptance, Quick Look footer copy, and the `Remount as RW` recovery button.
 - [x] A property-based test enumerates every write affordance and asserts it is disabled
   when `writable = false`.
-- [ ] No write command is ever *sent* to the engine in that state. **Vacuously true and
-  therefore untested:** the `Backend` seam has no write methods yet — rename, delete,
-  new-folder and upload arrive with E13/E14. There is nothing to guard, and a guard
-  around nothing would be a test of itself. The gate is in place for when they land.
+- [x] No write command is ever *sent* to the engine in that state. *(Was vacuously true
+  with no write methods to guard; closed by **E14-S1**, which added them and the
+  `writeGuarded` seam that refuses before invoking.)*
 
 **Results**
 
@@ -1251,9 +1250,9 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 **Next steps**
 
-- The "never sent" half becomes testable with the first write verb (**E13**/**E14**).
-  The natural shape is a guard on the backend seam so the check is structural rather
-  than remembered at each call site — the same trick E3-S3 used for secrets.
+- The "never sent" half became testable with **E14-S1**'s write verbs, and is **done**:
+  `writeGuarded` on the backend seam refuses before invoking, with tests asserting that
+  nothing was sent. The AC bullet above is now met.
 - `rename`, `delete` and `newFolder` are in the enumeration and gated, but have no
   buttons yet. They are listed *now* precisely so E14 cannot add them ungated.
 
@@ -1486,15 +1485,57 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E14 — File operations
 
-#### E14-S1 — New folder, rename, delete
+#### E14-S1 — New folder, rename, delete — **Done**
+
+*2026-09-03.*
+
 **AC**
-- New folder (Cmd/Ctrl+Shift+N) creates `untitled folder` and enters rename; Enter
+- [x] New folder (Cmd/Ctrl+Shift+N) creates `untitled folder` and enters rename; Enter
   renames the selected item inline (RW only); Delete/Backspace deletes.
-- Rename/delete confirmations are **"not yet designed"** in the handoff: implement
-  rename inline with no confirmation, delete with a single undoable toast for ≤ 5
-  items and a minimal confirm sheet above that; both flagged in `docs/design-gaps.md`
-  for the designer.
-- All refused client-side when `!writable` (E9-S1).
+- [x] Rename/delete confirmations are **"not yet designed"** in the handoff: rename
+  inline with no confirmation, delete with a single undoable toast for ≤ 5 items and a
+  minimal confirm sheet above that; both flagged in `docs/design-gaps.md`.
+- [x] All refused client-side when `!writable` (E9-S1).
+
+**Results**
+
+- **This closes E9-S1's one unmet bullet.** There are write commands now, so the guard
+  it asked for is real: `writeGuarded` wraps the backend once, in `App`, and refuses
+  `mkdir`/`rename`/`remove` *before invoking*. Gating buttons was never that — a shortcut
+  or a later caller reaches the method anyway. The tests assert not merely that the call
+  failed but that **nothing was sent**, which is the requirement; a guard that let the
+  call through and reported the engine's refusal would pass a naive test and miss it.
+  The guard re-reads writability per call, because a mount can go read-only while the
+  window is open.
+- **"Undoable delete" is a deferred delete, and that is the only honest reading.** The
+  rows disappear immediately and the files are removed when the toast expires; Undo
+  cancels before anything is sent. A toast offering Undo *after* the files were gone
+  would be a button that cannot do what it says. A pending delete is flushed when the
+  window navigates away, so a file the user believes they deleted is not quietly spared.
+- **A bug the browser found, and it is the interesting one.** Delete on a read-only mount
+  *deferred* rather than refusing: the rows vanished and a toast promised a deletion that
+  the seam guard would reject eight seconds later. Deferral had outrun the refusal. The
+  UI now checks `gate("delete", …)` before it acts, and the seam guard stays behind it as
+  the thing that makes the check impossible to skip. Two layers, and the outer one exists
+  because the inner one is too late to be *shown*.
+- Rename uses `replace: false`, so renaming onto an existing name is refused by the
+  server atomically rather than by a check here that could race. The rename field selects
+  the stem and not the extension, and commits on blur as well as on Enter — a user who
+  clicks away has finished typing.
+- New folder selects the new directory and opens it for renaming, because creating a
+  folder called `untitled folder` and leaving it that way is not what the shortcut meant.
+- `runDelete` asks the listing whether each path is a directory and passes `recursive`
+  accordingly, so `remove` picks `unlink` or the recursive walk without the UI deciding.
+
+**Next steps**
+
+- The toolbar has no buttons for these yet; they are keyboard-only. The design's toolbar
+  has no New Folder or Delete either, so adding them is a design question rather than an
+  oversight — noted rather than done.
+- A rename that collides reports the server's `EEXIST` through the failure toast.
+  **E15-S1**'s banner is where that belongs.
+- Deleting a large tree runs one `remove` per selected path with no progress. **E13**'s
+  transfer queue is the right home for anything long enough to watch.
 
 ### E15 — Connection health and errors *(handoff §Errors — "not mocked yet")*
 

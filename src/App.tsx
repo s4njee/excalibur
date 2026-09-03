@@ -12,12 +12,13 @@ import {
 } from "./state/bookmarks";
 import { toSpec, type Draft } from "./state/connection";
 import { FileList, shellStyles as styles, Sidebar, StatusBar, TitleBar, Toolbar } from "./components/Shell";
-import { defaultBackend, fixtureBackend, type Backend } from "./state/backend";
+import { defaultBackend, fixtureBackend, writeGuarded, type Backend } from "./state/backend";
 import type { Bookmark, Entry, MountEvent, MountInfo, Theme } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
 import { filterEntries } from "./state/filter";
+import { gate, type Affordance, type Context as PermissionContext } from "./state/permissions";
 import { engineFailure } from "./state/errors";
 import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
 import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
@@ -32,8 +33,13 @@ export default function App(props: {
 }) {
   // `readOnly` exists so the design's second screen can be rendered from the
   // same component tree rather than a separate mock.
-  const backend =
+  const raw =
     props.backend ?? (props.readOnly ? fixtureBackend({ readOnly: true }) : defaultBackend());
+  // Wrapped once, here, so every write below crosses the guard. E9-S1 asks
+  // that no write command *reaches* the engine on a read-only mount, and
+  // disabling the buttons is not that — a shortcut or a later caller can still
+  // reach the method.
+  const backend = writeGuarded(raw, () => listing()?.mount.writable ?? false);
   // Where the window is looking. The listing follows this rather than the
   // other way round, so every way of navigating — a double-click, the
   // breadcrumb, Back, the keyboard — goes through one place.
@@ -122,7 +128,11 @@ export default function App(props: {
   // would let a verb act on a file the user can no longer see.
   createEffect((previous: string | undefined) => {
     const here = path();
-    if (previous !== undefined && previous !== here) setSelection(EMPTY_SELECTION);
+    if (previous !== undefined && previous !== here) {
+      setSelection(EMPTY_SELECTION);
+      setRenaming(null);
+      flushDelete();
+    }
     return here;
   });
 
@@ -173,6 +183,12 @@ export default function App(props: {
       // field, not to the list.
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.isContentEditable)) {
+        // A rename field is an input, and Escape there cancels the rename
+        // rather than the filter.
+        if (event.key === "Escape" && renaming() !== null) {
+          setRenaming(null);
+          return;
+        }
         // Escape is the exception: it is how the filter gets cleared, and the
         // field is exactly where the user will be when they want that.
         if (event.key !== "Escape") return;
@@ -184,6 +200,29 @@ export default function App(props: {
         // clearing both at once would make one Escape do two things.
         if (filter() !== "") setFilter("");
         else setSelection(EMPTY_SELECTION);
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        void newFolder();
+        return;
+      }
+
+      if (event.key === "Enter" && renaming() === null) {
+        // Enter renames the one selected row. On several it has no meaning,
+        // and picking one of them would be a guess.
+        const chosen = selectedVisible();
+        if (chosen.length === 1 && chosen[0]) {
+          event.preventDefault();
+          if (!refusedBy("rename")) setRenaming(chosen[0].path);
+        }
+        return;
+      }
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        deleteSelected();
         return;
       }
 
@@ -241,6 +280,15 @@ export default function App(props: {
   // from the listing because a mount that has *dropped* has no listing to
   // carry its state — that is exactly when the health dot has to turn red.
   const [mountEvent, setMountEvent] = createSignal<MountEvent | null>(null);
+  /** The row being renamed inline, by path. */
+  const [renaming, setRenaming] = createSignal<string | null>(null);
+  /** A delete waiting out its undo window, and the timer that will run it. */
+  const [pendingDelete, setPendingDelete] = createSignal<{
+    paths: string[];
+    timer: number;
+  } | null>(null);
+  /** More than the undo toast is willing to take back without asking. */
+  const [confirmDelete, setConfirmDelete] = createSignal<string[] | null>(null);
 
   /** The mount the window is looking at, when there is a real one. */
   const activeMountId = () => bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
@@ -308,6 +356,127 @@ export default function App(props: {
     return id === null ? undefined : () => void remountReadWrite(id);
   };
 
+  /**
+   * Run a pending delete now, rather than waiting out its undo window.
+   *
+   * Called when the window navigates away or the app is closing. A deferred
+   * delete that vanished because the user changed directory would be a file
+   * they believe they deleted and still have.
+   */
+  const flushDelete = () => {
+    const pending = pendingDelete();
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    setPendingDelete(null);
+    void runDelete(pending.paths);
+  };
+
+  const runDelete = async (paths: string[]) => {
+    for (const path of paths) {
+      const entry = listing()?.entries.find((candidate) => candidate.path === path);
+      try {
+        await backend.remove(path, entry?.kind === "dir");
+      } catch (error) {
+        setProblem(engineFailure(error).message);
+      }
+    }
+    listingState.load(path());
+  };
+
+  /**
+   * Delete the selection.
+   *
+   * Small deletions are *deferred*, not undone: the rows disappear at once and
+   * the files are removed when the toast expires. An "Undo" offered after the
+   * files were already gone would be a button that cannot do what it says.
+   * Above five items the design has no mock, so this asks first — flagged in
+   * `docs/design-gaps.md`.
+   */
+  /** The mount as the permission gate reads it. */
+  const permissions = (): PermissionContext => ({
+    writable: listing()?.mount.writable ?? false,
+    reason: listing()?.mount.reason ?? "",
+    hasSelection: selectedVisible().length > 0,
+  });
+
+  /**
+   * Refuse a write affordance the mount does not allow, and say why.
+   *
+   * The seam guard behind this stops the command being *sent*, but it cannot
+   * stop a deferred delete from hiding rows and promising a deletion first —
+   * the refusal would arrive eight seconds later, after the user watched the
+   * rows disappear. So the UI checks before it acts, and the guard remains the
+   * thing that makes the check impossible to skip.
+   */
+  const refusedBy = (affordance: Affordance): boolean => {
+    const state = gate(affordance, permissions());
+    if (state.disabled && !listing()?.mount.writable) {
+      setProblem(state.reason ?? "This mount is read-only");
+      return true;
+    }
+    return state.disabled;
+  };
+
+  const deleteSelected = () => {
+    if (refusedBy("delete")) return;
+    const paths = selectedVisible().map((entry) => entry.path);
+    if (paths.length === 0) return;
+    if (paths.length > 5) {
+      setConfirmDelete(paths);
+      return;
+    }
+    flushDelete();
+    const timer = window.setTimeout(() => {
+      setPendingDelete(null);
+      void runDelete(paths);
+    }, 8000);
+    setPendingDelete({ paths, timer });
+    setSelection(EMPTY_SELECTION);
+  };
+
+  const undoDelete = () => {
+    const pending = pendingDelete();
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    setPendingDelete(null);
+  };
+
+  /** Create `untitled folder` and open it for renaming, as the design asks. */
+  const newFolder = async () => {
+    if (refusedBy("newFolder")) return;
+    const target = nav.join(path(), "untitled folder");
+    try {
+      await backend.mkdir(target);
+      listingState.load(path());
+      // Selected and in rename, so the next thing typed names it. Creating a
+      // folder called "untitled folder" and leaving it that way is not what
+      // anybody meant by the shortcut.
+      setSelection(clickSelect(EMPTY_SELECTION, order(), target));
+      setRenaming(target);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
+  /** Commit an inline rename. An unchanged or empty name just closes it. */
+  const commitRename = async (from: string, name: string) => {
+    setRenaming(null);
+    const trimmed = name.trim();
+    const current = from.slice(from.lastIndexOf("/") + 1);
+    if (trimmed === "" || trimmed === current || trimmed.includes("/")) return;
+    const to = nav.join(nav.parent(from), trimmed);
+    try {
+      // `replace: false`: a rename that silently overwrote another file would
+      // be a destructive act the user did not ask for, and the server refuses
+      // it atomically rather than this checking first.
+      await backend.rename(from, to, false);
+      listingState.load(path());
+      setSelection(clickSelect(EMPTY_SELECTION, order(), to));
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
   const removeSelected = (id: string) => {
     const current = bookmarks();
     const index = current.findIndex((bookmark) => bookmark.id === id);
@@ -334,7 +503,12 @@ export default function App(props: {
     if (!data) return [];
     const matching = filterEntries(data.entries, filter());
     const visible = showHidden() ? matching : matching.filter((entry) => !entry.hidden);
-    return sortEntries(visible, sort(), foldersFirst());
+    // A row waiting out its undo window is already gone as far as the user is
+    // concerned. It is hidden rather than deleted, which is what makes Undo
+    // able to do anything at all.
+    const doomed = new Set(pendingDelete()?.paths ?? []);
+    const remaining = doomed.size === 0 ? visible : visible.filter((e) => !doomed.has(e.path));
+    return sortEntries(remaining, sort(), foldersFirst());
   });
 
   /**
@@ -462,6 +636,8 @@ export default function App(props: {
                 widths={widths()}
                 onResize={onResize}
                 onResizeEnd={onResizeEnd}
+                renaming={renaming()}
+                onRename={(from, name) => void commitRename(from, name)}
               />
               <StatusBar
                 mount={mountFacts(data().mount)}
@@ -484,6 +660,49 @@ export default function App(props: {
                 <button class={styles.toastAction} onClick={() => setProblem(null)}>
                   Dismiss
                 </button>
+              </div>
+            )}
+          </Show>
+          <Show when={pendingDelete()}>
+            {(pending) => (
+              <div class={styles.toast}>
+                <span>
+                  Deleting {pending().paths.length}{" "}
+                  {pending().paths.length === 1 ? "item" : "items"}
+                </span>
+                <button class={styles.toastAction} onClick={undoDelete}>
+                  Undo
+                </button>
+              </div>
+            )}
+          </Show>
+          <Show when={confirmDelete()}>
+            {(paths) => (
+              <div class={styles.scrim}>
+                <div class={styles.sheet} role="alertdialog" aria-label="Confirm delete">
+                  <div class={styles.sheetTitle}>Delete {paths().length} items?</div>
+                  <div class={styles.sheetBody}>
+                    This cannot be undone. Deleting more than five items at once is not
+                    in the design yet, so this asks rather than guessing — see
+                    docs/design-gaps.md.
+                  </div>
+                  <div class={styles.sheetActions}>
+                    <button class={styles.action} onClick={() => setConfirmDelete(null)}>
+                      Cancel
+                    </button>
+                    <button
+                      class={`${styles.action} ${styles.actionDanger}`}
+                      onClick={() => {
+                        const doomed = paths();
+                        setConfirmDelete(null);
+                        setSelection(EMPTY_SELECTION);
+                        void runDelete(doomed);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </Show>

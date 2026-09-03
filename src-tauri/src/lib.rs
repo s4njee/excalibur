@@ -327,6 +327,46 @@ async fn forget_host_key(
         .map_err(Into::into)
 }
 
+/// Create one directory. Not `mkdir -p`: the parent must exist.
+#[tauri::command]
+async fn mkdir(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> std::result::Result<(), CommandError> {
+    state.backend().await.mkdir(&path).await.map_err(Into::into)
+}
+
+/// Rename, refusing to clobber unless `replace` says otherwise.
+#[tauri::command]
+async fn rename(
+    state: tauri::State<'_, AppState>,
+    from: String,
+    to: String,
+    replace: bool,
+) -> std::result::Result<(), CommandError> {
+    state
+        .backend()
+        .await
+        .rename(&from, &to, replace)
+        .await
+        .map_err(Into::into)
+}
+
+/// Remove a file, or a directory and everything under it.
+#[tauri::command]
+async fn remove(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    recursive: bool,
+) -> std::result::Result<(), CommandError> {
+    state
+        .backend()
+        .await
+        .remove(&path, recursive)
+        .await
+        .map_err(Into::into)
+}
+
 /// Whether a host is answering, for the sidebar's dimmed rows.
 ///
 /// Deliberately weaker than mounting: this runs for every saved bookmark on a
@@ -424,6 +464,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir,
             mount_info,
+            mkdir,
+            rename,
+            remove,
             test_connection,
             reachable,
             keychain_available,

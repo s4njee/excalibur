@@ -291,6 +291,10 @@ export function FileList(props: {
   onResize: (divider: Divider, delta: number) => void;
   /** Called when a drag finishes, so the result is persisted once. */
   onResizeEnd: () => void;
+  /** The row being renamed inline, by path. */
+  renaming?: string | null;
+  /** Commit an inline rename. An unchanged name is the caller's to ignore. */
+  onRename?: (from: string, name: string) => void;
 }) {
   // Scroll position and viewport height are the only two things the virtual
   // window needs; every row is the same height, so which rows to draw is
@@ -486,7 +490,15 @@ export function FileList(props: {
                         class={glyphClass(entry.kindCategory)}
                         data-category={entry.kindCategory}
                       />
-                      <span class={styles.name}>{entry.name}</span>
+                      <Show
+                        when={props.renaming === entry.path}
+                        fallback={<span class={styles.name}>{entry.name}</span>}
+                      >
+                        <RenameField
+                          name={entry.name}
+                          onCommit={(name) => props.onRename?.(entry.path, name)}
+                        />
+                      </Show>
                     </div>
                     <div class={styles.sizeCell}>
                       {entry.kind === "dir" ? (
@@ -538,6 +550,41 @@ function ColumnDivider(props: { onDrag: (delta: number) => void; onDone: () => v
       onPointerDown={start}
       role="separator"
       aria-orientation="vertical"
+    />
+  );
+}
+
+/**
+ * The inline rename editor.
+ *
+ * Committing on blur as well as on Enter: a user who clicks away has finished
+ * typing, and throwing the name away would be the surprising reading of that.
+ * Escape is handled by the window, which cancels without committing.
+ *
+ * The extension is left out of the initial selection, because renaming
+ * `Arrival.2016.mkv` almost never means renaming the `.mkv`.
+ */
+function RenameField(props: { name: string; onCommit: (name: string) => void }) {
+  let input!: HTMLInputElement;
+  onMount(() => {
+    input.focus();
+    const dot = props.name.lastIndexOf(".");
+    input.setSelectionRange(0, dot > 0 ? dot : props.name.length);
+  });
+  return (
+    <input
+      ref={input}
+      class={styles.renameField}
+      value={props.name}
+      onClick={(event) => event.stopPropagation()}
+      onDblClick={(event) => event.stopPropagation()}
+      onBlur={(event) => props.onCommit(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          props.onCommit(event.currentTarget.value);
+        }
+      }}
     />
   );
 }

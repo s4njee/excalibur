@@ -46,6 +46,12 @@ export interface Backend {
    * read-only is an answer, not an error. Read `writable` off the result.
    */
   remountReadWrite(id: string): Promise<MountInfo>;
+  /** Create one directory. Not `mkdir -p`: the parent must exist. */
+  mkdir(path: string): Promise<void>;
+  /** Rename, refusing to clobber unless `replace` says otherwise. */
+  rename(from: string, to: string, replace: boolean): Promise<void>;
+  /** Remove a file, or a directory and everything under it. */
+  remove(path: string, recursive: boolean): Promise<void>;
   /** Accept a host's SSH key, after the user compared its fingerprint. */
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
@@ -176,6 +182,17 @@ export function fixtureBackend(
       if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
     },
+    // The preview has no filesystem behind it. Refusing is honest; pretending
+    // to succeed would leave the list showing something that is not there.
+    async mkdir(): Promise<void> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async rename(): Promise<void> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    async remove(): Promise<void> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
     // Nothing changes state in a browser: the fixture is one fixed mount.
     onMountChanged(): () => void {
       return () => undefined;
@@ -270,6 +287,18 @@ function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<MountInfo>("remount_read_write", { id });
     },
+    async mkdir(path: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("mkdir", { path });
+    },
+    async rename(from: string, to: string, replace: boolean): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("rename", { from, to, replace });
+    },
+    async remove(path: string, recursive: boolean): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("remove", { path, recursive });
+    },
     async trustHostKey(host: string, port: number): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("trust_host_key", { host, port });
@@ -283,4 +312,41 @@ function tauriBackend(): Backend {
 
 export function defaultBackend(): Backend {
   return inTauri() ? tauriBackend() : fixtureBackend();
+}
+
+/**
+ * Refuse every write when the mount is not writable, before it is sent.
+ *
+ * E9-S1 asks that no write command *reaches* the engine on a read-only mount.
+ * Gating the buttons is not that: a keyboard shortcut, a drag, or a later
+ * caller that forgets can still call the method. So the refusal lives on the
+ * seam every write must cross, and the components below it cannot opt out.
+ *
+ * The engine refuses too, and the server refuses after that. This is the layer
+ * that makes the AC's wording literally true, and the two behind it are what
+ * make a bug in this one harmless.
+ */
+export function writeGuarded(inner: Backend, writable: () => boolean): Backend {
+  const refuse = (verb: string): never => {
+    throw {
+      message: `${verb} is not possible on a read-only mount`,
+      surface: "banner",
+      transient: false,
+    };
+  };
+  return {
+    ...inner,
+    async mkdir(path: string): Promise<void> {
+      if (!writable()) refuse("Creating a folder");
+      return inner.mkdir(path);
+    },
+    async rename(from: string, to: string, replace: boolean): Promise<void> {
+      if (!writable()) refuse("Renaming");
+      return inner.rename(from, to, replace);
+    },
+    async remove(path: string, recursive: boolean): Promise<void> {
+      if (!writable()) refuse("Deleting");
+      return inner.remove(path, recursive);
+    },
+  };
 }
