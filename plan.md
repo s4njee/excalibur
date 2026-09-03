@@ -1010,9 +1010,8 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 **Next steps**
 
-- The sort *model* here covers **E8-S6**'s first bullet. What remains of E8-S6 is the
-  filter: it is substring and case-insensitive today, but not diacritic-insensitive, and
-  the status bar counts the whole listing rather than the filtered set.
+- The sort *model* here covers **E8-S6**'s first bullet; the filter half followed
+  immediately after. **Done**, below.
 - `foldersFirst` is a signal with no UI, default on. **E17** gives it a control.
 - `ROW_HEIGHT` is a constant in `Shell.tsx` that must match `--height-row`. Two places
   to keep in step; reading it from the token at mount would remove that, and is worth
@@ -1038,13 +1037,50 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   "Folder", "Hidden", fallback "<EXT> File" / "Document"); sniffing is *not* done in
   listings (no reads); the same table drives icons (E0-S3) and Quick Look routing.
 
-#### E8-S6 — Sort and filter
+#### E8-S6 — Sort and filter — **Done**
+
+*2026-09-03. The sort half landed with E8-S2, which needed it for click-to-sort.*
+
 **AC**
-- `sort: { column, ascending }`; folders-first is a preference (default on);
-  natural sort for names; stable.
-- Filter is client-side substring (case-insensitive, diacritic-insensitive) over the
+- [x] `sort: { column, ascending }`; folders-first is a preference (default on);
+  natural sort for names; stable. *(See E8-S2's results: first click on Size/Modified is
+  descending, folders lead in both directions, ties break by name.)*
+- [x] Filter is client-side substring (case-insensitive, diacritic-insensitive) over the
   current listing; updates per keystroke without re-listing; counts in the status bar
   reflect the filtered set.
+
+**Results**
+
+- **Diacritic-insensitivity is the half that is easy to get wrong, and NFD alone does not
+  do it.** Decomposing splits `é` into `e` plus a combining mark, which strips cleanly —
+  but it does nothing for `ø`, `ð`, `ß` or `æ`, which are separate letters rather than a
+  base plus a mark. Searching `soren` would miss `Søren`. A short hand-written fold
+  covers those; it is not a transliteration table and does not pretend to be.
+- It works in both directions: typing `amelie` finds `Amélie.mkv`, and typing `Amélie`
+  finds `Amelie.mkv`.
+- **A filtered count says it is filtered: `3 of 13 items`.** A bare `3 items` does
+  reflect the filtered set, which is all the AC asks — but it reads exactly like a
+  directory that contains three files, which is the one thing a user must not conclude
+  while a filter is on. The total is counted under the same `showHidden` rule as the
+  visible set, so the two numbers describe one population.
+- **A bug the browser found: the status bar said "1 selected · 0 B".** The selected count
+  came from the raw selection set while the byte total came from the filtered entries, so
+  filtering the selected row away left them disagreeing. Both now derive from
+  `selectedVisible` — the selection as it is *on screen*. A row hidden by a filter is not
+  something the status bar describes or a toolbar verb acts on: "1 selected" beside a
+  list with no selected row in it is a claim the user cannot check, and Download would
+  act on a file they cannot see. The underlying set is untouched, so clearing the filter
+  brings the selection back — verified in the browser, including Quick Look correctly
+  disabling and re-enabling.
+
+**Next steps**
+
+- Escape should clear the filter before the selection (**E8-S8**), and Cmd/Ctrl+F should
+  focus it (**E16-S1**). Neither is wired.
+- `foldersFirst` is a signal with no control, default on. **E17** gives it one.
+- The filter matches names only. Matching the Kind column too would be cheap now that
+  every entry carries one, but it is not in the AC and would surprise anyone typing an
+  extension expecting a name match.
 
 #### E8-S7 — Navigation and history *(handoff §Navigation)* — **Done**
 

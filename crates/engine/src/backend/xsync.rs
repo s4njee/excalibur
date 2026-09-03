@@ -18,7 +18,7 @@ use super::{
     WriteMode,
 };
 use crate::error::{EngineError, Result};
-use crate::kind::label_for;
+use crate::kind::classify_entry;
 
 /// A mounted xsync export.
 pub struct XsyncBackend {
@@ -326,13 +326,10 @@ impl ShareBackend for XsyncBackend {
             .map(|entry| {
                 let name = String::from_utf8_lossy(&entry.name).into_owned();
                 let attrs = attrs_of(&entry.attrs);
+                let kind = classify_entry(&name, attrs.kind);
                 Entry {
-                    kind_label: match attrs.kind {
-                        EntryKind::Dir => "Folder".to_owned(),
-                        EntryKind::Symlink => "Alias".to_owned(),
-                        _ if name.starts_with('.') => "Hidden".to_owned(),
-                        _ => label_for(&name),
-                    },
+                    kind_label: kind.label,
+                    kind_category: kind.category,
                     hidden: name.starts_with('.'),
                     path: if relative.is_empty() {
                         name.clone()

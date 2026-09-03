@@ -17,6 +17,7 @@ import type { Bookmark, Entry, Theme } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
+import { filterEntries } from "./state/filter";
 import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, type Prefs } from "./state/prefs";
 
@@ -198,18 +199,39 @@ export default function App(props: {
   const entries = createMemo(() => {
     const data = listing();
     if (!data) return [];
-    const needle = filter().toLowerCase();
-    const matching = needle
-      ? data.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
-      : data.entries;
+    const matching = filterEntries(data.entries, filter());
     const visible = showHidden() ? matching : matching.filter((entry) => !entry.hidden);
     return sortEntries(visible, sort(), foldersFirst());
   });
 
+  /**
+   * How many rows there would be with no filter.
+   *
+   * Counted with the same `showHidden` rule as the visible set, so the two
+   * numbers describe one population — "3 of 13" must not compare a filtered
+   * count against a total that includes dotfiles the list is not showing.
+   */
+  const totalEntries = createMemo(() => {
+    const data = listing();
+    if (!data) return 0;
+    return showHidden() ? data.entries.length : data.entries.filter((e) => !e.hidden).length;
+  });
+
+  /**
+   * The selection as it is on screen.
+   *
+   * A row that a filter has hidden is not part of what the status bar
+   * describes or what a toolbar verb acts on: "1 selected" beside a list that
+   * visibly contains no selected row is a claim the user cannot check, and
+   * Download would then act on a file they cannot see. The underlying set is
+   * left alone, so clearing the filter brings the selection back.
+   */
+  const selectedVisible = createMemo(() =>
+    entries().filter((entry) => selected().has(entry.path)),
+  );
+
   const selectedBytes = createMemo(() =>
-    entries()
-      .filter((entry) => selected().has(entry.path))
-      .reduce((total, entry) => total + entry.size, 0),
+    selectedVisible().reduce((total, entry) => total + entry.size, 0),
   );
 
   // The two M0 screens describe different mounts, so the chrome that names the
@@ -259,7 +281,7 @@ export default function App(props: {
             scheme={scheme()}
             host={host()}
             segments={segments()}
-            hasSelection={selected().size > 0}
+            hasSelection={selectedVisible().length > 0}
             filter={filter()}
             onFilter={setFilter}
             canBack={nav.canBack(history())}
@@ -301,7 +323,8 @@ export default function App(props: {
                 mount={data().mount}
                 path={mountPath()}
                 items={entries().length}
-                selected={selected().size}
+                total={totalEntries()}
+                selected={selectedVisible().length}
                 selectedBytes={selectedBytes()}
               />
             </div>

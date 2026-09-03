@@ -17,7 +17,7 @@ use super::{
     WriteMode,
 };
 use crate::error::{EngineError, Result};
-use crate::kind::label_for;
+use crate::kind::classify_entry;
 
 /// A file or directory in the mock tree.
 #[derive(Debug, Clone)]
@@ -287,13 +287,10 @@ impl ShareBackend for MockBackend {
             .filter(|(candidate, _)| !candidate.is_empty() && parent_of(candidate) == directory)
             .map(|(candidate, node)| {
                 let name = base_name(candidate).to_owned();
+                let kind = classify_entry(&name, node.kind);
                 Entry {
-                    kind_label: match node.kind {
-                        EntryKind::Dir => "Folder".to_owned(),
-                        EntryKind::Symlink => "Alias".to_owned(),
-                        _ if name.starts_with('.') => "Hidden".to_owned(),
-                        _ => label_for(&name),
-                    },
+                    kind_label: kind.label.clone(),
+                    kind_category: kind.category,
                     hidden: name.starts_with('.'),
                     attrs: Attrs {
                         kind: node.kind,

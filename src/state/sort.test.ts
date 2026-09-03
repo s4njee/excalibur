@@ -10,6 +10,7 @@ const entry = (over: Partial<Entry> & { name: string }): Entry => ({
   mode: null,
   linkTarget: null,
   kindLabel: "Document",
+  kindCategory: "other",
   hidden: false,
   ...over,
 });

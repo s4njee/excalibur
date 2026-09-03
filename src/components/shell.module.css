@@ -599,3 +599,30 @@
 .virtualSpacer {
   position: relative;
 }
+
+/* Per-category glyph tints (E8-S5).
+   Placeholder colour until E0-S3 brings the Lucide set — but the routing is
+   real: the engine's kind table decides which of these applies, so adding a
+   category there shows up here rather than needing a second table. */
+.fileGlyph[data-category="video"],
+.fileGlyph[data-category="audio"] {
+  border-color: #6b5bd6;
+}
+
+.fileGlyph[data-category="image"] {
+  border-color: #2f9e5f;
+}
+
+.fileGlyph[data-category="code"],
+.fileGlyph[data-category="text"] {
+  border-color: #6a6a70;
+}
+
+.fileGlyph[data-category="archive"],
+.fileGlyph[data-category="disk"] {
+  border-color: #c07b2b;
+}
+
+.rowSelected .fileGlyph[data-category] {
+  border-color: rgba(255, 255, 255, 0.7);
+}

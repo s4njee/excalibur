@@ -40,3 +40,23 @@ describe("the strings the design specifies", () => {
     expect(formatModified(null)).toBe("—");
   });
 });
+
+describe("formatCounts with a filter", () => {
+  it("says so when rows are hidden, rather than just showing a smaller number", () => {
+    // "3 items" reads exactly like a directory containing three files, which
+    // is the one thing a user must not conclude while a filter is on.
+    expect(formatCounts(3, 0, 0, 13)).toBe("3 of 13 items");
+  });
+
+  it("stays plain when the filter matches everything", () => {
+    expect(formatCounts(13, 0, 0, 13)).toBe("13 items");
+  });
+
+  it("keeps the selection parts alongside a filtered count", () => {
+    expect(formatCounts(3, 1, 48_200_000_000, 13)).toBe("3 of 13 items · 1 selected · 48.2 GB");
+  });
+
+  it("is unchanged when no total is given", () => {
+    expect(formatCounts(13, 0, 0)).toBe("13 items");
+  });
+});

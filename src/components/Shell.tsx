@@ -3,7 +3,7 @@ import styles from "./shell.module.css";
 
 /** Must match `--height-row`; the virtual window is arithmetic on it. */
 const ROW_HEIGHT = 24;
-import type { Bookmark, Entry, MountInfo, SortColumn } from "../state/types";
+import type { Bookmark, Category, Entry, MountInfo, SortColumn } from "../state/types";
 import type { Sort } from "../state/sort";
 import { template, type Divider, type Widths } from "../state/columns";
 import { visibleRange } from "../state/virtual";
@@ -377,7 +377,14 @@ export function FileList(props: {
                     onDblClick={() => props.onOpen(entry)}
                   >
                     <div class={styles.nameCell}>
-                      <div class={entry.kind === "dir" ? styles.folderGlyph : styles.fileGlyph} />
+                      {/* The glyph follows the engine's category, not the raw
+                          entry kind, so one table decides the label, the icon
+                          and Quick Look's viewer. E0-S3 swaps this element for
+                          a Lucide icon at the same seam. */}
+                      <div
+                        class={glyphClass(entry.kindCategory)}
+                        data-category={entry.kindCategory}
+                      />
                       <span class={styles.name}>{entry.name}</span>
                     </div>
                     <div class={styles.sizeCell}>
@@ -429,6 +436,11 @@ function ColumnDivider(props: { onDrag: (delta: number) => void; onDone: () => v
   );
 }
 
+/** Which glyph shape a category gets. Colour is per-category in CSS. */
+function glyphClass(category: Category): string | undefined {
+  return category === "folder" || category === "alias" ? styles.folderGlyph : styles.fileGlyph;
+}
+
 /**
  * The permission surface. Reading left to right, a user learns whether they can
  * write before anything else, which is the whole point of its ordering.
@@ -439,6 +451,8 @@ export function StatusBar(props: {
   items: number;
   selected: number;
   selectedBytes: number;
+  /** The unfiltered count, when a filter is hiding rows. */
+  total?: number;
 }) {
   return (
     <div class={styles.statusbar}>
@@ -454,7 +468,7 @@ export function StatusBar(props: {
         </Show>
       </span>
       <span class={styles.divider} />
-      <span>{formatCounts(props.items, props.selected, props.selectedBytes)}</span>
+      <span>{formatCounts(props.items, props.selected, props.selectedBytes, props.total)}</span>
       <Show when={props.mount.capacity}>
         {(capacity) => (
           <>

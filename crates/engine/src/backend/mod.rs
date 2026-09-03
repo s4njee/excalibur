@@ -6,6 +6,8 @@ pub mod xsync;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::kind::Category;
+
 use crate::error::Result;
 
 /// Which protocol a connection speaks.
@@ -186,6 +188,13 @@ pub struct Entry {
     pub attrs: Attrs,
     /// Human-readable kind for the Kind column, e.g. "Matroska Video".
     pub kind_label: String,
+    /// What sort of thing it is, for the row glyph and Quick Look's routing.
+    ///
+    /// Beside the label rather than derived from it in the window: the label is
+    /// prose meant for a person, and matching on prose to decide which viewer
+    /// to open is how "Matroska Video" and "MPEG-4 Video" end up handled
+    /// differently by accident.
+    pub kind_category: Category,
     /// A dotfile, or the platform's hidden flag.
     pub hidden: bool,
 }

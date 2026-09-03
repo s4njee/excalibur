@@ -26,6 +26,7 @@ const listingOf = (name: string): Listing => ({
       mode: null,
       linkTarget: null,
       kindLabel: "Document",
+      kindCategory: "other",
       hidden: false,
     },
   ],

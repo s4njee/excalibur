@@ -7,6 +7,30 @@ export type Access = "rw" | "ro";
 export type MountStatus = "mounting" | "ready" | "error" | "reconnecting";
 export type EntryKind = "file" | "dir" | "symlink" | "other";
 
+/**
+ * What sort of thing a file is, from the engine's kind table.
+ *
+ * Beside `kindLabel` rather than derived from it: the label is prose meant for
+ * a person, and matching on prose to pick an icon or a viewer is how
+ * "Matroska Video" and "MPEG-4 Video" end up handled differently by accident.
+ */
+export type Category =
+  | "folder"
+  | "alias"
+  | "video"
+  | "audio"
+  | "image"
+  | "pdf"
+  | "text"
+  | "code"
+  | "document"
+  | "archive"
+  | "disk"
+  | "application"
+  | "font"
+  | "data"
+  | "other";
+
 export interface Capacity {
   free: number;
   total: number;
@@ -47,6 +71,7 @@ export interface Entry {
   mode: number | null;
   linkTarget: string | null;
   kindLabel: string;
+  kindCategory: Category;
   hidden: boolean;
 }
 

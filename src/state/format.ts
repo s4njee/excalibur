@@ -51,9 +51,24 @@ export function formatModifiedShort(ms: number | null): string {
  *
  * The size is of the *selection*, not the directory — the design is explicit
  * about that, and showing the total instead would be a plausible-looking lie.
+ *
+ * When a filter is hiding rows the count says `3 of 13 items`. The AC asks for
+ * counts that reflect the filtered set, and a bare `3 items` does reflect it —
+ * but it also reads exactly like a directory that contains three files, which
+ * is the one thing the user must not conclude while a filter is on.
  */
-export function formatCounts(items: number, selected: number, selectedBytes: number): string {
-  const parts = [`${items} item${items === 1 ? "" : "s"}`];
+export function formatCounts(
+  items: number,
+  selected: number,
+  selectedBytes: number,
+  total?: number,
+): string {
+  const filtered = total !== undefined && total !== items;
+  const parts = [
+    filtered
+      ? `${items} of ${total} item${total === 1 ? "" : "s"}`
+      : `${items} item${items === 1 ? "" : "s"}`,
+  ];
   if (selected > 0) {
     parts.push(`${selected} selected`, formatSize(selectedBytes));
   }

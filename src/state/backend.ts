@@ -105,6 +105,7 @@ export function fixtureBackend(
           mode: null,
           linkTarget: null,
           kindLabel: "Matroska Video",
+          kindCategory: "video" as const,
           hidden: false,
         }));
         return listing;
@@ -124,6 +125,7 @@ export function fixtureBackend(
             mode: null,
             linkTarget: null,
             kindLabel: "Plain Text",
+            kindCategory: "text" as const,
             hidden: false,
           },
           {
@@ -135,6 +137,7 @@ export function fixtureBackend(
             mode: null,
             linkTarget: null,
             kindLabel: "Folder",
+            kindCategory: "folder" as const,
             hidden: false,
           },
         ];
