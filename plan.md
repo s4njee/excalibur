@@ -876,10 +876,11 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   - The client had no way to drive a session over separate read and write halves, which
     is what a child process and an SSH channel both are. `Client::from_split` is now
     public; `connect_ssh` was already doing this internally.
-- **Three verbs are refused as `Unsupported` rather than emulated**: `mkdir`, `rename`
-  and `remove` have no v3 message (`xsyncv3.md` E5-S4). A UI reads that and disables the
-  verb, which is better than offering it and reporting a confusing failure. It is also
-  the clearest possible statement of what E5-S4 is for.
+- **Three verbs were refused as `Unsupported` rather than emulated**: `mkdir`, `rename`
+  and `remove` had no v3 message. A UI read that and disabled the verb, which is better
+  than offering it and reporting a confusing failure. *(Resolved 2026-09-03: `xsyncv3.md`
+  E5-S4 landed, all three are real, and `Caps::atomic_rename` is now true. Recursive
+  removal walks client-side so it can report progress and stop.)*
 - A write-class open is refused locally *and* by the server. The local check saves a
   round trip; the server's is what makes a bug in the local one harmless.
 - `capacity` reports `available_bytes`, not `free_bytes`: the root-only reserve is not
@@ -893,9 +894,10 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 **Next steps**
 
-- **Extract `xsync_client::Fs` now.** This adapter is the evidence E9-S1 was waiting
-  for: the methods it actually needed are list/stat/read/write/statfs/capacity, and the
-  ones it could not use say as much about the trait as the ones it could.
+- **Extract `xsync_client::Fs`** once M2's verbs have settled. This adapter is the
+  evidence E9-S1 was waiting for, but `xsyncv3.md` §5 says to expect the method list to
+  change after M1 — and it did: E5-S4 added five methods. Extracting before E4-S6/S7
+  would only mean revising it again.
 - The dependency is a path dep to a sibling checkout. E7-S0 wants a pinned git revision
   with a documented `[patch]` override; that needs xsync's `v3` branch pushed somewhere
   first, so it is blocked rather than skipped.
@@ -1603,7 +1605,7 @@ placeholder story that only records the request:
 | **M-1 xsyncv3 Phase 1** *(in `../xsync`)* | `xsyncv3.md` §5 Phase 1; E7-S0 here | `xs --server` speaks v3: open/read/write at offset, full attrs, statfs, advertised writability; `xsync-client` crate with a conformance fixture. |
 | **M0 Skeleton** | E0, E1-S1–S3, E2-S1–S3 (mock backend) | Pixel-matched `1a` and `1b` with fake data; theme switch; sidebar. |
 | **M1 First real share (xsync)** — **Done 2026-09-03** | E7-S2, E3-S1 (xsync tab, "via SSH"), E3-S2, E3-S4, E8-S1/S2/S5–S8, E9, E10 | Connect to `ssh host xs --server`, browse, RW/RO from `MountInfo`, capacity from `StatFs`, status bar live. |
-| **M2 Read, edit, move** | E11, E12, E13, E14, E15 | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
+| **M2 Read, edit, move** | E11, E12, E13, E14, E15 *(E14 unblocked 2026-09-03 by `xsyncv3.md` E5-S4; E12 and E13 still want E4-S6/S7)* | Quick Look (incl. video over range reads), edit-in-place with CAS, transfer queue with staged resumable uploads, banner — all on xsync. |
 | **M3 Other protocols** | E6 (SFTP, ports Kestrel), E4-S1–S6 (SMB), E5-S1–S4 (NFS), E3-S3 keychain | The handoff's SMB/NFS plus SFTP behind the trait xsync shaped; Docker fixtures arrive here. |
 | **M4 Polish** | E8-S3/S4/S9, E16, E17, E1-S4/S5, E19, E7-S1 (reduced mode), E7-S3 | Row variants, shortcuts, a11y, prefs, test matrix green, older-`xs` fallback. |
 | **M5 Release** | E18 | Signed macOS + Linux builds. |
