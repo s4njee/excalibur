@@ -92,6 +92,20 @@ export interface Backend {
   closeEdit(id: string): Promise<void>;
   /** Fires when an editor writes a working copy. Returns an unsubscribe. */
   onEditSaved(handler: (session: EditSession) => void): () => void;
+  /**
+   * Files dragged from the OS over the window.
+   *
+   * `phase` is `over` while the pointer is inside, `drop` when released, and
+   * `leave` when it goes away without dropping. `position` is in CSS pixels,
+   * so a caller can hit-test it against the list.
+   */
+  onFileDrop(
+    handler: (event: {
+      phase: "over" | "drop" | "leave";
+      paths: string[];
+      position: { x: number; y: number } | null;
+    }) => void,
+  ): () => void;
   /** Accept a host's SSH key, after the user compared its fingerprint. */
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
@@ -232,6 +246,11 @@ export function fixtureBackend(
       await new Promise((resolve) => setTimeout(resolve, 250));
       if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
+    },
+    // A browser drop gives File objects, not paths, and the engine needs
+    // paths. Rather than half-support it, the preview supports none of it.
+    onFileDrop(): () => void {
+      return () => undefined;
     },
     // A browser cannot open an editor or watch a file.
     async editFile(): Promise<EditSession> {
@@ -458,6 +477,51 @@ function tauriBackend(): Backend {
       return () => {
         cancelled = true;
         stop?.();
+      };
+    },
+    onFileDrop(
+      handler: (event: {
+        phase: "over" | "drop" | "leave";
+        paths: string[];
+        position: { x: number; y: number } | null;
+      }) => void,
+    ): () => void {
+      const stops: (() => void)[] = [];
+      let cancelled = false;
+      void import("@tauri-apps/api/event").then(async ({ listen }) => {
+        // Tauri reports the pointer in *physical* pixels; everything this is
+        // hit-tested against is in CSS pixels, so it is converted once here
+        // rather than at each call site.
+        const scale = window.devicePixelRatio || 1;
+        const toCss = (raw: unknown) => {
+          const point = raw as { x?: number; y?: number } | undefined;
+          if (!point || point.x === undefined || point.y === undefined) return null;
+          return { x: point.x / scale, y: point.y / scale };
+        };
+        const bind = async (
+          name: string,
+          phase: "over" | "drop" | "leave",
+        ): Promise<void> => {
+          const unlisten = await listen<{ paths?: string[]; position?: unknown }>(
+            name,
+            (message) =>
+              handler({
+                phase,
+                paths: message.payload?.paths ?? [],
+                position: toCss(message.payload?.position),
+              }),
+          );
+          if (cancelled) unlisten();
+          else stops.push(unlisten);
+        };
+        await bind("tauri://drag-enter", "over");
+        await bind("tauri://drag-over", "over");
+        await bind("tauri://drag-drop", "drop");
+        await bind("tauri://drag-leave", "leave");
+      });
+      return () => {
+        cancelled = true;
+        for (const stop of stops) stop();
       };
     },
     async editFile(path: string): Promise<EditSession> {

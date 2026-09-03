@@ -412,6 +412,29 @@ impl SessionManager {
                             backoff = policy.backoff_initial;
                             break;
                         }
+                        // A failure that retrying cannot fix stops the loop
+                        // (E15-S2). Credentials are the case that matters: a
+                        // client retrying a rejected password every few
+                        // seconds locks the account, and it does it while the
+                        // user is looking at a banner that says "reconnecting"
+                        // — so the damage is invisible until they cannot log
+                        // in anywhere. A changed host key is the same shape.
+                        Err(error) if !error.transient() => {
+                            {
+                                let mut guard = sessions.write().await;
+                                let Some(session) = guard.get_mut(&id) else {
+                                    return;
+                                };
+                                session.status = MountStatus::Error;
+                            }
+                            let _ = events.send(SessionEvent {
+                                id: id.clone(),
+                                status: MountStatus::Error,
+                                mount: None,
+                                reason: Some(error.to_string()),
+                            });
+                            return;
+                        }
                         Err(error) => {
                             let _ = events.send(SessionEvent {
                                 id: id.clone(),

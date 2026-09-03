@@ -86,6 +86,8 @@ struct ScriptedConnector {
     attempts: AtomicUsize,
     /// Refuse to connect at all.
     refuse: AtomicBool,
+    /// Refuse with a rejected credential rather than a dropped connection.
+    reject_credentials: AtomicBool,
     /// Hand back a read-only mount, as an export flipped while running would.
     read_only: AtomicBool,
     /// Shared with every backend handed out, so a live mount can be knocked
@@ -101,6 +103,7 @@ impl Default for ScriptedConnector {
         Self {
             attempts: AtomicUsize::new(0),
             refuse: AtomicBool::new(false),
+            reject_credentials: AtomicBool::new(false),
             read_only: AtomicBool::new(false),
             healthy: Arc::new(AtomicBool::new(true)),
             last_preference: Arc::new(RwLock::new(None)),
@@ -132,6 +135,11 @@ impl Connector for ScriptedConnector {
     async fn connect(&self, _spec: &ConnectionSpec) -> Result<Arc<dyn ShareBackend>> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         *self.last_preference.write().await = Some(_spec.mount_preference);
+        if self.reject_credentials.load(Ordering::SeqCst) {
+            return Err(excalibur_engine::EngineError::AuthenticationFailed(
+                "password rejected".to_owned(),
+            ));
+        }
         if self.refuse.load(Ordering::SeqCst) {
             return Err(excalibur_engine::EngineError::Disconnected(
                 "host is unreachable".to_owned(),
@@ -460,4 +468,82 @@ async fn remounting_a_mount_that_is_not_there_is_an_error() {
     let connector = Arc::new(ScriptedConnector::default());
     let sessions = SessionManager::new(connector as Arc<dyn Connector>);
     assert!(sessions.remount_read_write("nothing").await.is_err());
+}
+
+#[tokio::test]
+async fn a_rejected_credential_stops_the_reconnect_loop() {
+    // E15-S2, and the reason it is a story of its own: a client retrying a
+    // rejected password every few seconds locks the account, and it does it
+    // while the user is looking at a banner that says "reconnecting" — so the
+    // damage is invisible until they cannot log in anywhere.
+    let connector = Arc::new(ScriptedConnector::default());
+    let policy = HealthPolicy {
+        interval: Duration::from_millis(20),
+        backoff_initial: Duration::from_millis(10),
+        backoff_max: Duration::from_millis(20),
+    };
+    let sessions =
+        SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
+    sessions.mount(spec("media")).await.expect("mount");
+
+    let mut events = sessions.events();
+    connector.reject_credentials.store(true, Ordering::SeqCst);
+    connector.knock_over();
+
+    // Let it try, and then let it keep not-trying for a good while.
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let after_first = connector.attempts();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    assert_eq!(
+        connector.attempts(),
+        after_first,
+        "kept retrying a rejected credential"
+    );
+    assert_eq!(
+        sessions.status("media").await,
+        Some(excalibur_engine::MountStatus::Error),
+        "a rejected credential must not leave the mount looking like it is coming back"
+    );
+
+    // And the window is told why, so it can open the editor pre-filled rather
+    // than showing a spinner forever.
+    let mut reason = None;
+    while let Ok(event) = events.try_recv() {
+        if event.status == excalibur_engine::MountStatus::Error {
+            reason = event.reason;
+        }
+    }
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|r| r.contains("authentication")),
+        "{reason:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dropped_connection_still_retries() {
+    // The guard must not turn every failure into a dead end: a host that is
+    // merely down is exactly what the backoff loop is for.
+    let connector = Arc::new(ScriptedConnector::default());
+    let policy = HealthPolicy {
+        interval: Duration::from_millis(20),
+        backoff_initial: Duration::from_millis(10),
+        backoff_max: Duration::from_millis(20),
+    };
+    let sessions =
+        SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
+    sessions.mount(spec("media")).await.expect("mount");
+
+    connector.refuse.store(true, Ordering::SeqCst);
+    connector.knock_over();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let early = connector.attempts();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(
+        connector.attempts() > early,
+        "gave up on a host that was merely down"
+    );
 }

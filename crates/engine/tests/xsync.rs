@@ -279,5 +279,8 @@ async fn a_guarded_write_is_atomic_and_refuses_a_file_that_moved() {
         .await
         .expect("unconditional write");
     assert!(matches!(forced, CasOutcome::Written(_)));
-    assert_eq!(std::fs::read(root.path().join("notes.txt")).unwrap(), b"forced");
+    assert_eq!(
+        std::fs::read(root.path().join("notes.txt")).unwrap(),
+        b"forced"
+    );
 }

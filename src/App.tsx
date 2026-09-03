@@ -37,7 +37,12 @@ import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
 import { filterEntries } from "./state/filter";
-import { gate, type Affordance, type Context as PermissionContext } from "./state/permissions";
+import {
+  acceptsDrop,
+  gate,
+  type Affordance,
+  type Context as PermissionContext,
+} from "./state/permissions";
 import { engineFailure } from "./state/errors";
 import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
 import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
@@ -333,6 +338,8 @@ export default function App(props: {
     sources: string[];
     destination: string;
   } | null>(null);
+  /** A drag from the OS is over the list, and where it would land. */
+  const [dropTarget, setDropTarget] = createSignal<{ folder: string | null } | null>(null);
   /** A write-back that the remote refused, awaiting Replace / Cancel. */
   const [saveConflict, setSaveConflict] = createSignal<EditSession | null>(null);
   /** Whether Quick Look is open. It follows the selection while it is. */
@@ -367,6 +374,15 @@ export default function App(props: {
         setProblem(
           event.reason ?? "The connection to this share dropped. Reconnecting…",
         );
+        // A rejected credential is not something Reconnect can fix, and the
+        // engine has already stopped retrying rather than lock the account
+        // (E15-S2). The only useful next step is the editor, pre-filled, so
+        // the password can be corrected — and unticking "Save in keychain"
+        // there is how a wrong stored one is forgotten.
+        if (event.status === "error" && /authentication/i.test(event.reason ?? "")) {
+          const bookmark = bookmarks().find((candidate) => candidate.id === event.id);
+          if (bookmark) setConnecting(toDraft(bookmark));
+        }
       }
     });
     onCleanup(stop);
@@ -667,6 +683,46 @@ export default function App(props: {
     onCleanup(stop);
   });
 
+  /**
+   * Files dragged in from the OS (E13-S5).
+   *
+   * Gated on `acceptsDrop`, which is the same permission gate the toolbar
+   * uses: highlighting on drag-over and then refusing the drop is worse than
+   * never highlighting, so a read-only mount shows nothing at all.
+   */
+  onMount(() => {
+    const stop = backend.onFileDrop((event) => {
+      if (!acceptsDrop(permissions())) return;
+      if (event.phase === "leave") {
+        setDropTarget(null);
+        return;
+      }
+      const folder = folderUnder(event.position);
+      if (event.phase === "over") {
+        setDropTarget({ folder });
+        return;
+      }
+      setDropTarget(null);
+      // Into the hovered folder if there is one, otherwise here. Dropping on
+      // a folder row and having the files land beside it instead would be the
+      // surprising reading of that gesture.
+      void startTransfer(event.paths, folder ?? path(), true);
+    });
+    onCleanup(stop);
+  });
+
+  /** The folder row under a point, if the pointer is over one. */
+  const folderUnder = (position: { x: number; y: number } | null): string | null => {
+    if (!position) return null;
+    const element = document.elementFromPoint(position.x, position.y);
+    const row = element?.closest("[data-path]");
+    const path = row?.getAttribute("data-path");
+    if (path === null || path === undefined) return null;
+    return entries().some((entry) => entry.path === path && entry.kind === "dir")
+      ? path
+      : null;
+  };
+
   /** Open the selected file in the OS editor and start watching it. */
   const editSelected = async () => {
     if (refusedBy("edit")) return;
@@ -958,6 +1014,7 @@ export default function App(props: {
                 onResize={onResize}
                 onResizeEnd={onResizeEnd}
                 renaming={renaming()}
+                dropTarget={dropTarget()}
                 onRename={(from, name) => void commitRename(from, name)}
               />
               <StatusBar

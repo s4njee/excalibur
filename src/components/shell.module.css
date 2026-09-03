@@ -786,3 +786,16 @@
 .listDimmed {
   opacity: 0.5;
 }
+
+/* Drag and drop (E13-S5). The ring is inset so it reads as "into this list"
+   rather than as a border the layout grew. */
+.rowsDropping {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* The folder a drop would land in, highlighted so the gesture is unambiguous
+   before the pointer is released. */
+.rowDropTarget {
+  background: var(--selection-soft-bg);
+  color: var(--selection-soft-text);
+}

@@ -1702,18 +1702,7 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 - The name is checked against the side the file is **going to**, because that is the only
   side that knows what is free there.
 
-#### E13-S5 — Drag and drop *(handoff §Transfers)* — **Not built**
-
-Deferred with the rest of M2's polish. The verbs it duplicates all work, so this is an
-additional way to reach them rather than the only one.
-
-**AC**
-- OS → list: accent 2px inset ring while dragging over the list (only when
-  `writable`); drop uploads to cwd (or the hovered folder row, highlighted).
-- List → OS: drag out initiates downloads to the drop location (Tauri drag-out on
-  macOS; Linux via XDG portal/`text/uri-list` after download to a temp then move).
-- Drop onto a sidebar row is explicitly a no-op with a "coming later" tooltip
-  (handoff marks server-to-server as future).
+*(E13-S5 is written up with E15-S2 below, since they landed together.)*
 
 #### E14-S1 — New folder, rename, delete — **Done**
 
@@ -1813,10 +1802,66 @@ additional way to reach them rather than the only one.
 - A `reconnecting` mount shows the banner but nothing indicates the retry is in flight
   on its own timer. The engine backs off internally; the window only sees the events.
 
-#### E15-S2 — Auth failure loop guard
+#### E15-S2 — Auth failure loop guard — **Done**
+
+*2026-09-03.*
+
 **AC**
-- A rejected credential opens the connection editor pre-filled, never a retry loop
-  that locks an account; keychain entry offered for update.
+- [x] A rejected credential opens the connection editor pre-filled, never a retry loop
+  that locks an account; the keychain entry is offered for update.
+
+**Results**
+
+- **This was a live bug, not a missing feature.** The reconnect loop retried *any*
+  failure with backoff, forever — including a rejected credential. A client re-sending a
+  wrong password every few seconds locks the account, and it does it while the user is
+  looking at a banner that says "reconnecting", so the damage is invisible until they
+  cannot log in anywhere.
+- The guard is on `transient()`, not on a check for authentication specifically. Anything
+  retrying cannot fix stops the loop — a changed host key is the same shape, and so is
+  whatever the next non-transient failure turns out to be. The classification already
+  existed on `EngineError`; this is the second thing to act on it.
+- **A host that is merely down still retries.** There is a test for that alongside the
+  one for the guard, because a guard that turned every failure into a dead end would be
+  worse than the loop it replaced.
+- The mount goes to `Error`, not `Reconnecting`, so the window is not left showing a
+  spinner for something that will never resolve. The window opens the editor pre-filled
+  from the bookmark; unticking "Save in keychain" there is how a wrong stored credential
+  is forgotten, which is E3-S3's `forget_secret` doing the work.
+
+**Next steps**
+
+- The editor opens pre-filled but does not say *why*. A line in the dialog naming the
+  rejection would beat the banner behind it carrying that alone.
+
+#### E13-S5 — Drag and drop *(handoff §Transfers)* — **Partly done**
+
+*2026-09-03.*
+
+**AC**
+- [x] OS → list: accent 2px inset ring while dragging over the list (only when
+  `writable`); drop uploads to cwd, or to the hovered folder row, highlighted.
+- [x] Drop onto a sidebar row is a no-op with a "coming later" tooltip.
+- [ ] List → OS: drag out initiates downloads to the drop location. **Not built.** It
+  needs `tauri-plugin-drag` on macOS and, on Linux, an XDG portal path that downloads to
+  a temp *before* the drag can even begin — so the file has to be fetched before the user
+  has said where it is going. That is a different shape from every other transfer in the
+  app and wants its own thinking; Download does the same job from the toolbar today.
+
+**Results**
+
+- **The drop is gated on `acceptsDrop`, the same permission gate the toolbar uses.**
+  Highlighting on drag-over and then refusing the release is worse than never
+  highlighting, which is exactly why `dropTarget` was made a write affordance back in
+  E9-S1 rather than a special case here.
+- Tauri reports the pointer in **physical** pixels and everything it is hit-tested
+  against is in CSS pixels. Converted once, in the backend seam, rather than at each call
+  site — a factor-of-two error on a Retina display would put the highlight on the wrong
+  row and the files in the wrong folder.
+- Dropping on a folder row lands the files *in* it. Having them land beside it instead
+  would be the surprising reading of that gesture.
+- The sidebar refuses explicitly rather than silently: server-to-server is marked future
+  in the handoff, and a drop that does nothing with no explanation looks broken.
 
 ### E16 — Keyboard, shortcuts, accessibility *(handoff §Keyboard)*
 

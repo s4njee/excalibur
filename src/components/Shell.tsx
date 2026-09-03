@@ -241,7 +241,14 @@ export function Sidebar(props: {
   const saved = createMemo(() => props.bookmarks.filter((bookmark) => !bookmark.mounted));
 
   return (
-    <div class={styles.sidebar}>
+    // Server-to-server is marked future in the handoff, so a drop here is a
+    // deliberate no-op with an explanation rather than something that looks
+    // broken. `onDragOver` without a `preventDefault` is what refuses it.
+    <div
+      class={styles.sidebar}
+      title="Dropping onto a share is coming later"
+      onDragOver={(event) => event.stopPropagation()}
+    >
       <div class={styles.sectionHeader}>Mounted</div>
       <For each={mounted()}>
         {(bookmark) => {
@@ -350,6 +357,8 @@ export function FileList(props: {
   renaming?: string | null;
   /** Commit an inline rename. An unchanged name is the caller's to ignore. */
   onRename?: (from: string, name: string) => void;
+  /** A drag from the OS is over the list, and which folder row it is on. */
+  dropTarget?: { folder: string | null } | null;
 }) {
   // Scroll position and viewport height are the only two things the virtual
   // window needs; every row is the same height, so which rows to draw is
@@ -494,7 +503,9 @@ export function FileList(props: {
         </Show>
       </div>
       <div
-        class={`${styles.rows} ${props.slow ? styles.rowsStale : ""}`}
+        class={`${styles.rows} ${props.slow ? styles.rowsStale : ""} ${
+          props.dropTarget ? styles.rowsDropping : ""
+        }`}
         role="grid"
         aria-rowcount={props.entries.length}
         ref={rows}
@@ -523,7 +534,8 @@ export function FileList(props: {
                   <div
                     class={`${styles.row} ${selected() ? styles.rowSelected : ""} ${
                       entry.hidden ? styles.rowHidden : ""
-                    }`}
+                    } ${props.dropTarget?.folder === entry.path ? styles.rowDropTarget : ""}`}
+                    data-path={entry.path}
                     style={{ "grid-template-columns": template(props.widths) }}
                     role="row"
                     aria-rowindex={range().start + index() + 1}
