@@ -132,15 +132,16 @@ reconstruct it from git history.
 | M1 | E7-S2 — xsync v3 backend | **Done** 2026-09-03 |
 | M0 | E2-S2 — Session manager | **Done** 2026-09-03 |
 | M1 | E3-S1 — New Connection dialog | **Done** 2026-09-03 |
-| M1 | E3-S2 — Bookmarks store | Next |
+| M1 | E3-S2 — Bookmarks store | **Done** 2026-09-03 |
+| M1 | E3-S3 — Keychain | Next |
 | M0 | E0-S3 — Icon set | Not started |
 | M1 | E3-S4, E8, E9, E10 | Not started |
 | M2+ | everything else | Not started |
 
 M0's demo criterion — the design's `1a` and `1b` rendered from fixed data, with the
 theme switch and the sidebar — is met. M1's backend talks to a real `xs --server`, and the session manager holds it. A user can
-open the dialog, pick a protocol, and connect; what is missing before that is useful is
-the bookmark store (E3-S2), so a connection survives the window closing. `?screen=1b` is the one worth looking at: it
+open the dialog, pick a protocol, connect, and have the bookmark persist. The dialog's
+password field is deliberately inert until E3-S3 brings the keychain. `?screen=1b` is the one worth looking at: it
 is the same component tree with `mount.writable` false.
 
 ---
@@ -490,17 +491,57 @@ is the same component tree with `mount.writable` false.
   must not be wired up before E3-S3 (keychain)** — an interim path that keeps a
   password in frontend state or a JSON file is exactly what the design forbids.
 
-#### E3-S2 — Bookmarks store
+#### E3-S2 — Bookmarks store — **Done (probe runs once)**
+
+*2026-09-03.*
+
 **AC**
-- `Bookmark { id, name, protocol, host, port?, share, username?, authMethod?,
-  saveCredentials, mountPreference }` persisted via `tauri-plugin-store`; never
-  contains a secret.
-- Sidebar `+` opens E3-S1; `−` removes the selected bookmark after a 1-step undo
-  toast (confirmations are "not yet designed" — this is the least-invasive
-  interpretation and is flagged for the designer); `Edit` reopens the dialog
-  pre-filled.
-- Reachability probe (TCP connect with 2s timeout, on app start and every 60s while
-  idle) drives the "unreachable" state.
+- [x] `Bookmark { id, name, protocol, host, port?, share, username?,
+  mountPreference }` persisted via `tauri-plugin-store`; **never contains a secret**.
+  There is a test for that specifically, because the file is plain JSON in the app's
+  data directory and anything written there should be assumed readable.
+- [x] Sidebar `+` opens the dialog; `−` removes the selected bookmark behind a
+  one-step undo toast; `Edit` reopens the dialog pre-filled.
+- [x] Reachability probe (TCP connect, 2s timeout) drives the "unreachable" state.
+- [ ] Re-probing every 60s while idle. **Not built:** the probe runs once on start.
+  A timer that fires regardless of whether the window is visible would wake a sleeping
+  laptop to ask four servers whether they are up, so this wants a visibility check
+  first, and that is worth doing deliberately rather than as a `setInterval`.
+
+**Results**
+
+- **The store never sees a secret**, and that is the property the tests lead with. A
+  password reaches the OS keychain (E3-S3) or nowhere; the bookmark carries a username
+  because that is not a secret, and nothing else.
+- The id is derived from protocol, host and share, lower-cased. Connecting to a share
+  a second time updates its row rather than growing an identical one, and re-typing the
+  host with different capitalisation does not produce a duplicate.
+- **Undo restores to the original index, not the end.** An undo that appends silently
+  reorders the sidebar, which is exactly the kind of thing that makes undo feel
+  untrustworthy. The test asserts the order, not just the membership.
+- A bookmark is saved on a *successful* connect, not on opening the dialog: a
+  connection that never worked is not worth remembering.
+- The probe is a TCP connect rather than a mount. It runs for every saved bookmark, and
+  mounting each one would ask servers for credentials nobody typed. It answers a
+  deliberately weaker question — "is something listening" — and the design uses it for
+  exactly that, dimming a row rather than claiming the share is usable.
+- The browser preview seeds the design's four sample rows when nothing is saved,
+  including the unreachable one. Without them the preview's sidebar is empty and the
+  states worth looking at cannot be seen at all; the desktop app starts empty, as it
+  should.
+- A corrupt or unreadable store loads as empty rather than failing. The bookmarks are a
+  convenience, and an empty sidebar is recoverable where a window that will not open is
+  not.
+
+**Next steps**
+
+- **E3-S3 (keychain)** is the gate on the dialog's password field, which currently
+  collects a secret that goes nowhere. It must stay that way until the keychain exists.
+- The 60s idle re-probe wants a document-visibility check so it does not poll a hidden
+  window.
+- Mounting from a bookmark — clicking a saved row to connect it — is not wired yet; the
+  row selects. It belongs with E8-S7's navigation, which is what decides where the
+  listing goes afterwards.
 
 #### E3-S3 — Keychain
 **AC**

@@ -17,6 +17,8 @@ export interface Backend {
   testConnection(spec: Spec): Promise<MountInfo>;
   /** Connect and keep it, making it the active mount. */
   mount(spec: Spec): Promise<void>;
+  /** Whether a host is answering, for the sidebar's dimmed rows. */
+  reachable(host: string, port: number): Promise<boolean>;
 }
 
 /** True when running inside the Tauri shell rather than a plain browser. */
@@ -49,6 +51,12 @@ export function fixtureBackend(options: { readOnly?: boolean; latencyMs?: number
     async mount(): Promise<void> {
       throw new Error("not connected to the engine — run the desktop app");
     },
+    // A browser cannot open a TCP socket, so it cannot answer this. Claiming
+    // "reachable" would dim nothing and claiming "unreachable" would dim
+    // everything; assuming reachable is the one that misleads least.
+    async reachable(): Promise<boolean> {
+      return true;
+    },
   };
 }
 
@@ -66,6 +74,10 @@ function tauriBackend(): Backend {
     async mount(spec: Spec): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("mount", { spec });
+    },
+    async reachable(host: string, port: number): Promise<boolean> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<boolean>("reachable", { host, port });
     },
   };
 }

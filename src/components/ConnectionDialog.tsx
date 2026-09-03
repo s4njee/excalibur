@@ -14,6 +14,7 @@ import {
   type Draft,
 } from "../state/connection";
 import type { Backend } from "../state/backend";
+import { bookmarkId } from "../state/bookmarks";
 import type { MountInfo, Protocol } from "../state/types";
 
 const PROTOCOLS: { id: Protocol; label: string }[] = [
@@ -34,10 +35,12 @@ type TestResult = { ok: true; mount: MountInfo } | { ok: false; message: string 
  */
 export function ConnectionDialog(props: {
   backend: Backend;
+  /** Prefill, when reopening the dialog on an existing bookmark. */
+  initial?: Draft;
   onCancel: () => void;
-  onConnected: (name: string) => void;
+  onConnected: (draft: Draft) => void;
 }) {
-  const [draft, setDraft] = createSignal<Draft>(emptyDraft("xsync"));
+  const [draft, setDraft] = createSignal<Draft>(props.initial ?? emptyDraft("xsync"));
   const [result, setResult] = createSignal<TestResult | null>(null);
   const [busy, setBusy] = createSignal<"testing" | "connecting" | null>(null);
 
@@ -79,9 +82,9 @@ export function ConnectionDialog(props: {
   const connect = async () => {
     setBusy("connecting");
     try {
-      const id = `${draft().protocol}-${draft().host}-${draft().share}`;
+      const id = bookmarkId(draft());
       await props.backend.mount(toSpec(draft(), id));
-      props.onConnected(id);
+      props.onConnected(draft());
     } catch (error) {
       setResult({ ok: false, message: String(error) });
     } finally {

@@ -397,3 +397,18 @@ impl Drop for SessionManager {
         }
     }
 }
+
+/// Whether a host is answering on a port, for the sidebar's dimmed rows.
+///
+/// A TCP connect, not a mount: this runs for every saved bookmark on a timer,
+/// and mounting each one would ask a server for credentials nobody typed. It
+/// answers a deliberately weaker question — "is something listening" — and the
+/// design uses it for exactly that, dimming a row rather than claiming the
+/// share is usable.
+pub async fn reachable(host: &str, port: u16, timeout: Duration) -> bool {
+    let target = format!("{host}:{port}");
+    matches!(
+        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(target)).await,
+        Ok(Ok(_))
+    )
+}

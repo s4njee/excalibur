@@ -102,8 +102,11 @@ export function Toolbar(props: {
 export function Sidebar(props: {
   bookmarks: Bookmark[];
   activeId: string;
-  writable: boolean;
+  selectedId: string | null;
   onNewConnection: () => void;
+  onSelect: (id: string) => void;
+  onRemove: (id: string) => void;
+  onEdit: (id: string) => void;
 }) {
   const mounted = createMemo(() => props.bookmarks.filter((bookmark) => bookmark.mounted));
   const saved = createMemo(() => props.bookmarks.filter((bookmark) => !bookmark.mounted));
@@ -119,6 +122,7 @@ export function Sidebar(props: {
               class={`${styles.sidebarRow} ${active() ? styles.sidebarRowActive : ""}`}
               role="button"
               tabindex="0"
+              onClick={() => props.onSelect(bookmark.id)}
             >
               <div class={styles.sidebarText}>
                 <div
@@ -145,9 +149,10 @@ export function Sidebar(props: {
           <div
             class={`${styles.sidebarRow} ${
               bookmark.reachable ? "" : styles.sidebarRowUnreachable
-            }`}
+            } ${bookmark.id === props.selectedId ? styles.sidebarRowActive : ""}`}
             role="button"
             tabindex="0"
+            onClick={() => props.onSelect(bookmark.id)}
           >
             <div class={styles.fileGlyph} />
             <div class={styles.sidebarText}>
@@ -172,10 +177,21 @@ export function Sidebar(props: {
         </button>
         {/* Removing a bookmark is a write to local state, not the share, so it
             is not gated on the mount. Editing likewise. */}
-        <button class={styles.sidebarFooterButton} aria-label="Remove bookmark">
+        <button
+          class={styles.sidebarFooterButton}
+          aria-label="Remove bookmark"
+          disabled={props.selectedId === null}
+          onClick={() => props.selectedId && props.onRemove(props.selectedId)}
+        >
           −
         </button>
-        <button class={styles.sidebarFooterButton}>Edit</button>
+        <button
+          class={styles.sidebarFooterButton}
+          disabled={props.selectedId === null}
+          onClick={() => props.selectedId && props.onEdit(props.selectedId)}
+        >
+          Edit
+        </button>
       </div>
     </div>
   );

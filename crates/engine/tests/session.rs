@@ -346,3 +346,28 @@ async fn dropping_the_manager_stops_its_health_tasks() {
     // nobody holds.
     assert_eq!(connector.attempts(), after_drop);
 }
+
+#[tokio::test]
+async fn reachability_answers_for_a_listener_and_for_nothing() {
+    // A port that is definitely listening, because this test opened it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    assert!(excalibur_engine::session::reachable("127.0.0.1", port, Duration::from_secs(2)).await);
+
+    // And one that is not: the listener is gone.
+    drop(listener);
+    assert!(
+        !excalibur_engine::session::reachable("127.0.0.1", port, Duration::from_millis(300)).await
+    );
+}
+
+#[tokio::test]
+async fn reachability_gives_up_rather_than_hanging() {
+    // A host that will not answer. The point of the timeout is that a sidebar
+    // full of unreachable bookmarks does not take minutes to render.
+    let started = tokio::time::Instant::now();
+    assert!(
+        !excalibur_engine::session::reachable("192.0.2.1", 445, Duration::from_millis(200)).await
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}

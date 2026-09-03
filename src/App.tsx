@@ -1,56 +1,19 @@
-import { createMemo, createResource, createSignal, Show } from "solid-js";
+import { createMemo, createResource, createSignal, onMount, Show } from "solid-js";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import {
+  defaultBookmarkStore,
+  fromDraft,
+  probePort,
+  remove as removeBookmark,
+  restore,
+  toDraft,
+  upsert,
+  type BookmarkStore,
+} from "./state/bookmarks";
+import type { Draft } from "./state/connection";
 import { FileList, shellStyles as styles, Sidebar, StatusBar, TitleBar, Toolbar } from "./components/Shell";
 import { defaultBackend, fixtureBackend, type Backend } from "./state/backend";
 import type { Bookmark, Entry, Theme } from "./state/types";
-
-/**
- * The sidebar's contents. Persisted bookmarks arrive with E3-S2; until then
- * these are the rows the design shows, including the unreachable one, so the
- * states that are easy to forget are visible from the start.
- */
-const BOOKMARKS: Bookmark[] = [
-  {
-    id: "nas-media",
-    name: "media",
-    protocol: "smb",
-    host: "nas.local",
-    share: "media",
-    mountPreference: "rw",
-    mounted: true,
-    reachable: true,
-  },
-  {
-    id: "backups",
-    name: "backups",
-    protocol: "smb",
-    host: "nas.local",
-    share: "backups",
-    mountPreference: "rw",
-    mounted: false,
-    reachable: true,
-  },
-  {
-    id: "scratch",
-    name: "scratch",
-    protocol: "nfs",
-    host: "10.0.0.4",
-    share: "/export/scratch",
-    mountPreference: "rw",
-    mounted: false,
-    reachable: true,
-  },
-  {
-    id: "archive",
-    name: "archive",
-    protocol: "sftp",
-    host: "vault.example",
-    share: "/srv/archive",
-    mountPreference: "ro",
-    mounted: false,
-    reachable: false,
-  },
-];
 
 /** Sorted the way the list is: folders first, then by name. */
 function order(entries: Entry[], showHidden: boolean): Entry[] {
@@ -65,7 +28,12 @@ function order(entries: Entry[], showHidden: boolean): Entry[] {
     });
 }
 
-export default function App(props: { backend?: Backend; theme?: Theme; readOnly?: boolean }) {
+export default function App(props: {
+  backend?: Backend;
+  theme?: Theme;
+  readOnly?: boolean;
+  bookmarks?: BookmarkStore;
+}) {
   // `readOnly` exists so the design's second screen can be rendered from the
   // same component tree rather than a separate mock.
   const backend =
@@ -74,7 +42,53 @@ export default function App(props: { backend?: Backend; theme?: Theme; readOnly?
   const [filter, setFilter] = createSignal("");
   const [showHidden] = createSignal(true);
   const [selected, setSelected] = createSignal<Set<string>>(new Set(["Arrival.2016.mkv"]));
-  const [connecting, setConnecting] = createSignal(false);
+  const [connecting, setConnecting] = createSignal<Draft | true | null>(null);
+  const store = props.bookmarks ?? defaultBookmarkStore();
+  const [bookmarks, setBookmarks] = createSignal<Bookmark[]>([]);
+  const [selectedBookmark, setSelectedBookmark] = createSignal<string | null>(null);
+  const [undo, setUndo] = createSignal<{ bookmark: Bookmark; index: number } | null>(null);
+
+  const persist = (next: Bookmark[]) => {
+    setBookmarks(next);
+    void store.save(next);
+  };
+
+  onMount(async () => {
+    const saved = await store.load();
+    setBookmarks(saved);
+    // Probe once on start. Every 60s while idle is E3-S2's other half and wants
+    // a visible-window check first, so it does not wake a sleeping laptop.
+    // A bookmark the design shows as unreachable stays that way in the preview,
+    // where there is no engine to ask.
+    for (const bookmark of saved.filter((candidate) => candidate.reachable)) {
+      void backend
+        .reachable(bookmark.host, probePort(bookmark))
+        .then((reachable) =>
+          setBookmarks((current) =>
+            current.map((candidate) =>
+              candidate.id === bookmark.id ? { ...candidate, reachable } : candidate,
+            ),
+          ),
+        )
+        .catch(() => undefined);
+    }
+  });
+
+  const removeSelected = (id: string) => {
+    const current = bookmarks();
+    const index = current.findIndex((bookmark) => bookmark.id === id);
+    const bookmark = current[index];
+    if (!bookmark) return;
+    persist(removeBookmark(current, id));
+    setSelectedBookmark(null);
+    // A one-step undo rather than a confirmation: the design does not specify
+    // one, and asking before every removal is more intrusive than letting the
+    // rare mistake be taken back.
+    setUndo({ bookmark, index });
+    window.setTimeout(() => {
+      setUndo((pending) => (pending?.bookmark.id === bookmark.id ? null : pending));
+    }, 8000);
+  };
 
   const entries = createMemo(() => {
     const data = listing();
@@ -125,10 +139,16 @@ export default function App(props: { backend?: Backend; theme?: Theme; readOnly?
           />
           <div class={styles.body}>
             <Sidebar
-              bookmarks={BOOKMARKS}
-              activeId="nas-media"
-              writable={data().mount.writable}
+              bookmarks={bookmarks()}
+              activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
+              selectedId={selectedBookmark()}
               onNewConnection={() => setConnecting(true)}
+              onSelect={setSelectedBookmark}
+              onRemove={removeSelected}
+              onEdit={(id) => {
+                const bookmark = bookmarks().find((candidate) => candidate.id === id);
+                if (bookmark) setConnecting(toDraft(bookmark));
+              }}
             />
             <div class={styles.listColumn}>
               <FileList entries={entries()} selected={selected} onSelect={select} />
@@ -141,17 +161,40 @@ export default function App(props: { backend?: Backend; theme?: Theme; readOnly?
               />
             </div>
           </div>
+          <Show when={undo()}>
+            {(pending) => (
+              <div class={styles.toast}>
+                <span>Removed “{pending().bookmark.name}”</span>
+                <button
+                  class={styles.toastAction}
+                  onClick={() => {
+                    persist(restore(bookmarks(), pending().bookmark, pending().index));
+                    setUndo(null);
+                  }}
+                >
+                  Undo
+                </button>
+              </div>
+            )}
+          </Show>
           <Show when={connecting()}>
-            <ConnectionDialog
-              backend={backend}
-              onCancel={() => setConnecting(false)}
-              onConnected={() => {
-                setConnecting(false);
-                // Re-listing the new mount is E8-S7's navigation; for now the
-                // dialog closes and the mount is held by the session manager.
-                refetch();
-              }}
-            />
+            {(pending) => (
+              <ConnectionDialog
+                backend={backend}
+                initial={pending() === true ? undefined : (pending() as Draft)}
+                onCancel={() => setConnecting(null)}
+                onConnected={(draft) => {
+                  setConnecting(null);
+                  // The bookmark is saved on a successful connect, not on
+                  // opening the dialog: a connection that never worked is not
+                  // worth remembering.
+                  persist(upsert(bookmarks(), { ...fromDraft(draft), mounted: true }));
+                  // Re-listing the new mount is E8-S7's navigation; for now the
+                  // dialog closes and the mount is held by the session manager.
+                  refetch();
+                }}
+              />
+            )}
           </Show>
         </div>
       )}

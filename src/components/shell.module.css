@@ -460,3 +460,37 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Undo toast --------------------------------------------------------------- */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  box-shadow: var(--shadow-window);
+  font-size: var(--text-control);
+  color: var(--text-primary);
+}
+
+.toastAction {
+  height: var(--height-control-inline);
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-small);
+  background: var(--control-bg);
+  color: var(--accent);
+  font-size: var(--text-control);
+}
+
+/* The window is the positioning context for the toast. */
+.window {
+  position: relative;
+}

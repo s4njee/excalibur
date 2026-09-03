@@ -117,6 +117,15 @@ async fn test_connection(
     state.sessions.test(&spec).await.map_err(Into::into)
 }
 
+/// Whether a host is answering, for the sidebar's dimmed rows.
+///
+/// Deliberately weaker than mounting: this runs for every saved bookmark on a
+/// timer, and mounting each one would ask servers for credentials nobody typed.
+#[tauri::command]
+async fn reachable(host: String, port: u16) -> bool {
+    excalibur_engine::session::reachable(&host, port, std::time::Duration::from_secs(2)).await
+}
+
 /// Connect a share and make it the active one.
 #[tauri::command]
 async fn mount(
@@ -155,6 +164,7 @@ pub fn run() {
     let sessions = Arc::new(SessionManager::new(Arc::new(ProtocolConnector)));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .manage(AppState {
             sessions: Arc::clone(&sessions),
             demo: Arc::new(MockBackend::media_share()),
@@ -177,6 +187,7 @@ pub fn run() {
             list_dir,
             mount_info,
             test_connection,
+            reachable,
             mount,
             unmount,
             set_active

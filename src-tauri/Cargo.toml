@@ -22,4 +22,8 @@ excalibur-engine = { path = "../crates/engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
+# Bookmarks and preferences. Secrets never go here — they go to the OS keychain
+# with E3-S3 — so this file is safe to sit in plain JSON under the app's data
+# directory.
+tauri-plugin-store = "2"
 tokio = { workspace = true }
