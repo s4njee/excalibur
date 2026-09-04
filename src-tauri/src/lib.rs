@@ -16,6 +16,8 @@ use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
 use excalibur_engine::backend::nfs::{self, Identity, NfsBackend, NfsTarget};
 use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
+#[cfg(feature = "smb")]
+use excalibur_engine::backend::smb::{SmbBackend, SmbTarget};
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
 use excalibur_engine::transfer::conflict::{self, Conflict};
@@ -140,11 +142,32 @@ impl Connector for ProtocolConnector {
             // protocol to the enum breaks this match instead of silently
             // routing it here. Two hangs in the sibling xsync repo came from
             // exactly that shape of arm.
-            //
-            // SMB is decided (ADR 0001) but blocked on a dependency conflict
-            // recorded under E4-S1. Answered honestly rather than mocked.
+            #[cfg(feature = "smb")]
+            Protocol::Smb => {
+                let username = spec.username.clone().unwrap_or_else(whoami);
+                let password = match self.secrets.get(&spec.id) {
+                    Ok(Some(secret)) => secret.expose().to_owned(),
+                    _ => String::new(),
+                };
+                let target = SmbTarget {
+                    host: &spec.host,
+                    port: spec.port,
+                    share: &spec.share,
+                    username: &username,
+                    password: &password,
+                    // The dialog's Domain field, which only SMB has.
+                    workgroup: spec.domain.as_deref().unwrap_or(""),
+                    read_only: spec.mount_preference == Access::Ro,
+                };
+                let backend = SmbBackend::connect(&target).await?;
+                Ok(Arc::new(backend))
+            }
+            // Built only with the `smb` feature, because linking libsmbclient
+            // makes the binary GPL-3.0-or-later. Without it, a spec naming SMB
+            // is answered honestly rather than silently mocked.
+            #[cfg(not(feature = "smb"))]
             Protocol::Smb => Err(excalibur_engine::EngineError::Unsupported(
-                "SMB is not connected yet".to_owned(),
+                "this build was compiled without SMB support".to_owned(),
             )),
         }
     }
@@ -357,6 +380,21 @@ where
 async fn keychain_available(state: tauri::State<'_, AppState>) -> std::result::Result<bool, ()> {
     let secrets = Arc::clone(&state.secrets);
     Ok(blocking(move || secrets.available()).await)
+}
+
+/// Which protocols this build can actually connect.
+///
+/// Compiled rather than listed, because SMB is behind a cargo feature: one
+/// frontend bundle serves a build with it and a build without, so a static
+/// list in the window would be wrong for one of them. Letting a user fill in a
+/// form that cannot connect is worse than telling them up front.
+#[tauri::command]
+async fn supported_protocols() -> std::result::Result<Vec<&'static str>, ()> {
+    let mut protocols = vec!["xsync", "sftp", "nfs"];
+    if cfg!(feature = "smb") {
+        protocols.push("smb");
+    }
+    Ok(protocols)
 }
 
 /// Save a credential for a bookmark.
@@ -1134,6 +1172,7 @@ pub fn run() {
             test_connection,
             reachable,
             keychain_available,
+            supported_protocols,
             save_secret,
             forget_secret,
             trust_host_key,

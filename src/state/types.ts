@@ -147,6 +147,8 @@ export interface Bookmark {
   host: string;
   share: string;
   username?: string;
+  /** Windows domain or workgroup. SMB only. */
+  domain?: string;
   mountPreference: Access;
   /** Mounted and usable right now. */
   mounted: boolean;

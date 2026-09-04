@@ -1497,6 +1497,7 @@ dependencies = [
  "dirs",
  "keyring",
  "nfs3_client",
+ "pavao",
  "russh",
  "russh-sftp",
  "serde",
@@ -2752,6 +2753,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3514,6 +3521,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aab41826031698d6ffcd9cff78ef56ef998e39dc7e5067cdfebe373842d4723b"
 dependencies = [
  "phc",
+]
+
+[[package]]
+name = "pavao"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "637444e8cbc91d23a07688c41df5dcf5136c34964c8b746c4e40fc2127ef320d"
+dependencies = [
+ "cfg_aliases",
+ "lazy_static",
+ "libc",
+ "log",
+ "pavao-sys",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "pavao-sys"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d77a20ad3376d6f0194f02b7314b4e89402eef920a7c78d7d970d3f2dcd4ac5"
+dependencies = [
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]

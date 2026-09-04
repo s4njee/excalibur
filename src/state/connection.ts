@@ -161,6 +161,10 @@ export function toSpec(draft: Draft, id: string): Record<string, unknown> {
     // Kept for every protocol, NFS included: its identity is what the mount
     // will claim, so a bookmark that dropped it would reconnect as someone else.
     username: draft.username ? draft.username : null,
+    // Only SMB has one, and the dialog only shows the field there — but it was
+    // being collected and then dropped, which is why an SMB share on a domain
+    // could not be reached at all.
+    domain: usesDomain(draft.protocol) && draft.domain ? draft.domain : null,
     mountPreference: draft.mountPreference,
   };
 }

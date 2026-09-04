@@ -3,6 +3,9 @@
 pub mod mock;
 pub mod nfs;
 pub mod sftp;
+/// Only with the `smb` feature: linking it makes the binary GPL-3.0-or-later.
+#[cfg(feature = "smb")]
+pub mod smb;
 pub mod xsync;
 
 use async_trait::async_trait;
@@ -58,6 +61,11 @@ pub struct ConnectionSpec {
     pub share: String,
     /// Username, where the protocol has one.
     pub username: Option<String>,
+    /// Windows domain or workgroup. SMB is the only protocol with one, and it
+    /// is carried here rather than folded into the username so that a domain
+    /// containing a backslash cannot be mistaken for part of a name.
+    #[serde(default)]
+    pub domain: Option<String>,
     /// What the user asked for. The server decides what they get.
     pub mount_preference: Access,
 }

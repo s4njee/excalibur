@@ -77,6 +77,7 @@ fn spec(id: &str) -> ConnectionSpec {
         port: None,
         share: "/srv/share".to_owned(),
         username: None,
+        domain: None,
         mount_preference: Access::Rw,
     }
 }

@@ -77,7 +77,15 @@ export function ConnectionDialog(props: {
   };
 
   const problem = createMemo(() => validate(draft()));
-  const supported = createMemo(() => isImplemented(draft().protocol));
+  // Asked of the engine rather than hard-coded: SMB is behind a cargo feature,
+  // so the same bundle runs against a build that has it and one that does not.
+  // `isImplemented` remains the answer until the reply arrives, and while it is
+  // pessimistic about SMB it is never wrong about the rest.
+  const [available] = createResource(() => props.backend.supportedProtocols());
+  const supported = createMemo(() => {
+    const list = available();
+    return list ? list.includes(draft().protocol) : isImplemented(draft().protocol);
+  });
   const canSubmit = createMemo(() => problem() === null && supported() && busy() === null);
 
   /**
@@ -317,8 +325,13 @@ export function ConnectionDialog(props: {
 
           <Show when={!supported()}>
             <div class={styles.notice}>
-              {PROTOCOLS.find((p) => p.id === draft().protocol)?.label} is not connected yet — the
-              engine answers it with “unsupported”. xsync, SFTP and NFS work today.
+              {PROTOCOLS.find((p) => p.id === draft().protocol)?.label} is not connected in this
+              build — the engine answers it with “unsupported”.
+              <Show when={draft().protocol === "smb"}>
+                {" "}
+                SMB needs a build compiled with the <code>smb</code> feature, which links
+                libsmbclient and makes the binary GPL-3.0-or-later.
+              </Show>
             </div>
           </Show>
 

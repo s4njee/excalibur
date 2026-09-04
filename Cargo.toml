@@ -42,6 +42,12 @@ russh-sftp = "=2.4.0"
 # dependencies. It is a codec rather than a client — no DNS, no pool, no retry,
 # no path layer — so the session layer above it is ours; see backend/nfs.rs.
 nfs3_client = { version = "0.9.0", default-features = false, features = ["tokio"] }
+# The SMB client, behind the engine's off-by-default `smb` feature.
+#
+# It wraps libsmbclient, which is GPL-3.0-or-later. Enabling that feature makes
+# the shipped binary GPLv3 as a whole; the default build does not link it and
+# stays MIT OR Apache-2.0. See docs/decisions/0001-smb-client.md.
+pavao = "0.3.1"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }

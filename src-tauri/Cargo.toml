@@ -19,6 +19,13 @@ tauri-build = { version = "2", features = [] }
 [lints]
 workspace = true
 
+[features]
+default = []
+# Forwards to the engine's `smb` feature. Off by default because enabling it
+# links libsmbclient (GPL-3.0-or-later) and makes this binary GPLv3 as a whole.
+# `npm run tauri build -- --features smb` opts in deliberately.
+smb = ["excalibur-engine/smb"]
+
 [dependencies]
 async-trait = { workspace = true }
 excalibur-engine = { path = "../crates/engine" }

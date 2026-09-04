@@ -157,7 +157,8 @@ reconstruct it from git history.
 | **M3** | E6-S2 — Writability and capacity | **Done** (bar `security_label`) |
 | **M3** | E6-S3 — Mutations | **Done** 2026-09-03 |
 | **M3** | E4-S1 — SMB client decision | **Done** 2026-09-03 (`smb`; see ADR 0001) |
-| **M3** | E4-S2…S6 — SMB backend | **Blocked** — `smb`'s `sspi` pins conflict with `russh` |
+| **M3** | E4-S2/S3/S4/S5 — SMB backend | **Done**, behind the off-by-default `smb` feature (GPLv3 when on) |
+| **M3** | E4-S6 — SMB reconnect | Not started |
 | **M3** | E5-S1 — NFSv3 client | **Done** 2026-09-03 |
 | **M3** | E5-S2 — Identity and ports | **Done** 2026-09-03 |
 | **M3** | E5-S3 — Writability | **Done** 2026-09-03 |
@@ -768,7 +769,18 @@ is the same component tree with `mount.writable` false.
   server returning a restrictive MxAc context, fixed at head but unreleased — was
   tested for against both shares. Samba does not trigger it.
 
-**Blocker: `smb` cannot currently be linked into this binary at all**
+**Reversed 2026-09-03: the decision is now `pavao`, behind a feature.**
+
+The owner accepted GPLv3 for an opt-in build, which removed the licence
+objection — and the pure-Rust `smb` crate then turned out not to be linkable at
+all, for the reasons below. A cargo feature does not rescue it either: cargo
+resolves optional dependencies into the lockfile even when the feature is off,
+so an optional `smb` breaks `cargo metadata` for everyone. That was checked, not
+assumed. `pavao` collides with nothing, so the choice was never between two
+working options — it was `pavao` or no SMB. See
+[ADR 0001](docs/decisions/0001-smb-client.md) and E4-S2 below.
+
+**The blocker that ruled out the pure-Rust `smb` crate**
 
 Adding `smb = "=0.11.2"` fails to resolve against the SFTP backend already shipped in
 E6:
@@ -798,17 +810,72 @@ subtle cryptographic bugs live, which is worse than not having SMB.
 
 **Next steps**
 
-- **E4-S2 … E4-S6 are blocked on this and are not started.** The backend itself is
-  understood — the probe exercised nine of the ten operations against a real server —
-  so this is a dependency problem, not a design one.
-- Three ways out, in order of preference: (1) `sspi` ships a release against stable
-  RustCrypto, or `smb` moves off `sspi` — worth filing upstream, since a stable crate
-  pinned to release candidates breaks any consumer with a normal crypto stack;
-  (2) run the SMB backend out of process with its own dependency graph, which is a
-  real option because `ShareBackend` is already the seam, but it is a large story;
-  (3) drop `russh`, which is not on the table — E6 ships and works.
-- E5 (NFS) was checked for the same problem and `nfs3_client` 0.9.0 resolves cleanly
-  alongside `russh`, so M3 continues there.
+- Worth filing upstream regardless: a stable `sspi` release pinned to 27 release
+  candidates breaks any consumer with a normal crypto stack. If that is fixed, `smb`
+  becomes a real alternative to `pavao` and a better one — MIT, no C dependency, and
+  a readable negotiated cipher.
+
+#### E4-S2/S3/S4/S5 — Connect, listing, range I/O, mutations — **Done, behind a feature**
+
+*2026-09-03.*
+
+**AC**
+- [x] SMB 3.1.1 preferred, 3.0.2/3.0/2.1 negotiable; **SMB1 never** — the dialect
+  bound is set to 2.0.2–3.1.1, and that bound is the only guarantee available
+  because the negotiated dialect cannot be read back.
+- [ ] `protocol_label` = `SMB3`/`SMB2`; `security_label` = the cipher.
+  **Not possible.** libsmbclient exposes no getter for the negotiated dialect,
+  signing state or cipher — the setters are policy inputs and the getters echo
+  them. So `protocol_label` is `SMB` and `security_label` says
+  `smb2+ · encryption requested`, which is what was asked for rather than a
+  cipher this code never observed. Same shape as E6-S2's open bullet.
+- [~] `writable` = `MaximalAccess` ∧ share not read-only ∧ the user did not ask
+  for RO. **`MaximalAccess` is not exposed either**, and the `ST_RDONLY` bit
+  `statvfs` could carry is never set by Samba's implementation. So the only term
+  that can be evaluated is the create-probe, which is the one that answers the
+  question the Upload button will ask.
+- [x] Listing with the DOS hidden bit; kind detection from name and attributes.
+- [x] Range reads and positional writes; resume lands at its offset.
+- [x] `mkdir`, `rename(replace)`, `remove` (file and recursive directory),
+  capacity.
+
+**Results**
+
+- **The DOS hidden bit is honoured, and so is the leading dot.** A hidden file on
+  SMB is one the server flagged; the Unix convention does not travel. Both are
+  checked, because a share written from a Unix client will have dotfiles the
+  server never flagged.
+- **The capacity units trap is real and easy to miss.** Against any server
+  without UNIX extensions — every Windows box and most NAS — Samba packs
+  `f_frsize` with sectors-per-allocation-unit and `f_bsize` with
+  bytes-per-sector, so the byte size is the product of all three rather than the
+  POSIX `blocks * frsize`. Getting it wrong reports a 4 TB share as a few
+  gigabytes, so a test asserts the total is at least a gigabyte.
+- **`Caps::atomic_rename` is false and the tests assert it.** Samba unlinks an
+  existing destination before renaming onto it — the same window E6-S3 rejected
+  for SFTP — and libsmbclient offers no no-clobber flag, so the `replace: false`
+  refusal is this backend's own stat-first check and is therefore racy.
+- **The dialog's Domain field was being collected and thrown away.** It reached
+  the draft and never reached the spec, so an SMB share on a domain could not
+  have been reached at all. `ConnectionSpec` now carries it.
+- **The window asks the engine which protocols exist rather than listing them.**
+  SMB is behind a cargo feature but the frontend is one bundle, so a static list
+  would be wrong for one of the two builds. `supported_protocols` is computed
+  with `cfg!(feature = "smb")`.
+- **The fixture was wrong in the same way the NFS one was.** On a Docker Desktop
+  bind mount, Samba answers `NT_STATUS_NOT_SUPPORTED` for both delete and rename
+  — verified with `smbclient` itself, not just through this backend — so every
+  mutation test failed against a server that was working correctly. A named
+  volume fixed it. That is now twice that virtiofs has produced a plausible
+  wrong answer; any future protocol fixture should start on a volume.
+
+**Next steps**
+
+- **E4-S6 (reconnect) is not started.** It shares E13-S6's resume work.
+- Kerberos is reachable (`use_kerberos`, `use_ccache`) but unwired: there is no
+  UI for it and the system ccache is the only source libsmbclient will take.
+- Throughput is unmeasured, for the same reason as NFS: the only server
+  available is a container on this machine.
 
 #### E4-S2 — Connect, tree connect, writability
 **AC**

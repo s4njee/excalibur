@@ -1,15 +1,75 @@
 # 0001 — The SMB client library
 
-*Decided 2026-09-03. Status: accepted. Supersedes nothing.*
+*Decided 2026-09-03. **Reversed the same day** — see "The reversal" below.
+Status: accepted, with `pavao` behind an off-by-default feature.*
 
-## Decision
+## Decision, as it now stands
 
-**Excalibur uses the pure-Rust [`smb`](https://crates.io/crates/smb) crate (the
-`smb-rs` project), not `pavao`.**
+**Excalibur uses [`pavao`](https://crates.io/crates/pavao) (libsmbclient),
+compiled only under the engine's off-by-default `smb` feature.**
 
-`pavao` was never added to the workspace, so there is no dead code to delete —
-E4-S1's "the loser is deleted" is satisfied by it never landing. This file is
-the record of why, so the question is not reopened from memory.
+The feature is the licence boundary. `cargo build` links no GPL code and the
+binary stays `MIT OR Apache-2.0` with no SMB support; `cargo build --features
+smb` links libsmbclient and the resulting binary is conveyable only under
+**GPL-3.0-or-later**. The owner has accepted that trade for the opt-in build.
+
+The rest of this file is the original reasoning, which reached the opposite
+conclusion, followed by what changed. It is kept rather than rewritten because
+the argument against `pavao` is still true — it is just no longer decisive.
+
+## The reversal
+
+Two things changed after the original decision.
+
+**The licence stopped being disqualifying.** The owner's call: GPLv3 is
+acceptable for a build that opts in. That removes the first and heaviest of the
+three objections below. It does not remove the consequence, so the feature
+exists to keep it contained and visible.
+
+**The pure-Rust `smb` crate turned out not to be linkable at all.** `russh`
+requires `crypto-bigint ^0.7.3`; `smb` pins `sspi =0.18.7`, which pins
+`crypto-bigint =0.7.0-rc.8`. Both are in the same 0.7.x compatibility range, so
+cargo must unify them and cannot. Every `smb` release back to 0.10.4 requires
+`sspi` 0.18.x and every one of those carries the same release candidate, so no
+version choice escapes it. `sspi` 0.18.7 pins **27** pre-release RustCrypto
+crates while `russh` is built against the stable stack; patching around one of
+them reaches the next.
+
+**A cargo feature does not help there, and this was checked rather than
+assumed.** Cargo resolves optional dependencies into the lockfile even when the
+feature is off, so an optional `smb` fails `cargo metadata` for everyone. It
+cannot be the thing behind the feature.
+
+`pavao`'s dependency tree is five crates and collides with nothing, so it can.
+
+So the choice was never between two working options: it was `pavao` or no SMB.
+
+## What was accepted along with it
+
+The other two objections below still stand, and enabling the feature accepts
+them:
+
+- **The session's dialect, signing state and cipher cannot be read back** —
+  not from `pavao`, not from `pavao-sys`, and not from `libsmbclient.h`. So
+  `protocol_label` says `SMB` rather than naming a version this code did not
+  observe, and `security_label` says what was *requested* rather than claiming a
+  cipher. That is narrower than E4-S2 asked for, and it is the honest width.
+- **Every libsmbclient call in the process serialises behind one static mutex.**
+  There is no concurrency to be had at any level, so `spawn_blocking` here keeps
+  the synchronous C library off the runtime's threads rather than overlapping
+  anything.
+- Share-level writability is undetectable, so the backend learns it by trying to
+  create a file — the same probe the SFTP and NFS backends use, for the same
+  reason.
+- `Write::flush` is a documented no-op and the close-on-drop error is swallowed
+  by the library. Nothing in this codebase can fix that.
+- `Caps::atomic_rename` is **false**: Samba unlinks an existing destination
+  before renaming onto it, which is the window E6-S3 rejected for SFTP and which
+  cannot be avoided here.
+
+## Original decision (superseded)
+
+*What follows is the reasoning as first written, when the conclusion was `smb`.*
 
 ## Context
 

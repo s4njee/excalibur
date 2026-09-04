@@ -12,6 +12,7 @@ import type {
   Listing,
   MountEvent,
   MountInfo,
+  Protocol,
   SaveOutcome,
   Transfer,
 } from "./types";
@@ -37,6 +38,13 @@ export interface Backend {
   onMountChanged(handler: (event: MountEvent) => void): () => void;
   /** Whether this machine has a credential store that actually keeps things. */
   keychainAvailable(): Promise<boolean>;
+  /**
+   * Which protocols this build can connect.
+   *
+   * Asked rather than assumed: SMB is behind a cargo feature, so one bundle
+   * serves a build with it and a build without.
+   */
+  supportedProtocols(): Promise<Protocol[]>;
   /**
    * Save a credential for a bookmark.
    *
@@ -328,6 +336,10 @@ export function fixtureBackend(
     async keychainAvailable(): Promise<boolean> {
       return false;
     },
+    // The preview speaks to the mock, which answers for everything.
+    async supportedProtocols(): Promise<Protocol[]> {
+      return ["xsync", "sftp", "nfs", "smb"];
+    },
     async saveSecret(): Promise<void> {
       throw new Error("no keychain in the browser preview");
     },
@@ -394,6 +406,10 @@ function tauriBackend(): Backend {
     async keychainAvailable(): Promise<boolean> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<boolean>("keychain_available");
+    },
+    async supportedProtocols(): Promise<Protocol[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<Protocol[]>("supported_protocols");
     },
     async saveSecret(account: string, secret: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
