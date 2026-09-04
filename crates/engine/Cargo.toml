@@ -29,6 +29,11 @@ russh-sftp = { workspace = true }
 # A path dependency while xsync's v3 branch is local. E7-S0 wants a pinned git
 # revision with a documented `[patch]` override for development; that needs the
 # branch pushed somewhere first.
+#
+# Careful: because this points outside the workspace, `cargo fmt --all` reaches
+# the whole *xsync* workspace and will rewrite files there — including crates
+# Excalibur does not depend on, and someone else's uncommitted work. Format with
+# `cargo fmt -p excalibur-engine -p excalibur-cli -p excalibur` instead.
 xsync-client = { path = "../../../xsync/crates/xsync-client" }
 serde = { workspace = true }
 # The transfer queue is persisted as JSON (E13-S1), so it survives a restart.
