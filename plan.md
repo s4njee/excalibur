@@ -165,7 +165,9 @@ reconstruct it from git history.
 | **M3** | E5-S4 — Range I/O and transfers | **Done** 2026-09-04 (1 MiB cap; throughput measured, see benchmarks.md) |
 | **M3** | E5-S5 — NFSv4 and Kerberos | **Spike done** 2026-09-04; implementation deferred (ADR 0002) |
 | **M4** | E17-S1 — Stored state | **Done** 2026-09-04 |
-| M4+ | E8-S3/S4/S9, E16, E1-S4/S5, E19, E7-S1/S3, packaging | Not started |
+| **M4** | E16-S1 — Shortcut map | **Done** 2026-09-04 (bar row-layout keys) |
+| **M4** | E16-S2 — Accessibility | **Done** 2026-09-04 (one contrast exception) |
+| M4+ | E8-S3/S4/S9, E1-S4/S5, E19, E7-S1/S3, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -2436,21 +2438,94 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E16 — Keyboard, shortcuts, accessibility *(handoff §Keyboard)*
 
-#### E16-S1 — Shortcut map
-**AC**
-- Space Quick Look; Enter rename; Cmd/Ctrl+↓/↑ descend/ascend; Cmd/Ctrl+R refresh;
-  Cmd/Ctrl+F filter; Escape filter→selection; Cmd/Ctrl+D download; Cmd/Ctrl+U upload;
-  Cmd/Ctrl+E edit; Cmd/Ctrl+[ / ] back/forward; Cmd/Ctrl+Shift+N new folder;
-  Cmd/Ctrl+, preferences; Cmd/Ctrl+Shift+T transfers; Cmd/Ctrl+1/2/3 row layouts.
-- Every toolbar verb's tooltip shows its shortcut; the map is one table in code that
-  generates both the bindings and the tooltips.
+#### E16-S1 — Shortcut map — **Done**
 
-#### E16-S2 — Accessibility
+*2026-09-04.*
+
 **AC**
-- Focus rings visible (2px accent, offset) on every control; list is an ARIA grid with
-  row/cell roles; status bar is a live region for permission and health changes;
-  contrast of every token pair used for text meets 4.5:1 (checked by a test over the
-  token file, with the documented exceptions listed).
+- [x] Space Quick Look; Enter rename; Cmd/Ctrl+↓/↑ descend/ascend; Cmd/Ctrl+R
+  refresh; Cmd/Ctrl+F filter; Escape filter→selection; Cmd/Ctrl+D download;
+  Cmd/Ctrl+U upload; Cmd/Ctrl+E edit; Cmd/Ctrl+[ / ] back/forward;
+  Cmd/Ctrl+Shift+N new folder; Cmd/Ctrl+, preferences; Cmd/Ctrl+Shift+T
+  transfers.
+- [ ] Cmd/Ctrl+1/2/3 row layouts. **Not bound**: `1g` and `1h` do not exist
+  (E8-S3/S4), so two of the three would silently do nothing. `rowLayout`
+  already persists, so binding them is a three-line change once there is
+  something to switch to.
+- [x] Every toolbar verb's tooltip shows its shortcut; the map is one table
+  that generates both the bindings and the tooltips.
+
+**Results**
+
+- **`state/shortcuts.ts` is the table, read twice** — once by the key handler to
+  decide what a keystroke means, once by the toolbar to label itself. Two lists
+  would drift, and a tooltip promising ⌘D while the handler listens for
+  something else is worse than no tooltip, because the user believes it. The
+  gear's tooltip had already been hardcoded as `Preferences (⌘,)` in E17-S1;
+  that was exactly the drift, and it now comes from the table.
+- **Modifiers match exactly rather than at least.** ⌘⇧N is New Folder and ⌘N
+  must not fall through to it — the old if-chain tested `metaKey || ctrlKey`
+  and then the letter, so it would have. A test asserts the near-misses, and
+  the browser confirmed ⌘N creates nothing.
+- **The table says what a key means; the caller says whether it is allowed.**
+  Every verb still goes through the same permission gate the buttons use, so a
+  shortcut on a read-only mount produces the same refusal rather than silently
+  doing nothing — which would be indistinguishable from a broken binding.
+- **Shift changes the reported key**, so `n` and `N` both have to match; the
+  table lowercases before comparing, and a test pins it.
+- Escape stays layered — panel, then filter, then selection — because clearing
+  two states at once would make one key do two things. That is one `case` now
+  rather than three scattered branches.
+- Tooltips defer to the refusal reason when a button is disabled: teaching a
+  shortcut for something the user cannot do would be worse than saying nothing.
+
+#### E16-S2 — Accessibility — **Done**
+
+*2026-09-04.*
+
+**AC**
+- [x] Focus rings visible (2px accent, offset) on every control.
+- [x] List is an ARIA grid with row/cell roles.
+- [x] Status bar is a live region.
+- [~] Contrast of every token pair used for text meets 4.5:1, checked by a test
+  over the token file, with the documented exceptions listed. **One exception,
+  and it is a real one** — see below.
+
+**Results**
+
+- **The contrast test found three genuine failures, not hypotheticals.**
+  `--text-placeholder` sat at 2.60:1 (light) and 2.86:1 (dark); `--glyph-file`
+  at 2.26:1, below even the 3:1 floor WCAG sets for non-text. All three are
+  fixed, and the file glyph stays lighter than the folder glyph so they remain
+  distinguishable.
+- **`--text-tertiary` is the documented exception, because the arithmetic does
+  not allow anything else.** It fails on every light surface (2.96–3.43:1). The
+  light value that would clear 4.5:1 is `#6c6c72` against secondary's
+  `#6a6a70` — indistinguishable; in dark it would have to become *lighter* than
+  secondary and invert the hierarchy. The design's three grey tiers and this
+  threshold cannot both hold on these surfaces, which is a decision for a
+  designer rather than for the code. It is still held to 3:1 by the test so it
+  cannot quietly get worse. Recorded in
+  [`docs/design-gaps.md`](docs/design-gaps.md).
+- **The test reads the stylesheet rather than a copy of it.** Asserting against
+  duplicated hex values would keep passing after someone edited the real ones,
+  which is the only failure mode that matters. It parses both theme blocks,
+  with dark inheriting what it does not redefine — the same way the browser
+  resolves them.
+- **The grid now contains its own header.** It did not: the column header was a
+  sibling of the scrolling body, so no column name could be associated with a
+  cell. The grid wraps both with `display: contents`, which gives the correct
+  tree without moving anything on screen — verified, since a fixed header over
+  a scrolling body is exactly the layout that would have broken.
+- Focus rings are one global `:focus-visible` rule rather than one per
+  component, because a control that forgets its ring is invisible to a keyboard
+  and a rule per component is a rule someone forgets. Measured in the browser at
+  `2px solid rgb(47, 109, 246)`, offset 2px.
+
+**Next steps**
+
+- Arrow-key row selection is still absent; the list is navigable by type-ahead
+  and the mouse. It belongs with E8's row work rather than here.
 
 ### E17 — Preferences and persistence
 

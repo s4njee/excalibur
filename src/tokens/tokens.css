@@ -39,12 +39,17 @@
   --text-primary: #1a1a1c;
   --text-secondary: #6a6a70;
   --text-tertiary: #8a8a90;
-  --text-placeholder: #a0a0a6;
+  /* Darkened from the handoff's #a0a0a6, which sat at 2.60:1 on the field
+     background. Placeholder text is still text (E16-S2). */
+  --text-placeholder: #76767c;
   --titlebar-text: #4a4a50;
 
   /* Glyphs */
   --glyph-folder: #8a8f98;
-  --glyph-file: #a8adb5;
+  /* From #a8adb5, which was 2.26:1 on the list — below even the 3:1 floor
+     for non-text. Still lighter than the folder glyph, so the two remain
+     distinguishable. */
+  --glyph-file: #90959d;
 
   /* Selection */
   --selection-bg: #2f6df6;
@@ -120,7 +125,9 @@
   --text-primary: #e8e8ea;
   --text-secondary: #9a9ba0;
   --text-tertiary: #8a8b90;
-  --text-placeholder: #63646a;
+  /* From #63646a (2.86:1). Kept darker than `--text-tertiary` so the
+     hierarchy survives. */
+  --text-placeholder: #83848a;
   --titlebar-text: #c8c8cc;
 
   --glyph-folder: #7d838c;
@@ -174,4 +181,26 @@ button {
 
 button:disabled {
   cursor: not-allowed;
+}
+
+/*
+ * Focus rings (E16-S2).
+ *
+ * `:focus-visible` rather than `:focus`, so a mouse click does not leave a
+ * ring behind — the keyboard user gets it, the pointer user does not. Declared
+ * once here rather than per component: a control that forgets its ring is
+ * invisible to a keyboard, and a rule per component is a rule someone forgets.
+ */
+:focus-visible {
+  outline: 2px solid var(--selection-bg);
+  outline-offset: 2px;
+  /* The rows list clips its children, and an offset ring on the first row
+     would be cut in half without this. */
+  border-radius: var(--radius-control);
+}
+
+/* The list itself is scrolled, not activated, so its ring sits inside the
+   frame rather than outside it. */
+[role="rowgroup"]:focus-visible {
+  outline-offset: -2px;
 }

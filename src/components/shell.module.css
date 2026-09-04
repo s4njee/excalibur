@@ -305,6 +305,13 @@
   padding: 0 12px;
 }
 
+/* The ARIA grid wraps the fixed header and the scrolling body without
+   changing either's layout: `display: contents` leaves both as children of
+   the surrounding flex column exactly as they were. */
+.grid {
+  display: contents;
+}
+
 .columnHeader {
   flex: none;
   height: var(--height-column-header);

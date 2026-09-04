@@ -152,3 +152,41 @@ instead, beside the preferences gear, as a `⚙`-sized icon button.
 sheet, the standard macOS toolbar segmented control for the sidebar, or the
 toggle in the titlebar. All three are cheap to move to; nothing here depends on
 the current placement.
+
+## Three grey tiers cannot all meet 4.5:1 *(E16-S2, 2026-09-04)*
+
+**The mock** uses a three-tier grey scale for text — `--text-primary`,
+`--text-secondary`, `--text-tertiary` — with the third used for subtitles,
+section headers and status-bar detail, much of it at 9.5px.
+
+**The problem** is arithmetic. Measured against the surfaces they actually
+appear on:
+
+| | light | dark |
+|---|---|---|
+| `--text-primary` | 15.0–17.4:1 | 9.9–13.8:1 |
+| `--text-secondary` | 4.6–5.4:1 | 5.1–6.0:1 |
+| `--text-tertiary` | **2.96–3.43:1** | **4.16–4.85:1** |
+
+Tertiary fails 4.5:1 on every light surface and on two of the dark ones. It
+cannot simply be darkened: the light value that would clear 4.5:1 is `#6c6c72`,
+against secondary's `#6a6a70` — indistinguishable. In dark it would have to
+become *lighter* than secondary and invert the hierarchy. **The design's three
+tiers and the 4.5:1 threshold cannot both hold on these surfaces.**
+
+**What was done** is the part that has no hierarchy cost:
+
+- `--text-placeholder` darkened `#a0a0a6` → `#76767c` (light) and `#63646a` →
+  `#83848a` (dark). It carries no tier; it was at 2.60:1 and 2.86:1.
+- `--glyph-file` darkened `#a8adb5` → `#90959d` (light). At 2.26:1 it failed
+  even the 3:1 floor WCAG sets for non-text, and it stays lighter than the
+  folder glyph so the two remain distinguishable.
+
+`--text-tertiary` is left alone and recorded as the one exception in
+`src/tokens/contrast.test.ts`, which still holds it to 3:1 so it cannot quietly
+get worse.
+
+**A designer might instead** drop to two tiers and distinguish the third by
+weight or size rather than lightness, darken the surfaces tertiary sits on, or
+accept the ratio for text that is genuinely decorative. All three are choices
+about the design's intent, which is why the code did not make one.

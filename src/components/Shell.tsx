@@ -8,6 +8,7 @@ import type { Sort } from "../state/sort";
 import { template, type Divider, type Widths } from "../state/columns";
 import { rowsInBand, visibleRange } from "../state/virtual";
 import { gate, type Affordance, type Context } from "../state/permissions";
+import * as shortcuts from "../state/shortcuts";
 import { formatCapacity, formatCounts, formatModified } from "../state/format";
 import { formatSize } from "../state/format";
 
@@ -80,13 +81,20 @@ function Verb(props: {
   label: string;
   primary?: boolean;
   onClick?: () => void;
+  /** Named from the same table that binds the key (E16-S1). */
+  shortcut?: shortcuts.ShortcutId;
 }) {
   const state = () => gate(props.affordance, props.context);
+  // A disabled button's tooltip owes the user the reason it is disabled;
+  // teaching a shortcut for something they cannot do would be worse than
+  // saying nothing. So the refusal wins, and the hint fills the rest.
+  const title = () =>
+    state().reason ?? (props.shortcut ? shortcuts.tooltip(props.shortcut) : undefined);
   return (
     <button
       class={`${styles.button} ${props.primary ? styles.primary : ""}`}
       disabled={state().disabled}
-      title={state().reason ?? undefined}
+      title={title()}
       onClick={props.onClick}
     >
       {props.label}
@@ -158,6 +166,8 @@ export function Toolbar(props: {
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onPreferences: () => void;
+  /** So ⌘F can put the caret here. */
+  filterRef?: (element: HTMLInputElement) => void;
 }) {
   const context = (): Context => ({
     writable: props.mount.writable,
@@ -182,7 +192,7 @@ export function Toolbar(props: {
       <button
         class={styles.iconButton}
         aria-label="Preferences"
-        title="Preferences (⌘,)"
+        title={shortcuts.tooltip("preferences")}
         onClick={props.onPreferences}
       >
         ⚙
@@ -192,6 +202,7 @@ export function Toolbar(props: {
           class={styles.segment}
           disabled={!props.canBack}
           aria-label="Back"
+          title={shortcuts.tooltip("back")}
           onClick={props.onBack}
         >
           ‹
@@ -200,6 +211,7 @@ export function Toolbar(props: {
           class={styles.segment}
           disabled={!props.canForward}
           aria-label="Forward"
+          title={shortcuts.tooltip("forward")}
           onClick={props.onForward}
         >
           ›
@@ -209,6 +221,7 @@ export function Toolbar(props: {
         class={styles.button}
         disabled={!props.canAscend}
         aria-label="Enclosing folder"
+        title={shortcuts.tooltip("ascend")}
         onClick={props.onAscend}
       >
         ↑
@@ -223,25 +236,35 @@ export function Toolbar(props: {
         {/* Every verb goes through `gate`. None of them reads `writable`
             directly: an inline condition here is exactly how a write affordance
             ends up gated on something that is not the mount. */}
-        <Verb affordance="quickLook" context={context()} label="Quick Look" />
-        <Verb affordance="edit" context={context()} label="Edit" onClick={props.onEdit} />
+        <Verb affordance="quickLook" context={context()} label="Quick Look" shortcut="quickLook" />
+        <Verb
+          affordance="edit"
+          context={context()}
+          label="Edit"
+          shortcut="edit"
+          onClick={props.onEdit}
+        />
         <Verb
           affordance="download"
           context={context()}
           label="Download"
+          shortcut="download"
           onClick={props.onDownload}
         />
         <Verb
           affordance="upload"
           context={context()}
           label="Upload"
+          shortcut="upload"
           primary
           onClick={props.onUpload}
         />
       </div>
       <input
+        ref={props.filterRef}
         class={styles.filter}
         placeholder="Filter"
+        title={shortcuts.tooltip("focusFilter")}
         value={props.filter}
         onInput={(event) => props.onFilter(event.currentTarget.value)}
       />
@@ -486,7 +509,9 @@ export function FileList(props: {
    * whatever the widths are.
    */
   const header = (column: SortColumn, label: string, divider?: Divider, right = false) => (
-    <div class={styles.headerSlot}>
+    <div class={styles.headerSlot} role="columnheader" aria-sort={
+      props.sort.column === column ? (props.sort.ascending ? "ascending" : "descending") : "none"
+    }>
       <button
         class={`${styles.headerCell} ${right ? styles.headerRight : ""}`}
         aria-sort={
@@ -511,8 +536,16 @@ export function FileList(props: {
   );
 
   return (
-    <>
-      <div class={styles.columnHeader} style={{ "grid-template-columns": template(props.widths) }}>
+    // The grid wraps both the fixed header and the scrolling body. It uses
+    // `display: contents` so the two keep the layout they had as siblings —
+    // an ARIA grid whose header row lives outside it cannot associate a column
+    // name with a cell, and the header has to stay put while the body scrolls.
+    <div class={styles.grid} role="grid" aria-rowcount={props.entries.length} aria-colcount={4}>
+      <div
+        class={styles.columnHeader}
+        role="row"
+        style={{ "grid-template-columns": template(props.widths) }}
+      >
         {/* Each divider sits on the right edge of the cell before it, so the
             name of the divider is the column it resizes into. */}
         {header("name", "Name", "size")}
@@ -531,8 +564,7 @@ export function FileList(props: {
         class={`${styles.rows} ${props.slow ? styles.rowsStale : ""} ${
           props.dropTarget ? styles.rowsDropping : ""
         }`}
-        role="grid"
-        aria-rowcount={props.entries.length}
+        role="rowgroup"
         ref={rows}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         onPointerDown={startBand}
@@ -573,7 +605,7 @@ export function FileList(props: {
                     }
                     onDblClick={() => props.onOpen(entry)}
                   >
-                    <div class={styles.nameCell}>
+                    <div class={styles.nameCell} role="gridcell">
                       {/* The glyph follows the engine's category, not the raw
                           entry kind, so one table decides the label, the icon
                           and Quick Look's viewer. E0-S3 swaps this element for
@@ -592,15 +624,19 @@ export function FileList(props: {
                         />
                       </Show>
                     </div>
-                    <div class={styles.sizeCell}>
+                    <div class={styles.sizeCell} role="gridcell">
                       {entry.kind === "dir" ? (
                         <span class={styles.sizeDash}>—</span>
                       ) : (
                         formatSize(entry.size)
                       )}
                     </div>
-                    <div class={styles.metaCell}>{formatModified(entry.modifiedMs)}</div>
-                    <div class={styles.metaCell}>{entry.kindLabel}</div>
+                    <div class={styles.metaCell} role="gridcell">
+                      {formatModified(entry.modifiedMs)}
+                    </div>
+                    <div class={styles.metaCell} role="gridcell">
+                      {entry.kindLabel}
+                    </div>
                   </div>
                 );
               }}
@@ -608,7 +644,7 @@ export function FileList(props: {
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -704,7 +740,11 @@ export function StatusBar(props: {
   remounting?: boolean;
 }) {
   return (
-    <div class={styles.statusbar}>
+    // A live region (E16-S2): whether the mount is writable, and why it is
+    // not, changes without the user doing anything — a reconnect can come back
+    // read-only. `polite` because it should not interrupt, and it is the only
+    // place that news appears.
+    <div class={styles.statusbar} role="status" aria-live="polite">
       <span class={`${styles.badge} ${props.mount.writable ? styles.badgeRw : styles.badgeRo}`}>
         {props.mount.writable ? "RW" : "RO"}
       </span>

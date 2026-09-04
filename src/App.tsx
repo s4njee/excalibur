@@ -47,6 +47,7 @@ import { engineFailure } from "./state/errors";
 import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
 import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
+import * as shortcuts from "./state/shortcuts";
 import { Preferences } from "./components/Preferences";
 import {
   DEFAULTS as DEFAULT_SETTINGS,
@@ -101,6 +102,9 @@ export default function App(props: {
   };
 
   const [showPreferences, setShowPreferences] = createSignal(false);
+  // Held so ⌘F can put the caret in the filter box, which is a DOM action
+  // rather than a state change.
+  let filterInput: HTMLInputElement | undefined;
 
   /**
    * Change a preference, and carry it wherever it has to go.
@@ -265,7 +269,8 @@ export default function App(props: {
       // Anything typed into the filter box or a dialog field belongs to that
       // field, not to the list.
       const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.isContentEditable)) {
+      const typing = Boolean(target && (target.tagName === "INPUT" || target.isContentEditable));
+      if (typing) {
         // A rename field is an input, and Escape there cancels the rename
         // rather than the filter.
         if (event.key === "Escape" && renaming() !== null) {
@@ -277,71 +282,111 @@ export default function App(props: {
         if (event.key !== "Escape") return;
       }
 
-      if (event.key === "Escape" && quickLook()) {
-        // The panel is the most recently opened thing, so it closes first.
-        setQuickLook(false);
-        return;
-      }
+      // One table decides what a keystroke means (E16-S1); everything below
+      // decides whether it is allowed to happen now.
+      const verb = shortcuts.match(event);
+      switch (verb) {
+        case "escape":
+          // A layered key, in the design's order: the panel is the most
+          // recently opened thing, then the filter, then the selection. A
+          // filter is the more disruptive state to be stuck in, and clearing
+          // both at once would make one Escape do two things.
+          if (quickLook()) setQuickLook(false);
+          else if (filter() !== "") setFilter("");
+          else setSelection(EMPTY_SELECTION);
+          return;
 
-      if (event.key === " " && renaming() === null) {
-        // Space toggles the preview. It is only a shortcut while nothing is
-        // being typed into, which the input check above already guarantees.
-        event.preventDefault();
-        setQuickLook((open) => !open && selectedVisible().length === 1);
-        return;
-      }
-
-      if (event.key === "Escape") {
-        // The design's order: the filter first, then the selection. A filter
-        // is the more disruptive of the two states to be stuck in, and
-        // clearing both at once would make one Escape do two things.
-        if (filter() !== "") setFilter("");
-        else setSelection(EMPTY_SELECTION);
-        return;
-      }
-
-      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
-        // Where every Mac app puts it.
-        event.preventDefault();
-        setShowPreferences(true);
-        return;
-      }
-
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        void newFolder();
-        return;
-      }
-
-      if (event.key === "Enter" && renaming() === null) {
-        // Enter renames the one selected row. On several it has no meaning,
-        // and picking one of them would be a guess.
-        const chosen = selectedVisible();
-        if (chosen.length === 1 && chosen[0]) {
+        case "quickLook":
+          if (renaming() !== null) return;
           event.preventDefault();
-          if (!refusedBy("rename")) setRenaming(chosen[0].path);
+          setQuickLook((open) => !open && selectedVisible().length === 1);
+          return;
+
+        case "rename": {
+          if (renaming() !== null) return;
+          // Enter renames the one selected row. On several it has no meaning,
+          // and picking one of them would be a guess.
+          const chosen = selectedVisible();
+          if (chosen.length === 1 && chosen[0]) {
+            event.preventDefault();
+            if (!refusedBy("rename")) setRenaming(chosen[0].path);
+          }
+          return;
         }
-        return;
-      }
 
-      if (event.key === "Delete" || event.key === "Backspace") {
-        event.preventDefault();
-        deleteSelected();
-        return;
-      }
+        case "delete":
+          if (typing) return;
+          event.preventDefault();
+          deleteSelected();
+          return;
 
-      if (event.metaKey || event.ctrlKey) {
-        if (event.key === "ArrowDown") {
+        case "descend":
           event.preventDefault();
           descend();
-        } else if (event.key === "ArrowUp") {
+          return;
+
+        case "ascend":
           event.preventDefault();
           if (nav.canAscend(path())) ascend();
-        }
-        return;
+          return;
+
+        case "back":
+          event.preventDefault();
+          if (nav.canBack(history())) setHistory(nav.back);
+          return;
+
+        case "forward":
+          event.preventDefault();
+          if (nav.canForward(history())) setHistory(nav.forward);
+          return;
+
+        case "refresh":
+          event.preventDefault();
+          listingState.load(path());
+          return;
+
+        case "focusFilter":
+          event.preventDefault();
+          // Selects what is there, so a second ⌘F retypes rather than appends.
+          filterInput?.select();
+          filterInput?.focus();
+          return;
+
+        case "download":
+          event.preventDefault();
+          void downloadSelected();
+          return;
+
+        case "upload":
+          event.preventDefault();
+          void uploadHere();
+          return;
+
+        case "edit":
+          event.preventDefault();
+          void editSelected();
+          return;
+
+        case "newFolder":
+          event.preventDefault();
+          void newFolder();
+          return;
+
+        case "preferences":
+          event.preventDefault();
+          setShowPreferences(true);
+          return;
+
+        case "transfers":
+          event.preventDefault();
+          setShowTransfers(true);
+          return;
+
+        default:
+          break;
       }
 
-      if (event.altKey) return;
+      if (typing || event.altKey || event.metaKey || event.ctrlKey) return;
       // A single printable character is type-to-select. `key.length === 1`
       // is what separates those from `ArrowDown`, `Enter` and the rest.
       if (event.key.length === 1 && event.key !== " ") {
@@ -943,6 +988,7 @@ export default function App(props: {
             onForward={() => setHistory(nav.forward)}
             onAscend={ascend}
             onCrumb={onCrumb}
+            filterRef={(element) => (filterInput = element)}
             onEdit={() => void editSelected()}
             onDownload={() => void downloadSelected()}
             onUpload={() => void uploadHere()}
