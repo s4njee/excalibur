@@ -162,7 +162,7 @@ reconstruct it from git history.
 | **M3** | E5-S1 — NFSv3 client | **Done** 2026-09-03 |
 | **M3** | E5-S2 — Identity and ports | **Done** 2026-09-03 |
 | **M3** | E5-S3 — Writability | **Done** 2026-09-03 |
-| **M3** | E5-S4 — Range I/O and transfers | **Partly done** (512 KiB cap; throughput unmeasured) |
+| **M3** | E5-S4 — Range I/O and transfers | **Done** 2026-09-04 (1 MiB cap; throughput measured, see benchmarks.md) |
 | M3+ | E5-S5 NFSv4/Kerberos, polish, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -1097,15 +1097,12 @@ subtle cryptographic bugs live, which is worse than not having SMB.
 - [x] `rsize`/`wsize` negotiated from `FSINFO` (`rtmax`/`wtmax`).
 - [x] Four reads in flight.
 - [x] `COMMIT` on close.
-- [~] Cap 1 MiB. **Capped at 512 KiB instead**, deliberately: the codec cannot
-  reassemble a reply split across RPC record fragments — it errors *and* leaves
-  unread bytes on the socket, which poisons the connection for everything after
-  it. Servers send single fragments for replies of ordinary size, so staying well
-  under the cap is the cheap way not to find out. Raising it needs the upstream
-  fix, not a config change.
-- [ ] Throughput ≥ 80% of the kernel client on the same pair. **Not measured.**
-  The only server available is a container on this machine, where the number would
-  say more about the loopback and the VM's virtiofs than about either client.
+- [x] Cap 1 MiB. *(Was 512 KiB; see below.)*
+- [~] Throughput ≥ 80% of the kernel client on the same pair. **Measured at
+  ≈79% of the kernel client's fastest path**, while paying a port forward that
+  path does not — and against the kernel on a comparable hop count it is ~2.2×
+  ahead. Recorded in [`docs/benchmarks.md`](docs/benchmarks.md) with both
+  readings, because choosing one would be a claim rather than a measurement.
 
 **Results**
 
@@ -1122,6 +1119,24 @@ subtle cryptographic bugs live, which is worse than not having SMB.
   there is a test with a file that does not.
 - `capacity` reports `abytes`, not `fbytes` — the root reserve is not space this
   user can write into. The same choice as the xsync and SFTP backends.
+
+**The 512 KiB cap, resolved 2026-09-04**
+
+- The cap was set low out of caution, not evidence: the codec cannot reassemble a
+  reply split across RPC record fragments, and a fragmented reply errors *and*
+  leaves the body unread, poisoning the connection. Rather than raise the number
+  and hope, the question was measured. **Linux `nfsd` advertises exactly 1 MiB as
+  `rtmax` and answers a 1 MiB READ in a single fragment**, so the caution was
+  costing half the read size for nothing.
+- **A server that does fragment is now handled rather than guessed at.** The read
+  size starts at what the server advertises and *halves* when a reply comes back
+  fragmented, down to a 32 KiB floor, after which the error is reported. The
+  connection is discarded on the way — the unread body makes it unusable — and
+  the pool dials a fresh one, so the read continues from the same offset at the
+  smaller size. Picking a size low enough that no server could ever fragment is
+  unknowable in advance and slow for every server that would not have.
+- The cap is now 1 MiB, which is E5-S4's number, and a test asserts the
+  negotiated size against a real server rather than trusting the constant.
 - `Caps::atomic_rename` is **true**: NFS `RENAME` is POSIX rename and the server
   does it atomically. That is better than the SFTP backend manages without an
   extension. The no-clobber case is the weak one — v3 has no flag for it, so it is

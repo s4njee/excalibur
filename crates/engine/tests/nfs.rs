@@ -355,3 +355,53 @@ async fn a_path_that_climbs_out_of_the_export_is_refused() {
     assert!(backend.list_dir("../ro").await.is_err());
     assert!(backend.stat("Series/../../ro/fixed.txt").await.is_err());
 }
+
+#[tokio::test]
+async fn the_transfer_size_is_negotiated_up_to_a_megabyte() {
+    // E5-S4's cap. This was 512 KiB out of caution about RPC record
+    // fragmentation — the codec cannot reassemble a split reply — until
+    // measuring showed Linux `nfsd` advertises exactly 1 MiB as `rtmax` and
+    // answers a 1 MiB READ in one fragment. The caution was costing half the
+    // throughput for nothing, and a server that *does* fragment is now handled
+    // by backing the size down rather than by guessing low in advance.
+    let Some(backend) = mount("/exports/rw").await else {
+        return;
+    };
+    assert_eq!(backend.read_chunk_for_test(), 1024 * 1024);
+    assert_eq!(backend.write_chunk_for_test(), 1024 * 1024);
+
+    // And a read at exactly that size round-trips, which is the thing the cap
+    // was protecting against.
+    let bytes = backend
+        .read_range("blob.bin", 0, 1024 * 1024)
+        .await
+        .expect("a read at the full negotiated size");
+    assert_eq!(bytes.len(), 1024 * 1024);
+}
+
+/// E5-S4's throughput number. Run with `--ignored --nocapture`; the
+/// `benchmark.sh` beside the fixture runs this and the kernel client together.
+#[tokio::test]
+#[ignore = "a benchmark, not a check: it needs a seeded 128 MiB file and reports a number rather than asserting one"]
+async fn benchmark_read_throughput() {
+    const MIB: u32 = 1024 * 1024;
+    const SIZE: u32 = 128 * MIB;
+    let Some(backend) = mount("/exports/rw").await else {
+        return;
+    };
+    // A file this client has not read before, so the comparison is not
+    // measuring our own memory. Overridable so each run can take a fresh one.
+    let file =
+        std::env::var("EXCALIBUR_NFS_BENCH_FILE").unwrap_or_else(|_| "cold-a.bin".to_owned());
+
+    let started = std::time::Instant::now();
+    let bytes = backend
+        .read_range(&file, 0, SIZE)
+        .await
+        .expect("read the benchmark file");
+    let elapsed = started.elapsed();
+    assert_eq!(bytes.len(), SIZE as usize);
+
+    let mib_per_second = f64::from(SIZE) / (1024.0 * 1024.0) / elapsed.as_secs_f64();
+    println!("excalibur-nfs-read {mib_per_second:.1} MiB/s ({elapsed:.2?} for 128 MiB)");
+}

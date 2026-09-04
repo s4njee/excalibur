@@ -57,11 +57,25 @@ const POOL_SIZE: usize = 4;
 
 /// The ceiling on a single READ or WRITE, before the server's own limit.
 ///
-/// A megabyte is what E5-S4 caps at, but the codec cannot reassemble a reply
-/// split across RPC record fragments — it errors and leaves unread bytes on the
-/// socket, poisoning it. Servers send single fragments for replies of ordinary
-/// size, so staying well under the cap is the cheap way to not find out.
-const MAX_TRANSFER: u32 = 512 * 1024;
+/// A megabyte, which is E5-S4's number and also exactly what Linux `nfsd`
+/// advertises as `rtmax`.
+///
+/// This was 512 KiB for a while, out of caution: the codec cannot reassemble a
+/// reply split across RPC record fragments — it errors *and* leaves the body
+/// unread, poisoning the socket. Measuring settled it. Linux `nfsd` answers a
+/// 1 MiB READ in a single fragment, so the caution was costing half the
+/// throughput for nothing. And a server that does fragment is now handled
+/// rather than guessed at: see [`MIN_TRANSFER`].
+const MAX_TRANSFER: u32 = 1024 * 1024;
+
+/// The floor the read size backs down to when a server fragments its replies.
+///
+/// Rather than pick a size low enough that no server could ever fragment —
+/// which is unknowable, and slow for every server that would not have — the
+/// client asks for a lot, and halves what it asks for when a reply comes back
+/// fragmented. Below this it gives up and reports the error, because something
+/// other than size is wrong.
+const MIN_TRANSFER: u32 = 32 * 1024;
 
 /// Everything needed to reach an export.
 #[derive(Debug, Clone)]
@@ -182,6 +196,10 @@ struct Pool {
     idle: Mutex<Vec<Conn>>,
     permits: Arc<Semaphore>,
     dial: Dial,
+    /// The largest READ this client will ask for, lowered if a server turns
+    /// out to fragment its replies. Shared, because every connection in the
+    /// pool talks to the same server and one of them finding out is enough.
+    read_chunk: std::sync::atomic::AtomicU32,
 }
 
 impl Pool {
@@ -196,9 +214,29 @@ impl Pool {
                 idle: Mutex::new(vec![first]),
                 permits: Arc::new(Semaphore::new(POOL_SIZE)),
                 dial,
+                read_chunk: std::sync::atomic::AtomicU32::new(MAX_TRANSFER),
             }),
             root,
         ))
+    }
+
+    /// The largest READ to ask for right now.
+    fn read_chunk(&self) -> u32 {
+        self.read_chunk.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lower it, after a server answered with a fragmented reply.
+    ///
+    /// Returns the new size, or `None` once there is no more room to back off.
+    fn halve_read_chunk(&self) -> Option<u32> {
+        let current = self.read_chunk();
+        let next = current / 2;
+        if next < MIN_TRANSFER {
+            return None;
+        }
+        self.read_chunk
+            .store(next, std::sync::atomic::Ordering::Relaxed);
+        Some(next)
     }
 
     /// Borrow a connection, opening one if the pool has none spare.
@@ -267,8 +305,6 @@ pub struct NfsBackend {
     pool: Arc<Pool>,
     root: nfs3::nfs_fh3,
     info: MountInfo,
-    /// The largest READ this server will answer, after our own cap.
-    read_chunk: u32,
     /// The largest WRITE it will accept.
     write_chunk: u32,
 }
@@ -294,14 +330,32 @@ impl NfsBackend {
         let (pool, root) = Pool::open(dial).await?;
 
         let (read_chunk, write_chunk, capacity) = limits(&pool, &root).await;
+        // The server's ceiling, which is the starting point; `read_one` lowers
+        // it further if this server turns out to fragment its replies.
+        pool.read_chunk
+            .store(read_chunk, std::sync::atomic::Ordering::Relaxed);
         let info = probe_mount(&pool, &root, target, capacity).await?;
         Ok(Self {
             pool,
             root,
             info,
-            read_chunk,
             write_chunk,
         })
+    }
+
+    /// The largest READ this client will currently ask for.
+    ///
+    /// Public because the negotiated size is a property worth asserting: it is
+    /// E5-S4's cap, and it moves at runtime if a server fragments its replies.
+    #[must_use]
+    pub fn read_chunk_for_test(&self) -> u32 {
+        self.pool.read_chunk()
+    }
+
+    /// The largest WRITE this client will send.
+    #[must_use]
+    pub const fn write_chunk_for_test(&self) -> u32 {
+        self.write_chunk
     }
 
     /// Walk from the export root to a path, one LOOKUP per component.
@@ -735,9 +789,12 @@ impl ShareBackend for NfsBackend {
         let handle = self.resolve_handle(path).await?;
         let mut chunks = Vec::new();
         let mut start = 0_u32;
+        // Read once: a concurrent read that lowers it mid-split would leave
+        // this loop building chunks against two different sizes.
+        let chunk = self.pool.read_chunk();
         while start < length {
-            chunks.push((start, self.read_chunk.min(length - start)));
-            start = start.saturating_add(self.read_chunk);
+            chunks.push((start, chunk.min(length - start)));
+            start = start.saturating_add(chunk);
         }
 
         // One connection answers one request at a time, so the concurrency
@@ -1058,17 +1115,37 @@ async fn read_one(
     let mut bytes = Vec::with_capacity(want as usize);
     while bytes.len() < want as usize {
         let filled = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        // Never more than the pool's current idea of a safe size, so a server
+        // that has already fragmented once is not asked to do it again.
+        let ask = (want - filled).min(pool.read_chunk());
         let mut lease = pool.acquire().await?;
         let reply = lease
             .get()
             .read(&nfs3::READ3args {
                 file: handle.clone(),
                 offset: offset + u64::from(filled),
-                count: want - filled,
+                count: ask,
             })
             .await;
         let ok = match reply {
             Ok(result) => unwrap_nfs(result, "read")?,
+            // The server split its reply across RPC record fragments and the
+            // codec cannot reassemble one. The socket has the rest of that
+            // reply still on it, so the connection is finished — but the read
+            // is not: ask for less and carry on from the same offset.
+            Err(nfs3_client::RpcError::FragmentedReply) => {
+                lease.discard();
+                match pool.halve_read_chunk() {
+                    Some(_) => continue,
+                    None => {
+                        return Err(EngineError::Io(
+                            "the server fragments even small replies, which this \
+                             client cannot reassemble"
+                                .to_owned(),
+                        ))
+                    }
+                }
+            }
             Err(error) => {
                 lease.discard();
                 return Err(map_rpc(&error));
