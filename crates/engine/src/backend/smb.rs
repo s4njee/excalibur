@@ -119,7 +119,7 @@ impl SmbBackend {
             .map_err(|error| map_error(&error))?;
         let client = Arc::new(client);
 
-        let info = probe_mount(&client, target).await;
+        let info = probe_mount(&client, target).await?;
         Ok(Self { client, info })
     }
 
@@ -148,7 +148,15 @@ fn share_path(path: &str) -> String {
 }
 
 /// Work out what this mount allows, once, at connect time.
-async fn probe_mount(client: &Arc<SmbClient>, target: &SmbTarget<'_>) -> MountInfo {
+///
+/// Returns `Err` rather than a read-only mount when the transport dies during
+/// the probe. That distinction is the whole of this function's difficulty: a
+/// server that refuses the write has told us something, and a connection that
+/// breaks has told us nothing. Reporting "nothing" as "read-only" is how a
+/// share silently loses its write affordances after a blip and keeps them off
+/// until the next reconnect — which was observed, not imagined: a reconnect
+/// landing on a server that was still coming back up produced exactly that.
+async fn probe_mount(client: &Arc<SmbClient>, target: &SmbTarget<'_>) -> Result<MountInfo> {
     let root = share_path("");
     let capacity = {
         let client = Arc::clone(client);
@@ -181,14 +189,22 @@ async fn probe_mount(client: &Arc<SmbClient>, target: &SmbTarget<'_>) -> MountIn
         // thing that answers "may this user write here" is writing.
         match probe_write(client).await {
             Ok(()) => (true, String::new()),
+            // The mount is gone, not read-only. Failing the connection sends
+            // the session manager back round its retry loop, which is the
+            // only thing that can actually resolve this.
+            Err(error) if matches!(error, EngineError::Disconnected(_)) => return Err(error),
             Err(error) => (
                 false,
-                format!("Read-only — {} on `{}`", error.to_lowercase(), target.share),
+                format!(
+                    "Read-only — {} on `{}`",
+                    error.to_string().to_lowercase(),
+                    target.share
+                ),
             ),
         }
     };
 
-    MountInfo {
+    Ok(MountInfo {
         status: MountStatus::Ready,
         writable,
         reason,
@@ -212,11 +228,11 @@ async fn probe_mount(client: &Arc<SmbClient>, target: &SmbTarget<'_>) -> MountIn
             symlinks: false,
             watch: false,
         },
-    }
+    })
 }
 
 /// Create a file and remove it, to learn whether this user may write here.
-async fn probe_write(client: &Arc<SmbClient>) -> std::result::Result<(), String> {
+async fn probe_write(client: &Arc<SmbClient>) -> Result<()> {
     let name = format!(
         "/.excalibur-write-probe-{}-{}",
         std::process::id(),
@@ -238,11 +254,11 @@ async fn probe_write(client: &Arc<SmbClient>) -> std::result::Result<(), String>
                 let _ = client.unlink(name.as_str());
                 Ok(())
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(map_error(&error)),
         }
     })
     .await
-    .unwrap_or_else(|error| Err(error.to_string()))
+    .unwrap_or_else(|error| Err(EngineError::Io(format!("smb probe task: {error}"))))
 }
 
 /// Distinguishes one write probe from another within this process.
@@ -490,6 +506,15 @@ fn system_time_ms(time: std::time::SystemTime) -> Option<i64> {
 /// library set, so the errno is the discriminator rather than the message.
 fn map_error(error: &pavao::SmbError) -> EngineError {
     let message = error.to_string();
+    // A bad descriptor is what a dropped session looks like from here. The
+    // library hands one back when the tree is gone — `STATUS_NETWORK_NAME_DELETED`
+    // and a plain socket drop both arrive this way, and a directory listing
+    // reports it where a `stat` on the same dead mount reports `ECONNREFUSED`.
+    // Calling it an I/O error would put it on a transfer row; it belongs in the
+    // banner, because the mount is what broke.
+    if matches!(error, pavao::SmbError::BadFileDescriptor) {
+        return EngineError::Disconnected(message);
+    }
     let pavao::SmbError::Io(io) = error else {
         return EngineError::Io(message);
     };
@@ -504,10 +529,25 @@ fn map_error(error: &pavao::SmbError) -> EngineError {
         | std::io::ErrorKind::NotConnected
         | std::io::ErrorKind::BrokenPipe
         | std::io::ErrorKind::TimedOut => EngineError::Disconnected(message),
+        // The rest by errno, through `libc` rather than by literal: the
+        // numbers differ between macOS and Linux, so a literal would be right
+        // on one and wrong on the other.
         _ => match io.raw_os_error() {
-            // EROFS. Not in `ErrorKind` on stable, and it is the one that
-            // means "the share itself is read-only" rather than "you may not".
-            Some(30) => EngineError::ReadOnly(message),
+            // The share itself is read-only, as opposed to this user not being
+            // allowed to write. `ErrorKind` has no variant for it.
+            Some(libc::EROFS) => EngineError::ReadOnly(message),
+            // `ENETRESET` is what `STATUS_NETWORK_NAME_DELETED` becomes — the
+            // server dropped the tree out from under a live mount. `std` does
+            // not categorise it, so without this it reads as a plain I/O
+            // error and lands on a transfer row instead of the banner.
+            Some(
+                libc::ENETRESET
+                | libc::ENETDOWN
+                | libc::ENETUNREACH
+                | libc::EHOSTDOWN
+                | libc::EHOSTUNREACH
+                | libc::ESHUTDOWN,
+            ) => EngineError::Disconnected(message),
             _ => EngineError::Io(message),
         },
     }

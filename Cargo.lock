@@ -1496,6 +1496,7 @@ dependencies = [
  "blake3",
  "dirs",
  "keyring",
+ "libc",
  "nfs3_client",
  "pavao",
  "russh",

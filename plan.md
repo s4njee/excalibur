@@ -158,7 +158,7 @@ reconstruct it from git history.
 | **M3** | E6-S3 — Mutations | **Done** 2026-09-03 |
 | **M3** | E4-S1 — SMB client decision | **Done** 2026-09-03 (`smb`; see ADR 0001) |
 | **M3** | E4-S2/S3/S4/S5 — SMB backend | **Done**, behind the off-by-default `smb` feature (GPLv3 when on) |
-| **M3** | E4-S6 — SMB reconnect | Not started |
+| **M3** | E4-S6 — SMB reconnect | **Done** 2026-09-04 (transfer resume defers to E13-S6) |
 | **M3** | E5-S1 — NFSv3 client | **Done** 2026-09-03 |
 | **M3** | E5-S2 — Identity and ports | **Done** 2026-09-03 |
 | **M3** | E5-S3 — Writability | **Done** 2026-09-03 |
@@ -905,10 +905,58 @@ subtle cryptographic bugs live, which is worse than not having SMB.
   recursive directory via client-side walk), `set_mtime`; `capacity` from
   `QUERY_FS_INFO FsFullSizeInformation`.
 
-#### E4-S6 — Reconnect
+#### E4-S6 — Reconnect — **Done**
+
+*2026-09-04.*
+
 **AC**
-- On `STATUS_NETWORK_NAME_DELETED`/socket drop, session manager reconnects and
-  re-tree-connects; `writable` re-read; open transfers resume at offset (E13-S6).
+- [x] On `STATUS_NETWORK_NAME_DELETED`/socket drop, the session manager
+  reconnects and re-tree-connects.
+- [x] `writable` is re-read from the new connection.
+- [ ] Open transfers resume at offset. **Deferred with E13-S6**, which owns
+  resume-across-reconnect for every backend; nothing here is SMB-specific.
+
+**Results**
+
+- **Almost none of this was new code, which is the point.** The reconnect loop
+  from E2-S2 is generic: it notices a mount through `ping`, tears the backend
+  down, rebuilds it through the connector — which for SMB *is* a fresh tree
+  connect, since there is no session to resume — and republishes whatever the
+  new connection reports. The work was making SMB's failures legible to it.
+- **`STATUS_NETWORK_NAME_DELETED` arrives as `ENETRESET`**, which `std` does not
+  categorise, so it was reading as a plain I/O error. That still reconnects —
+  `transient()` covers `Io` too — but it would have shown on a transfer row
+  instead of the banner, which is wrong: the mount is what broke. A dead tree
+  also surfaces as `BadFileDescriptor` from a listing while a `stat` on the same
+  mount reports `ECONNREFUSED`; all three now map to `Disconnected`. The errnos
+  come from `libc` rather than literals, because the numbers differ between
+  macOS and Linux.
+- **The test found a real bug, and it is the one worth recording.** Reconnecting
+  onto a server that was still coming back up succeeded — and then the
+  *write-probe* failed with `ENETRESET`, so `writable` came back **false**. The
+  mount reported itself Ready and read-only, and would have stayed read-only
+  until the next drop. Every write affordance in the window is gated on that one
+  value, so the user's share silently loses its Upload button after a blip.
+- **The fix is a distinction the probe was not making**: a server that refuses
+  the write has told us something; a connection that broke has told us nothing.
+  Reporting the second as the first is the bug. `probe_mount` now returns `Err`
+  on a disconnect rather than a read-only mount, which sends the session manager
+  back round its retry loop — the only thing that can actually resolve it.
+- **The same bug was in the NFS and SFTP backends**, written earlier the same
+  day with the same shape, and both are fixed the same way. Not strictly E4-S6,
+  but it is one defect in three places rather than three defects, and shipping
+  two of them knowingly would have been worse.
+- **The two reconnect tests are opt-in** (`EXCALIBUR_SMB_DISRUPTIVE=1`, and
+  `--test-threads=1`). They kill the server, and every other test in the file
+  would fail while it is down. A `Drop` guard restarts it and waits, so an
+  assertion failure cannot leave the container down and poison later runs.
+
+**Next steps**
+
+- Resume-at-offset across a reconnect is E13-S6's, for all four backends at once.
+- The generic loop rebuilds the whole backend on any `ping` failure. For SMB
+  that is right — there is no session to resume — but xsync will eventually want
+  a cheaper path, which is its own `Resume` story.
 
 ### E5 — NFS backend
 

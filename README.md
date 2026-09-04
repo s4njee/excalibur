@@ -101,6 +101,10 @@ fixtures need Docker:
 crates/engine/tests/fixtures/smb/up.sh   # Samba on port 445
 EXCALIBUR_SMB=127.0.0.1 cargo test -p excalibur-engine --features smb --test smb
 
+# The reconnect tests kill the server, so they are opt-in and serial:
+EXCALIBUR_SMB=127.0.0.1 EXCALIBUR_SMB_DISRUPTIVE=1 \
+  cargo test -p excalibur-engine --features smb --test smb -- --test-threads=1
+
 crates/engine/tests/fixtures/nfs/up.sh   # NFSv3
 EXCALIBUR_NFS=127.0.0.1:12049 cargo test -p excalibur-engine --test nfs
 ```

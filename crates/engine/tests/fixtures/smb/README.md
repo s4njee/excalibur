@@ -12,6 +12,20 @@ The tests are compiled only under the `smb` feature, which is the same feature
 that makes the binary GPL-3.0-or-later — see `crates/engine/src/backend/smb.rs`
 and `docs/decisions/0001-smb-client.md`.
 
+## The reconnect tests kill the server
+
+Two of them (E4-S6) `docker kill` the container to prove the mount notices and
+comes back. Every other test in the file would fail while it is down, and
+`cargo test` runs them in parallel, so they are opt-in and serial:
+
+```sh
+EXCALIBUR_SMB=127.0.0.1 EXCALIBUR_SMB_DISRUPTIVE=1 \
+  cargo test -p excalibur-engine --features smb --test smb -- --test-threads=1
+```
+
+A `Drop` guard restarts the container and waits for it, so a failed assertion
+cannot leave it down and break every later run.
+
 ## Port 445, and why there is no choice
 
 `libsmbclient` offers no way to set the port, so the server must be on the

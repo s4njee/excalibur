@@ -294,7 +294,7 @@ impl NfsBackend {
         let (pool, root) = Pool::open(dial).await?;
 
         let (read_chunk, write_chunk, capacity) = limits(&pool, &root).await;
-        let info = probe_mount(&pool, &root, target, capacity).await;
+        let info = probe_mount(&pool, &root, target, capacity).await?;
         Ok(Self {
             pool,
             root,
@@ -439,22 +439,29 @@ fn nonzero(value: u32) -> u32 {
 /// exported read-only, or this identity is squashed to `nobody`. E5-S3 wants
 /// the last one named, because "permission denied" sends a user hunting
 /// through their own account rather than the export line.
+/// Returns `Err` rather than a read-only mount when the transport dies during
+/// the probe: a server that refuses the write has told us something, a
+/// connection that broke has told us nothing, and reporting the second as the
+/// first silently strips a share's write affordances until the next reconnect.
 async fn probe_mount(
     pool: &Arc<Pool>,
     root: &nfs3::nfs_fh3,
     target: &NfsTarget<'_>,
     capacity: Option<Capacity>,
-) -> MountInfo {
+) -> Result<MountInfo> {
     let (writable, reason) = if target.read_only {
         (false, "Read-only — you asked for it".to_owned())
     } else {
         match probe_write(pool, root).await {
-            Ok(()) => (true, String::new()),
-            Err(status) => (false, explain(status, target)),
+            Ok(Ok(())) => (true, String::new()),
+            Ok(Err(status)) => (false, explain(status, target)),
+            // The mount is gone, not read-only. Failing the connection sends
+            // the session manager back round its retry loop.
+            Err(error) => return Err(error),
         }
     };
 
-    MountInfo {
+    Ok(MountInfo {
         status: MountStatus::Ready,
         writable,
         reason,
@@ -475,7 +482,7 @@ async fn probe_mount(
             symlinks: true,
             watch: false,
         },
-    }
+    })
 }
 
 /// Distinguishes one write probe from another within this process.
@@ -487,8 +494,13 @@ static PROBE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// usually decisive, but they are advisory — a server may grant them and still
 /// refuse the write. Only the create answers the question the Upload button
 /// will ask.
-async fn probe_write(pool: &Arc<Pool>, root: &nfs3::nfs_fh3) -> std::result::Result<(), nfsstat3> {
-    let mut lease = pool.acquire().await.map_err(|_| nfsstat3::NFS3ERR_IO)?;
+/// The outer `Result` is the transport, the inner one the server's verdict.
+/// They are not the same answer and must not be collapsed into one.
+async fn probe_write(
+    pool: &Arc<Pool>,
+    root: &nfs3::nfs_fh3,
+) -> Result<std::result::Result<(), nfsstat3>> {
+    let mut lease = pool.acquire().await?;
     let granted = lease
         .get()
         .access(&nfs3::ACCESS3args {
@@ -498,7 +510,7 @@ async fn probe_write(pool: &Arc<Pool>, root: &nfs3::nfs_fh3) -> std::result::Res
         .await;
     if let Ok(Nfs3Result::Ok(ok)) = granted {
         if ok.access & (ACCESS3_MODIFY | ACCESS3_EXTEND) == 0 {
-            return Err(nfsstat3::NFS3ERR_ACCES);
+            return Ok(Err(nfsstat3::NFS3ERR_ACCES));
         }
     }
 
@@ -538,12 +550,14 @@ async fn probe_write(pool: &Arc<Pool>, root: &nfs3::nfs_fh3) -> std::result::Res
                     },
                 })
                 .await;
-            Ok(())
+            Ok(Ok(()))
         }
-        Ok(Nfs3Result::Err((status, _))) => Err(status),
-        Err(_) => {
+        // The server answered, and the answer was no.
+        Ok(Nfs3Result::Err((status, _))) => Ok(Err(status)),
+        // The transport failed, so there is no verdict to report.
+        Err(error) => {
             lease.discard();
-            Err(nfsstat3::NFS3ERR_IO)
+            Err(map_rpc(&error))
         }
     }
 }

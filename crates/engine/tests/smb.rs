@@ -8,9 +8,15 @@
 //! with `tests/fixtures/smb/up.sh`.
 #![cfg(feature = "smb")]
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use excalibur_engine::backend::smb::{SmbBackend, SmbTarget};
-use excalibur_engine::backend::{EntryKind, ShareBackend, WriteMode};
-use excalibur_engine::EngineError;
+use excalibur_engine::backend::{
+    Access, ConnectionSpec, EntryKind, MountStatus, Protocol, ShareBackend, WriteMode,
+};
+use excalibur_engine::error::Surface;
+use excalibur_engine::{Connector, EngineError, HealthPolicy, SessionManager};
 
 fn host() -> Option<String> {
     std::env::var("EXCALIBUR_SMB").ok()
@@ -230,4 +236,219 @@ async fn the_mutations_work_against_a_real_server() {
     );
     backend.remove("box", true).await.expect("recursive remove");
     assert!(backend.stat("box").await.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// E4-S6 — reconnect
+// ---------------------------------------------------------------------------
+
+/// Builds real SMB backends, so the session manager reconnects for real.
+struct SmbConnector {
+    host: String,
+}
+
+#[async_trait::async_trait]
+impl Connector for SmbConnector {
+    async fn connect(
+        &self,
+        spec: &ConnectionSpec,
+    ) -> excalibur_engine::Result<Arc<dyn ShareBackend>> {
+        let backend = SmbBackend::connect(&SmbTarget {
+            host: &self.host,
+            port: None,
+            share: &spec.share,
+            username: "excalibur",
+            password: "excalibur1",
+            workgroup: "WORKGROUP",
+            read_only: spec.mount_preference == Access::Ro,
+        })
+        .await?;
+        Ok(Arc::new(backend))
+    }
+}
+
+fn spec() -> ConnectionSpec {
+    ConnectionSpec {
+        id: "smb-reconnect".to_owned(),
+        name: "public".to_owned(),
+        protocol: Protocol::Smb,
+        host: "127.0.0.1".to_owned(),
+        port: None,
+        share: "public".to_owned(),
+        username: Some("excalibur".to_owned()),
+        domain: Some("WORKGROUP".to_owned()),
+        mount_preference: Access::Rw,
+    }
+}
+
+fn docker(args: &[&str]) {
+    std::process::Command::new("docker")
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("docker {args:?}: {error}"));
+}
+
+/// These two tests kill the server, so they are opt-in.
+///
+/// Every other test in this file would fail while the server is down, and
+/// `cargo test` runs them in parallel by default. Rather than make the whole
+/// suite serial for the sake of two cases, they run only when asked:
+///
+/// ```sh
+/// EXCALIBUR_SMB=127.0.0.1 EXCALIBUR_SMB_DISRUPTIVE=1 \
+///   cargo test -p excalibur-engine --features smb --test smb -- --test-threads=1
+/// ```
+fn disruptive_allowed() -> bool {
+    std::env::var("EXCALIBUR_SMB_DISRUPTIVE").is_ok()
+}
+
+/// Restarts the server when it goes out of scope, panic or not.
+///
+/// Without this an assertion failure leaves the container down, and every
+/// later run of this file fails for a reason that has nothing to do with the
+/// code under test.
+struct ServerGuard;
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        docker(&["start", "excalibur-samba"]);
+        // Block until it answers. `Drop` cannot await, and returning early
+        // would hand the next test a server that is not up yet.
+        for _ in 0..120 {
+            if std::net::TcpStream::connect("127.0.0.1:445").is_ok() {
+                std::thread::sleep(Duration::from_secs(2));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
+
+/// Wait for a mount to reach a status, or give up.
+async fn wait_for(
+    sessions: &SessionManager,
+    id: &str,
+    want: MountStatus,
+    within: Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    while std::time::Instant::now() < deadline {
+        if sessions.status(id).await == Some(want) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_dropped_session_reconnects_and_re_reads_writable() {
+    // The whole of E4-S6 in one test: the server goes away, the mount notices,
+    // the manager reconnects — which for SMB means a fresh tree connect,
+    // because there is no session to resume — and `writable` is established
+    // again from the new connection rather than remembered from the old one.
+    if host().is_none() || !disruptive_allowed() {
+        eprintln!("skipping: needs EXCALIBUR_SMB and EXCALIBUR_SMB_DISRUPTIVE");
+        return;
+    }
+    let _guard = ServerGuard;
+    let sessions = SessionManager::with_policy(
+        Arc::new(SmbConnector {
+            host: "127.0.0.1".to_owned(),
+        }) as Arc<dyn Connector>,
+        HealthPolicy {
+            interval: Duration::from_millis(200),
+            backoff_initial: Duration::from_millis(200),
+            // Samba takes a few seconds to come back, so the retry has to be
+            // patient enough to still be trying when it does.
+            backoff_max: Duration::from_secs(2),
+        },
+    );
+
+    sessions.mount(spec()).await.expect("mount");
+    assert_eq!(
+        sessions.status("smb-reconnect").await,
+        Some(MountStatus::Ready)
+    );
+    assert!(
+        sessions
+            .mount_info("smb-reconnect")
+            .await
+            .expect("info")
+            .writable
+    );
+
+    // `kill`, not `stop`: an abrupt drop is the case the AC names, and a
+    // graceful shutdown would let the server close the session politely.
+    docker(&["kill", "excalibur-samba"]);
+    assert!(
+        wait_for(
+            &sessions,
+            "smb-reconnect",
+            MountStatus::Reconnecting,
+            Duration::from_secs(20)
+        )
+        .await,
+        "the mount never noticed the server had gone"
+    );
+
+    docker(&["start", "excalibur-samba"]);
+    assert!(
+        wait_for(
+            &sessions,
+            "smb-reconnect",
+            MountStatus::Ready,
+            Duration::from_secs(60)
+        )
+        .await,
+        "the mount never came back"
+    );
+
+    // Re-read, not remembered. The mount could have come back read-only — an
+    // export flipped while the app was running — and republishing the facts is
+    // the point of reconnecting rather than a side effect of it.
+    let info = sessions.mount_info("smb-reconnect").await.expect("info");
+    assert!(info.writable, "{}", info.reason);
+    assert_eq!(info.protocol_label, "SMB");
+
+    // And the mount is usable again, which a status alone does not prove.
+    let backend = sessions.backend("smb-reconnect").await.expect("backend");
+    assert_eq!(
+        backend.read_range("notes.txt", 0, 5).await.expect("read"),
+        b"hello"
+    );
+
+    sessions.unmount("smb-reconnect").await;
+}
+
+#[tokio::test]
+async fn a_dropped_session_reads_as_disconnected_not_as_an_io_error() {
+    // Where the failure is shown depends on how it is classified: a dropped
+    // mount belongs in the banner, an I/O failure on a transfer row. From
+    // libsmbclient a dead tree arrives as a bad file descriptor on a listing
+    // and as `ECONNREFUSED` on a stat, and both mean the mount is gone.
+    if !disruptive_allowed() {
+        return;
+    }
+    let Some(backend) = mount("public", false).await else {
+        return;
+    };
+    let _guard = ServerGuard;
+    docker(&["kill", "excalibur-samba"]);
+
+    let listing = backend.list_dir("").await.expect_err("the mount is gone");
+    let stat = backend
+        .stat("notes.txt")
+        .await
+        .expect_err("the mount is gone");
+
+    for error in [&listing, &stat] {
+        assert!(
+            matches!(error, EngineError::Disconnected(_)),
+            "a dropped mount must read as disconnected, got {error:?}"
+        );
+        // Both feed the reconnect loop, which stops on anything it cannot fix.
+        assert!(error.transient(), "{error:?}");
+        assert_eq!(error.surface(), Surface::Banner, "{error:?}");
+    }
 }

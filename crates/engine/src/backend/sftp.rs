@@ -235,7 +235,7 @@ impl SftpBackend {
         let sftp = Arc::new(sftp);
 
         let root = normalise_root(&sftp, target.root).await?;
-        let info = probe_mount(&sftp, &root, target.read_only, posix_rename).await;
+        let info = probe_mount(&sftp, &root, target.read_only, posix_rename).await?;
         Ok(Self {
             sftp,
             _session: session,
@@ -551,12 +551,16 @@ async fn normalise_root(sftp: &RawSftpSession, root: &str) -> Result<String> {
 ///
 /// Three terms, and the reason string names whichever one failed — a disabled
 /// Upload button with no explanation is the thing E9 exists to prevent.
+/// Returns `Err` rather than a read-only mount when the transport dies during
+/// the probe: a server that refuses the write has told us something, and a
+/// connection that broke has told us nothing. Reporting the second as the
+/// first silently strips a share's write affordances until the next reconnect.
 async fn probe_mount(
     sftp: &RawSftpSession,
     root: &str,
     read_only_requested: bool,
     posix_rename: bool,
-) -> MountInfo {
+) -> Result<MountInfo> {
     let statvfs = sftp.statvfs(root.to_owned()).await.ok();
     let capacity = statvfs.as_ref().map(|fs| Capacity {
         free: fs.blocks_avail.saturating_mul(fs.fragment_size),
@@ -575,14 +579,20 @@ async fn probe_mount(
         // it is the question that actually decides whether a write works.
         match probe_write(sftp, root).await {
             Ok(()) => (true, String::new()),
+            // The mount is gone, not read-only. Failing the connection sends
+            // the session manager back round its retry loop.
+            Err(error) if matches!(error, EngineError::Disconnected(_)) => return Err(error),
             Err(error) => (
                 false,
-                format!("Read-only — {} on `{root}`", error.to_lowercase()),
+                format!(
+                    "Read-only — {} on `{root}`",
+                    error.to_string().to_lowercase()
+                ),
             ),
         }
     };
 
-    MountInfo {
+    Ok(MountInfo {
         status: MountStatus::Ready,
         writable,
         reason,
@@ -604,11 +614,11 @@ async fn probe_mount(
             symlinks: true,
             watch: false,
         },
-    }
+    })
 }
 
 /// Create and remove a file, to learn whether this user may write here.
-async fn probe_write(sftp: &RawSftpSession, root: &str) -> std::result::Result<(), String> {
+async fn probe_write(sftp: &RawSftpSession, root: &str) -> Result<()> {
     let probe = format!("{}/.excalibur-write-probe", root.trim_end_matches('/'));
     match sftp
         .open(
@@ -625,7 +635,7 @@ async fn probe_write(sftp: &RawSftpSession, root: &str) -> std::result::Result<(
             let _ = sftp.remove(probe).await;
             Ok(())
         }
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(map_error(&error)),
     }
 }
 
