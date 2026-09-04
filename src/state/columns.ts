@@ -1,3 +1,4 @@
+import type { RowLayout } from "./types";
 // Column widths for the `1f` layout.
 //
 // Name is `1fr` and absorbs whatever the other three do not take, so only
@@ -77,3 +78,19 @@ export function sanitise(raw: unknown): Widths {
   };
   return { size: one("size"), modified: one("modified"), kind: one("kind") };
 }
+
+/**
+ * How tall one row is, per layout (E8-S3/S4).
+ *
+ * The single source: the virtual window does arithmetic on it, and the row
+ * itself is sized from it inline. Previously this was a constant in
+ * `Shell.tsx` that had to be kept in step with a `--height-row` token by hand
+ * — two places to change, and three layouts would have made it six.
+ *
+ * `1g` is two lines: 6px padding, a 12.5px name and a 10px metadata line.
+ */
+export const ROW_HEIGHTS: Record<RowLayout, number> = {
+  columns: 24,
+  "name-led": 42,
+  mono: 22,
+};

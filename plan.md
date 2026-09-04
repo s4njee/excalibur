@@ -167,7 +167,10 @@ reconstruct it from git history.
 | **M4** | E17-S1 — Stored state | **Done** 2026-09-04 |
 | **M4** | E16-S1 — Shortcut map | **Done** 2026-09-04 (bar row-layout keys) |
 | **M4** | E16-S2 — Accessibility | **Done** 2026-09-04 (one contrast exception) |
-| M4+ | E8-S3/S4/S9, E1-S4/S5, E19, E7-S1/S3, packaging | Not started |
+| **M4** | E8-S3 — Layout `1g` name-led | **Done** 2026-09-04 |
+| **M4** | E8-S4 — Layout `1h` mono grid | **Done** 2026-09-04 (no View menu to add to) |
+| **M4** | E8-S9 — Live refresh | **Partly done** (coalescer built; `watch` has no producer) |
+| M4+ | E1-S4/S5, E19, E7-S1/S3, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -1597,17 +1600,64 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 - Keyboard access to the header (tab to a column, Enter to sort) is not wired —
   **E16-S2**'s accessibility pass.
 
-#### E8-S3 — Layout `1g` name-led *(handoff §6 `1g`)*
-**AC**
-- `display: flex; gap: 9px; padding: 6px 10px`; glyphs 16×13 / 13×16; name 12.5px;
-  second line mono 10px `48.2 GB · mkv · 31 Aug 18:24`; soft selection `#e8effd` with
-  `#4a6ba8` metadata; names never truncate; no column resize.
+#### E8-S3 — Layout `1g` name-led — **Done**
 
-#### E8-S4 — Layout `1h` mono grid *(handoff §6 `1h`)*
+*2026-09-04.*
+
 **AC**
-- Card `#1a1b1d`, header `#26272a` mono 10px uppercase `.05em`, 22px rows, all mono
-  11px; leading `d` in `#4f86ff` / dim `-`; sizes `48.2G`/`2.0K`; dates `MM-DD HH:MM`.
-- `rowLayout` persisted; switch via View menu and a shortcut.
+- [x] `display: flex; gap: 9px; padding: 6px 10px`; glyphs 16×13 / 13×16; name
+  12.5px; second line mono 10px `48.2 GB · mkv · 31 Aug 18:24`; soft selection
+  with `#4a6ba8` metadata; names never truncate; no column resize.
+
+**Results**
+
+- **The soft selection needed dark-theme values, and the screenshot is how that
+  was found.** `#e8effd` and `#4a6ba8` are the handoff's, and they are
+  light-theme colours; defining them only in `:root` left the dark theme
+  inheriting a pale blue fill under near-white text, and the selected row's
+  **name vanished entirely** while its metadata line stayed. The name's colour
+  is now a token chosen against the fill rather than inherited from the list.
+- One `gridcell`, not four. The metadata line describes the name rather than
+  filling a column anyone can sort or align to, so the row is one cell and
+  `aria-colcount` is 1 — the a11y tree says what the layout actually is instead
+  of pretending every variant is the same grid.
+- `extensionOf` reads the terse token the second line wants (`mkv`) rather than
+  the Kind column's prose ("Matroska Video"), and treats a leading dot as a
+  hidden file rather than an extension — `.DS_Store` has none.
+
+#### E8-S4 — Layout `1h` mono grid — **Done**
+
+*2026-09-04.*
+
+**AC**
+- [x] Header mono 10px uppercase `.05em`, 22px rows, all mono 11px; leading `d`
+  in `#4f86ff` / dim `-`; sizes `48.2G`/`2.0K`; dates `MM-DD HH:MM`.
+- [x] `rowLayout` persisted (E17-S1) and switchable.
+- [~] "via View menu and a shortcut". **The shortcut and a preferences picker**;
+  there is no menu bar in this application to add a View menu to, and adding
+  one for three items would be a larger liberty than this. Recorded in
+  [`docs/design-gaps.md`](docs/design-gaps.md).
+
+**Results**
+
+- **⌘1/⌘2/⌘3 are bound now, and were deliberately not bound in E16-S1** — until
+  `1g` and `1h` existed, two of the three would have done nothing visible,
+  which is the promise E3-S1 refused to make. They come from the same table
+  that labels the toolbar, so the preferences picker reads "Columns (⌘1)"
+  without anyone writing that string twice.
+- **The mono cells set their own colour, so they had to hand it back when
+  selected.** `.rowSelected` colours the row, but an explicit `color` on the
+  size and date cells overrode it and left them muted grey on the accent fill —
+  the least readable thing on screen, on the one row the user had picked.
+- `formatSizeTerse` caps at five characters (`48.2G`, `999K`, `1.0T`), because
+  the layout aligns by character rather than by pixel and a six-character size
+  breaks the column. There is a test over the range rather than a few examples.
+
+**Next steps**
+
+- The row-layout tokens `--soft-selection-*` and `--mono-*` are additions to the
+  palette, not values the handoff specified for both themes. The dark ones are
+  reasoned rather than drawn.
 
 #### E8-S5 — Kind detection
 **AC**
@@ -1772,11 +1822,37 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 - Cmd/Ctrl held while banding adds to the existing selection; shift while banding is not
   handled and currently behaves like a plain band.
 
-#### E8-S9 — Live refresh
+#### E8-S9 — Live refresh — **Partly done**
+
+*2026-09-04.*
+
 **AC**
-- Cmd/Ctrl+R refreshes; when the backend offers `watch` (xsync v3) the listing
-  refreshes on events, coalesced to at most one relist per 250 ms; an overflow event
-  triggers a full relist.
+- [x] Cmd/Ctrl+R refreshes.
+- [x] Coalesced to at most one relist per 250 ms; an overflow triggers a full
+  relist. Built and tested as `state/refresh.ts`.
+- [ ] Refreshes on `watch` events. **Deferred**: no backend emits any.
+  `Caps.watch` reads xsync's `NOTIFY` support bit, which no server sets — the
+  same reason E7-S2 left it. Building the subscription with nothing to publish
+  to it would be dead code.
+
+**Results**
+
+- **The coalescer is useful now rather than only when `watch` lands.** Several
+  things already ask for a relist at once — a mutation finished, a transfer
+  landed, a reconnect republished the mount — and deleting twenty files gave
+  twenty reasons to relist and one result worth showing. Six call sites now go
+  through it.
+- **Leading *and* trailing.** A leading-only throttle drops the last change of a
+  burst and leaves the list wrong until something else happens to refresh it; a
+  trailing-only one delays a single change by a quarter second for nothing. A
+  test pins each half.
+- **⌘R stays uncoalesced.** The user asked for it now, and a quarter-second
+  pause would read as the key not having worked. Navigation is likewise
+  excluded: that is a *different* directory, and delaying it would leave the
+  previous one's rows on screen under the new path.
+- Overflow cancels a pending relist rather than queueing behind it — the point
+  of overflow is that the pending one's result is already known to be stale.
+- The clock is injected, so the tests drive time rather than wait for it.
 
 ### E9 — Permission gating
 

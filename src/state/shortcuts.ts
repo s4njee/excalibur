@@ -28,7 +28,10 @@ export type ShortcutId =
   | "edit"
   | "newFolder"
   | "preferences"
-  | "transfers";
+  | "transfers"
+  | "layoutColumns"
+  | "layoutNameLed"
+  | "layoutMono";
 
 export interface Shortcut {
   id: ShortcutId;
@@ -67,6 +70,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "newFolder", label: "New Folder", key: "n", mod: true, shift: true },
   { id: "preferences", label: "Preferences", key: ",", mod: true },
   { id: "transfers", label: "Transfers", key: "t", mod: true, shift: true },
+  // The three row treatments (E8-S3/S4). Bound only now that `1g` and `1h`
+  // exist — until they did, two of the three would have done nothing visible.
+  { id: "layoutColumns", label: "Columns", key: "1", mod: true },
+  { id: "layoutNameLed", label: "Name-led", key: "2", mod: true },
+  { id: "layoutMono", label: "Mono grid", key: "3", mod: true },
 ] as const;
 
 const BY_ID = new Map(SHORTCUTS.map((shortcut) => [shortcut.id, shortcut]));

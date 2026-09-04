@@ -52,6 +52,15 @@
   --glyph-file: #90959d;
 
   /* Selection */
+  /* `1g` uses a softer fill than `1f`: a full accent under a two-line row is
+     far heavier than under a 24px one (handoff §6). */
+  --soft-selection-bg: #e8effd;
+  --soft-selection-name: #1a1a1c;
+  --soft-selection-meta: #4a6ba8;
+  /* `1h`'s header sits on its own dark card whichever theme is active — the
+     variant is described as terminal-adjacent, not as a light surface. */
+  --mono-header-bg: #26272a;
+  --mono-type-dir: #4f86ff;
   --selection-bg: #2f6df6;
   --selection-text: #ffffff;
   --selection-soft-bg: #e8effd;
@@ -132,6 +141,13 @@
 
   --glyph-folder: #7d838c;
   --glyph-file: #8a8b90;
+
+  /* `1g`'s soft selection needs its own dark values. Inheriting the light
+     `#e8effd` left near-white text on a pale blue fill — the row's name
+     vanished entirely, which is how this was found. */
+  --soft-selection-bg: #1f3358;
+  --soft-selection-name: #e8e8ea;
+  --soft-selection-meta: #8fa8d8;
 
   --sidebar-active-bg: #1f3358;
   --sidebar-active-border: #4f86ff;

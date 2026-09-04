@@ -47,6 +47,58 @@ export function formatModifiedShort(ms: number | null): string {
 }
 
 /**
+ * The mono grid's size: `48.2G`, `2.0K`, `812`.
+ *
+ * One character of unit and no space, because `1h` aligns every column by
+ * character rather than by pixel — a `48.2 GB` in that grid would push the
+ * next column out of true.
+ */
+export function formatSizeTerse(bytes: number): string {
+  if (bytes < 1000) return `${bytes}`;
+  const units = ["K", "M", "G", "T", "P"];
+  let value = bytes / 1000;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  // Three significant figures at most, so the column stays five characters
+  // wide: `999K`, `48.2G`, `1.0T`.
+  const rendered = value >= 100 ? value.toFixed(0) : value.toFixed(1);
+  return `${rendered}${units[unit]}`;
+}
+
+/**
+ * The mono grid's date: `08-31 18:24`.
+ *
+ * No year, like `ls`, because every row is the same width and the year is the
+ * part that is usually the same.
+ */
+export function formatModifiedGrid(ms: number | null): string {
+  if (ms === null) return "—";
+  const date = new Date(ms);
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+  return `${month}-${day} ${hours}:${minutes}`;
+}
+
+/**
+ * The extension the name-led layout shows: `mkv`, or `—` when there is none.
+ *
+ * From the name rather than the engine's kind label, because the design's
+ * second line reads `48.2 GB · mkv · 31 Aug 18:24` — a terse token, not the
+ * prose "Matroska Video" the Kind column carries.
+ */
+export function extensionOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  // A leading dot is a hidden file, not an extension: `.DS_Store` has none.
+  if (dot <= 0 || dot === name.length - 1) return "—";
+  return name.slice(dot + 1).toLowerCase();
+}
+
+/**
  * The status bar's counts: `13 items · 1 selected · 48.2 GB`.
  *
  * The size is of the *selection*, not the directory — the design is explicit

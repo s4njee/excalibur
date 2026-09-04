@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  formatCapacity,
-  formatCounts,
-  formatDuration,
-  formatModified,
-  formatSize,
-  formatTransferStatus,
-} from "./format";
+import { extensionOf, formatCapacity, formatCounts, formatDuration, formatModified, formatModifiedGrid, formatSize, formatSizeTerse, formatTransferStatus } from "./format";
 
 describe("the strings the design specifies", () => {
   it("renders the mock's own figures", () => {
@@ -121,5 +114,49 @@ describe("formatDuration", () => {
 
   it("does not report a negative remaining time", () => {
     expect(formatDuration(-5)).toBe("0s");
+  });
+});
+
+describe("the mono grid's formats", () => {
+  it("abbreviates sizes to one unit character", () => {
+    // `1h` aligns by character, so `48.2 GB` would push the next column out.
+    expect(formatSizeTerse(48_200_000_000)).toBe("48.2G");
+    expect(formatSizeTerse(2_000)).toBe("2.0K");
+    expect(formatSizeTerse(812)).toBe("812");
+    expect(formatSizeTerse(0)).toBe("0");
+  });
+
+  it("keeps the abbreviated size to five characters at most", () => {
+    // The column's width is the point; a six-character size breaks the grid.
+    for (const bytes of [999, 1_000, 99_900, 999_000, 1_000_000, 48_200_000_000, 9_000_000_000_000]) {
+      expect(formatSizeTerse(bytes).length).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it("writes dates as MM-DD HH:MM, without the year", () => {
+    const when = new Date(2026, 7, 31, 18, 24).getTime();
+    expect(formatModifiedGrid(when)).toBe("08-31 18:24");
+    expect(formatModifiedGrid(null)).toBe("—");
+  });
+
+  it("pads single-digit months and days so columns line up", () => {
+    expect(formatModifiedGrid(new Date(2026, 0, 5, 9, 7).getTime())).toBe("01-05 09:07");
+  });
+});
+
+describe("extensionOf", () => {
+  it("takes the last extension, lowercased", () => {
+    expect(extensionOf("Arrival.2016.mkv")).toBe("mkv");
+    expect(extensionOf("COVER-ART.JPG")).toBe("jpg");
+  });
+
+  it("treats a leading dot as a hidden file, not an extension", () => {
+    // `.DS_Store` is not a Store file.
+    expect(extensionOf(".DS_Store")).toBe("—");
+  });
+
+  it("has no answer for a name without one", () => {
+    expect(extensionOf("Documentaries")).toBe("—");
+    expect(extensionOf("archive.")).toBe("—");
   });
 });

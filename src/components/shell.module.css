@@ -312,6 +312,172 @@
   display: contents;
 }
 
+/* ---------------------------------------------------------------------------
+   `1g` — name-led, two-line (E8-S3, handoff §6)
+
+   A flex row rather than a grid: there are no columns to align, which is the
+   whole point of the variant. Names never truncate.
+   --------------------------------------------------------------------------- */
+
+.rowNameLed {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline-row);
+}
+
+.nameLedCell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  width: 100%;
+}
+
+/* 16×13 for folders, 13×16 for files — the handoff's larger glyphs. The
+   orientation follows the shape each one is drawn as. */
+.glyphLarge {
+  width: 13px;
+  height: 16px;
+  flex: none;
+}
+
+.glyphLarge[data-category="folder"] {
+  width: 16px;
+  height: 13px;
+}
+
+.nameLedText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.nameLedName {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  /* The variant exists so long names stay readable; truncating here would
+     give up the only thing it buys over `1f`. */
+  white-space: normal;
+  word-break: break-word;
+}
+
+.nameLedMeta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+/* The soft selection the handoff specifies for this variant only: a full
+   accent fill under a two-line row is far heavier than under a 24px one. */
+.rowNameLed.rowSelected {
+  background: var(--soft-selection-bg);
+}
+
+/* Stated rather than inherited: the soft fill is a different surface from the
+   list, so the name's colour has to be chosen against it. */
+.rowNameLed.rowSelected .nameLedName {
+  color: var(--soft-selection-name);
+}
+
+.rowNameLed.rowSelected .nameLedMeta {
+  color: var(--soft-selection-meta);
+}
+
+/* ---------------------------------------------------------------------------
+   `1h` — mono grid, terminal-adjacent (E8-S4, handoff §6)
+
+   Aligned by character, so the columns are fixed and there is nothing to drag.
+   --------------------------------------------------------------------------- */
+
+.monoHeader,
+.rowMono {
+  display: grid;
+  grid-template-columns: 1fr 7ch 12ch;
+  column-gap: 16px;
+  align-items: center;
+  padding: 0 10px;
+}
+
+.monoHeader {
+  height: 22px;
+  flex: none;
+  background: var(--mono-header-bg);
+  border-bottom: 1px solid var(--hairline-chrome);
+}
+
+.monoHeaderCell {
+  min-width: 0;
+}
+
+.monoHeaderButton {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.monoHeaderCell:nth-child(2) .monoHeaderButton,
+.monoHeaderCell:nth-child(3) .monoHeaderButton {
+  justify-content: flex-end;
+}
+
+.rowMono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.monoNameCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.monoName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The leading type character, as `ls -l` opens each line. */
+.monoTypeDir {
+  color: var(--mono-type-dir);
+  flex: none;
+}
+
+.monoTypeFile {
+  color: var(--text-tertiary);
+  flex: none;
+}
+
+.monoSizeCell,
+.monoDateCell {
+  text-align: right;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* These set their own colour, so they override the row's selected colour and
+   have to hand it back — otherwise the size and date stay muted grey on the
+   accent fill and become the least readable thing on screen. */
+.rowMono.rowSelected .monoSizeCell,
+.rowMono.rowSelected .monoDateCell,
+.rowMono.rowSelected .monoTypeDir,
+.rowMono.rowSelected .monoTypeFile {
+  color: inherit;
+}
+
 .columnHeader {
   flex: none;
   height: var(--height-column-header);

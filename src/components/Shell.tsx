@@ -1,15 +1,32 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type Accessor } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  type Accessor,
+} from "solid-js";
 import styles from "./shell.module.css";
 
-/** Must match `--height-row`; the virtual window is arithmetic on it. */
-const ROW_HEIGHT = 24;
-import type { Bookmark, Category, Entry, MountInfo, SortColumn } from "../state/types";
+import type { Bookmark, Category, Entry, MountInfo, RowLayout, SortColumn } from "../state/types";
 import type { Sort } from "../state/sort";
-import { template, type Divider, type Widths } from "../state/columns";
+import { ROW_HEIGHTS, template, type Divider, type Widths } from "../state/columns";
 import { rowsInBand, visibleRange } from "../state/virtual";
 import { gate, type Affordance, type Context } from "../state/permissions";
 import * as shortcuts from "../state/shortcuts";
-import { formatCapacity, formatCounts, formatModified } from "../state/format";
+import {
+  extensionOf,
+  formatCapacity,
+  formatCounts,
+  formatModified,
+  formatModifiedGrid,
+  formatModifiedShort,
+  formatSizeTerse,
+} from "../state/format";
 import { formatSize } from "../state/format";
 
 /** `<share> — <host>`, centred, as the design specifies. */
@@ -407,7 +424,13 @@ export function FileList(props: {
   onRename?: (from: string, name: string) => void;
   /** A drag from the OS is over the list, and which folder row it is on. */
   dropTarget?: { folder: string | null } | null;
+  /** Which of the handoff's three row treatments to draw (E8-S3/S4). */
+  layout: RowLayout;
 }) {
+  // Every row in a layout is the same height, which is what lets the virtual
+  // window be arithmetic rather than measurement — but the height differs
+  // between layouts, so it is read per render rather than baked in.
+  const rowHeight = () => ROW_HEIGHTS[props.layout];
   // Scroll position and viewport height are the only two things the virtual
   // window needs; every row is the same height, so which rows to draw is
   // arithmetic rather than measurement.
@@ -416,7 +439,7 @@ export function FileList(props: {
   let rows!: HTMLDivElement;
 
   const range = createMemo(() =>
-    visibleRange(scrollTop(), viewport(), ROW_HEIGHT, props.entries.length),
+    visibleRange(scrollTop(), viewport(), rowHeight(), props.entries.length),
   );
   const window_ = createMemo(() => props.entries.slice(range().start, range().end));
 
@@ -446,8 +469,8 @@ export function FileList(props: {
   createEffect(() => {
     const index = props.reveal;
     if (index === null || index === undefined) return;
-    const top = index * ROW_HEIGHT;
-    const bottom = top + ROW_HEIGHT;
+    const top = index * rowHeight();
+    const bottom = top + rowHeight();
     if (top < rows.scrollTop) rows.scrollTop = top;
     else if (bottom > rows.scrollTop + rows.clientHeight) {
       rows.scrollTop = bottom - rows.clientHeight;
@@ -486,7 +509,7 @@ export function FileList(props: {
       if (!moved && Math.abs(current - origin) < 4) return;
       moved = true;
       setBandBox({ from: origin, to: current });
-      const { start, end } = rowsInBand(origin, current, ROW_HEIGHT, props.entries.length);
+      const { start, end } = rowsInBand(origin, current, rowHeight(), props.entries.length);
       props.onBand(start, end, additive);
     };
     const up = () => {
@@ -535,24 +558,68 @@ export function FileList(props: {
     </div>
   );
 
+  const layoutClass = () =>
+    props.layout === "name-led"
+      ? styles.rowNameLed
+      : props.layout === "mono"
+        ? styles.rowMono
+        : "";
+
+  /** How many columns this layout actually has, for the a11y tree. */
+  const columnCount = () => (props.layout === "columns" ? 4 : props.layout === "mono" ? 3 : 1);
+
+  /** One `1h` header cell. Sortable, but with nothing to drag. */
+  const monoHeader = (column: SortColumn, label: string) => (
+    <div
+      class={styles.monoHeaderCell}
+      role="columnheader"
+      aria-sort={
+        props.sort.column === column ? (props.sort.ascending ? "ascending" : "descending") : "none"
+      }
+    >
+      <button class={styles.monoHeaderButton} onClick={() => props.onSort(column)}>
+        {label}
+        <Show when={props.sort.column === column}>
+          <span class={styles.sortMark}>{props.sort.ascending ? "▲" : "▼"}</span>
+        </Show>
+      </button>
+    </div>
+  );
+
   return (
     // The grid wraps both the fixed header and the scrolling body. It uses
     // `display: contents` so the two keep the layout they had as siblings —
     // an ARIA grid whose header row lives outside it cannot associate a column
     // name with a cell, and the header has to stay put while the body scrolls.
-    <div class={styles.grid} role="grid" aria-rowcount={props.entries.length} aria-colcount={4}>
-      <div
-        class={styles.columnHeader}
-        role="row"
-        style={{ "grid-template-columns": template(props.widths) }}
-      >
-        {/* Each divider sits on the right edge of the cell before it, so the
-            name of the divider is the column it resizes into. */}
-        {header("name", "Name", "size")}
-        {header("size", "Size", "modified", true)}
-        {header("modified", "Modified", "kind")}
-        {header("kind", "Kind")}
-      </div>
+    <div
+      class={styles.grid}
+      role="grid"
+      aria-rowcount={props.entries.length}
+      aria-colcount={columnCount()}
+    >
+      <Show when={props.layout === "columns"}>
+        <div
+          class={styles.columnHeader}
+          role="row"
+          style={{ "grid-template-columns": template(props.widths) }}
+        >
+          {/* Each divider sits on the right edge of the cell before it, so the
+              name of the divider is the column it resizes into. */}
+          {header("name", "Name", "size")}
+          {header("size", "Size", "modified", true)}
+          {header("modified", "Modified", "kind")}
+          {header("kind", "Kind")}
+        </div>
+      </Show>
+      {/* `1h`'s own header: mono, uppercase, and no dividers, because the
+          layout aligns by character rather than by a width anyone can drag. */}
+      <Show when={props.layout === "mono"}>
+        <div class={styles.monoHeader} role="row">
+          {monoHeader("name", "NAME")}
+          {monoHeader("size", "SIZE")}
+          {monoHeader("modified", "MTIME")}
+        </div>
+      </Show>
       {/* Under the header, per the handoff, so it reads as the list loading
           rather than as the window doing something. */}
       <div class={styles.loadingTrack} aria-hidden={!props.slow}>
@@ -571,7 +638,7 @@ export function FileList(props: {
       >
         {/* One spacer of the full height carries the scrollbar, and the drawn
             rows are offset into it. */}
-        <div class={styles.virtualSpacer} style={{ height: `${props.entries.length * ROW_HEIGHT}px` }}>
+        <div class={styles.virtualSpacer} style={{ height: `${props.entries.length * rowHeight()}px` }}>
           <Show when={bandBox()}>
             {(box) => (
               <div
@@ -583,17 +650,23 @@ export function FileList(props: {
               />
             )}
           </Show>
-          <div style={{ transform: `translateY(${range().start * ROW_HEIGHT}px)` }}>
+          <div style={{ transform: `translateY(${range().start * rowHeight()}px)` }}>
             <For each={window_()}>
               {(entry, index) => {
                 const selected = () => props.selected().has(entry.path);
                 return (
                   <div
-                    class={`${styles.row} ${selected() ? styles.rowSelected : ""} ${
-                      entry.hidden ? styles.rowHidden : ""
-                    } ${props.dropTarget?.folder === entry.path ? styles.rowDropTarget : ""}`}
+                    class={`${styles.row} ${layoutClass()} ${
+                      selected() ? styles.rowSelected : ""
+                    } ${entry.hidden ? styles.rowHidden : ""} ${
+                      props.dropTarget?.folder === entry.path ? styles.rowDropTarget : ""
+                    }`}
                     data-path={entry.path}
-                    style={{ "grid-template-columns": template(props.widths) }}
+                    style={
+                      props.layout === "columns"
+                        ? { "grid-template-columns": template(props.widths), height: `${rowHeight()}px` }
+                        : { height: `${rowHeight()}px` }
+                    }
                     role="row"
                     aria-rowindex={range().start + index() + 1}
                     aria-selected={selected()}
@@ -605,38 +678,100 @@ export function FileList(props: {
                     }
                     onDblClick={() => props.onOpen(entry)}
                   >
-                    <div class={styles.nameCell} role="gridcell">
-                      {/* The glyph follows the engine's category, not the raw
-                          entry kind, so one table decides the label, the icon
-                          and Quick Look's viewer. E0-S3 swaps this element for
-                          a Lucide icon at the same seam. */}
-                      <div
-                        class={glyphClass(entry.kindCategory)}
-                        data-category={entry.kindCategory}
-                      />
-                      <Show
-                        when={props.renaming === entry.path}
-                        fallback={<span class={styles.name}>{entry.name}</span>}
-                      >
-                        <RenameField
-                          name={entry.name}
-                          onCommit={(name) => props.onRename?.(entry.path, name)}
-                        />
-                      </Show>
-                    </div>
-                    <div class={styles.sizeCell} role="gridcell">
-                      {entry.kind === "dir" ? (
-                        <span class={styles.sizeDash}>—</span>
-                      ) : (
-                        formatSize(entry.size)
-                      )}
-                    </div>
-                    <div class={styles.metaCell} role="gridcell">
-                      {formatModified(entry.modifiedMs)}
-                    </div>
-                    <div class={styles.metaCell} role="gridcell">
-                      {entry.kindLabel}
-                    </div>
+                    <Switch>
+                      {/* `1f` — the dense four-column grid. */}
+                      <Match when={props.layout === "columns"}>
+                        <div class={styles.nameCell} role="gridcell">
+                          {/* The glyph follows the engine's category, not the
+                              raw entry kind, so one table decides the label,
+                              the icon and Quick Look's viewer. E0-S3 swaps this
+                              element for a Lucide icon at the same seam. */}
+                          <div
+                            class={glyphClass(entry.kindCategory)}
+                            data-category={entry.kindCategory}
+                          />
+                          <Show
+                            when={props.renaming === entry.path}
+                            fallback={<span class={styles.name}>{entry.name}</span>}
+                          >
+                            <RenameField
+                              name={entry.name}
+                              onCommit={(name) => props.onRename?.(entry.path, name)}
+                            />
+                          </Show>
+                        </div>
+                        <div class={styles.sizeCell} role="gridcell">
+                          {entry.kind === "dir" ? (
+                            <span class={styles.sizeDash}>—</span>
+                          ) : (
+                            formatSize(entry.size)
+                          )}
+                        </div>
+                        <div class={styles.metaCell} role="gridcell">
+                          {formatModified(entry.modifiedMs)}
+                        </div>
+                        <div class={styles.metaCell} role="gridcell">
+                          {entry.kindLabel}
+                        </div>
+                      </Match>
+
+                      {/* `1g` — name-led and two-line. One cell, because the
+                          metadata line is a description of the name rather
+                          than a column anyone can sort or align to. */}
+                      <Match when={props.layout === "name-led"}>
+                        <div class={styles.nameLedCell} role="gridcell">
+                          <div
+                            class={`${glyphClass(entry.kindCategory)} ${styles.glyphLarge}`}
+                            data-category={entry.kindCategory}
+                          />
+                          <div class={styles.nameLedText}>
+                            <Show
+                              when={props.renaming === entry.path}
+                              fallback={<div class={styles.nameLedName}>{entry.name}</div>}
+                            >
+                              <RenameField
+                                name={entry.name}
+                                onCommit={(name) => props.onRename?.(entry.path, name)}
+                              />
+                            </Show>
+                            <div class={styles.nameLedMeta}>
+                              {entry.kind === "dir"
+                                ? `Folder · ${formatModifiedShort(entry.modifiedMs)}`
+                                : `${formatSize(entry.size)} · ${extensionOf(entry.name)} · ${formatModifiedShort(entry.modifiedMs)}`}
+                            </div>
+                          </div>
+                        </div>
+                      </Match>
+
+                      {/* `1h` — the mono grid. Kind collapses to a leading
+                          type character, the way `ls -l` opens each line. */}
+                      <Match when={props.layout === "mono"}>
+                        <div class={styles.monoNameCell} role="gridcell">
+                          <span
+                            class={
+                              entry.kind === "dir" ? styles.monoTypeDir : styles.monoTypeFile
+                            }
+                          >
+                            {entry.kind === "dir" ? "d" : "-"}
+                          </span>
+                          <Show
+                            when={props.renaming === entry.path}
+                            fallback={<span class={styles.monoName}>{entry.name}</span>}
+                          >
+                            <RenameField
+                              name={entry.name}
+                              onCommit={(name) => props.onRename?.(entry.path, name)}
+                            />
+                          </Show>
+                        </div>
+                        <div class={styles.monoSizeCell} role="gridcell">
+                          {entry.kind === "dir" ? "-" : formatSizeTerse(entry.size)}
+                        </div>
+                        <div class={styles.monoDateCell} role="gridcell">
+                          {formatModifiedGrid(entry.modifiedMs)}
+                        </div>
+                      </Match>
+                    </Switch>
                   </div>
                 );
               }}

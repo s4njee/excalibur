@@ -2,6 +2,8 @@ import { Show } from "solid-js";
 
 import styles from "./dialog.module.css";
 import { MAX_CONCURRENCY, type ConflictDefault, type Settings, type ThemeChoice } from "../state/settings";
+import * as shortcuts from "../state/shortcuts";
+import type { RowLayout } from "../state/types";
 
 /**
  * The preferences sheet (E17-S1).
@@ -11,12 +13,10 @@ import { MAX_CONCURRENCY, type ConflictDefault, type Settings, type ThemeChoice 
  * fields out in the same two-column grid. Recorded in `docs/design-gaps.md`;
  * when a real design arrives this is the thing it replaces.
  *
- * Only settings that *do* something today get a control. `rowLayout` is stored
- * and restored but has no picker, because `1g` and `1h` do not exist yet
- * (E8-S3/S4) — offering a choice between one real layout and two absent ones
- * would be the same promise E3-S1 refused to make. `sidebarCollapsed` is
- * stored too, and its control is the toolbar toggle where the user can see
- * what it does.
+ * Only settings that *do* something today get a control. `sidebarCollapsed` is
+ * stored but its control is the toolbar toggle, where the user can see what it
+ * does. `rowLayout` gained its picker with E8-S3/S4, once there were three real
+ * layouts to choose between.
  */
 export function Preferences(props: {
   settings: Settings;
@@ -50,6 +50,22 @@ export function Preferences(props: {
               <option value="system">Match system</option>
               <option value="light">Light</option>
               <option value="dark">Dark</option>
+            </select>
+
+            <label class={styles.label} for="layout">
+              Rows
+            </label>
+            <select
+              id="layout"
+              class={styles.input}
+              value={props.settings.rowLayout}
+              onChange={(event) =>
+                props.onChange("rowLayout", event.currentTarget.value as RowLayout)
+              }
+            >
+              <option value="columns">Columns ({shortcuts.hint("layoutColumns")})</option>
+              <option value="name-led">Name-led ({shortcuts.hint("layoutNameLed")})</option>
+              <option value="mono">Mono grid ({shortcuts.hint("layoutMono")})</option>
             </select>
 
             <span class={styles.label}>Files</span>

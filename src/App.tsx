@@ -48,6 +48,7 @@ import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/
 import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
 import * as shortcuts from "./state/shortcuts";
+import { coalesce } from "./state/refresh";
 import { Preferences } from "./components/Preferences";
 import {
   DEFAULTS as DEFAULT_SETTINGS,
@@ -82,6 +83,20 @@ export default function App(props: {
   const listing = listingState.listing;
 
   createEffect(() => listingState.load(path()));
+
+  /**
+   * Relist the current directory, at most once per 250 ms (E8-S9).
+   *
+   * Several things ask for this at once — a mutation finished, a transfer
+   * landed, a reconnect republished the mount. Deleting twenty files gives
+   * twenty reasons to relist and one result worth showing.
+   *
+   * Navigation deliberately does not go through here: that is a *different*
+   * directory, and delaying it would leave the previous one's rows on screen
+   * under the new path.
+   */
+  const refresh = coalesce(() => listingState.load(path()));
+  onCleanup(() => refresh.dispose());
 
   const goTo = (target: string) => setHistory((current) => nav.go(current, target));
   const ascend = () => goTo(nav.parent(path()));
@@ -342,6 +357,8 @@ export default function App(props: {
 
         case "refresh":
           event.preventDefault();
+          // Straight through, not coalesced: the user asked for it now, and a
+          // quarter-second pause would read as the key not having worked.
           listingState.load(path());
           return;
 
@@ -380,6 +397,16 @@ export default function App(props: {
         case "transfers":
           event.preventDefault();
           setShowTransfers(true);
+          return;
+
+        case "layoutColumns":
+        case "layoutNameLed":
+        case "layoutMono":
+          event.preventDefault();
+          update(
+            "rowLayout",
+            verb === "layoutColumns" ? "columns" : verb === "layoutNameLed" ? "name-led" : "mono",
+          );
           return;
 
         default:
@@ -480,7 +507,7 @@ export default function App(props: {
       if (event.status === "ready") {
         // Back, so the banner goes and the facts are re-read together.
         setProblem(null);
-        listingState.load(path());
+        refresh.request();
       } else if (event.status === "reconnecting" || event.status === "error") {
         setProblem(
           event.reason ?? "The connection to this share dropped. Reconnecting…",
@@ -528,7 +555,7 @@ export default function App(props: {
       // Re-list rather than patching the mount facts by hand: `writable`
       // travels with the listing, and taking it from anywhere else is how the
       // badge and the rows come to disagree.
-      listingState.load(path());
+      refresh.request();
     } catch (error) {
       // A connection that failed outright, as opposed to an upgrade the server
       // declined. E15-S1's banner is where this belongs; until then it is at
@@ -575,7 +602,7 @@ export default function App(props: {
         setProblem(engineFailure(error).message);
       }
     }
-    listingState.load(path());
+    refresh.request();
   };
 
   /**
@@ -642,7 +669,7 @@ export default function App(props: {
     const target = nav.join(path(), "untitled folder");
     try {
       await backend.mkdir(target);
-      listingState.load(path());
+      refresh.request();
       // Selected and in rename, so the next thing typed names it. Creating a
       // folder called "untitled folder" and leaving it that way is not what
       // anybody meant by the shortcut.
@@ -665,7 +692,7 @@ export default function App(props: {
       // be a destructive act the user did not ask for, and the server refuses
       // it atomically rather than this checking first.
       await backend.rename(from, to, false);
-      listingState.load(path());
+      refresh.request();
       setSelection(clickSelect(EMPTY_SELECTION, order(), to));
     } catch (error) {
       setProblem(engineFailure(error).message);
@@ -1128,6 +1155,7 @@ export default function App(props: {
             />
             <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
               <FileList
+                layout={settings().rowLayout}
                 entries={entries()}
                 selected={selected}
                 onSelect={select}

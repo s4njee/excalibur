@@ -190,3 +190,24 @@ get worse.
 weight or size rather than lightness, darken the surfaces tertiary sits on, or
 accept the ratio for text that is genuinely decorative. All three are choices
 about the design's intent, which is why the code did not make one.
+
+## No View menu for the row layouts *(E8-S4, 2026-09-04)*
+
+**The mock** presents `1f`, `1g` and `1h` as a pick between three treatments,
+and E8-S4's AC says the choice is made "via View menu and a shortcut".
+
+**The problem** is that this application has no menu bar. It is a single Tauri
+window with a custom titlebar, and the handoff draws no menus anywhere — so
+there is no View menu to add an item to, and adding a whole menu bar for three
+items would be a much larger liberty than the one taken here.
+
+**What was built** is the shortcut half (⌘1/⌘2/⌘3, from the same table that
+labels the toolbar) plus a picker in the preferences sheet, which is where a
+user who does not know the shortcut will look. The picker's options name their
+shortcuts — "Columns (⌘1)" — so the sheet teaches the keys rather than
+duplicating them.
+
+**A designer might instead** want a real menu bar, a segmented control in the
+toolbar beside the sidebar toggle, or a right-click menu on the column header.
+The state and the shortcuts are already in place for any of them; only the
+control would change.
