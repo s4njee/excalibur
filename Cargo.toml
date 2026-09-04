@@ -38,6 +38,10 @@ dirs = "6"
 # dependency where a surprise minor bump is a security-relevant change.
 russh = "=0.63.2"
 russh-sftp = "=2.4.0"
+# The NFSv3 wire codec (E5). Unlicense, zero `unsafe`, and two direct
+# dependencies. It is a codec rather than a client — no DNS, no pool, no retry,
+# no path layer — so the session layer above it is ours; see backend/nfs.rs.
+nfs3_client = { version = "0.9.0", default-features = false, features = ["tokio"] }
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }

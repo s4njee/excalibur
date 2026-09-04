@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
+use excalibur_engine::backend::nfs::{self, Identity, NfsBackend, NfsTarget};
 use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
@@ -116,12 +117,57 @@ impl Connector for ProtocolConnector {
                         .await?;
                 Ok(Arc::new(backend))
             }
-            // SMB and NFS arrive with E4 and E5. Until then a spec naming one
-            // is answered honestly rather than silently mocked.
-            other => Err(excalibur_engine::EngineError::Unsupported(format!(
-                "{other:?} is not implemented yet"
-            ))),
+            Protocol::Nfs => {
+                let target = NfsTarget {
+                    host: &spec.host,
+                    port: spec.port.unwrap_or(nfs::DEFAULT_NFS_PORT),
+                    // The portmapper names `mountd`'s port, which is right
+                    // except behind a port mapping, where it reports the port
+                    // inside. Nothing in the dialog offers that yet.
+                    mount_port: None,
+                    export: &spec.share,
+                    // NFS has no password. The dialog calls this field
+                    // "Identity" and it carries `uid:gid`, because AUTH_SYS is
+                    // an assertion rather than a login — there is no secret to
+                    // read from the keychain here, and nothing to read it with.
+                    identity: parse_identity(spec.username.as_deref()),
+                    read_only: spec.mount_preference == Access::Ro,
+                };
+                let backend = NfsBackend::connect(&target).await?;
+                Ok(Arc::new(backend))
+            }
+            // Named rather than caught by a wildcard, so that adding a
+            // protocol to the enum breaks this match instead of silently
+            // routing it here. Two hangs in the sibling xsync repo came from
+            // exactly that shape of arm.
+            //
+            // SMB is decided (ADR 0001) but blocked on a dependency conflict
+            // recorded under E4-S1. Answered honestly rather than mocked.
+            Protocol::Smb => Err(excalibur_engine::EngineError::Unsupported(
+                "SMB is not connected yet".to_owned(),
+            )),
         }
+    }
+}
+
+/// `uid`, `uid:gid`, or nothing at all.
+///
+/// Anything unparseable falls back to this user rather than to root: claiming
+/// uid 0 is how `root_squash` maps you to `nobody`, and the resulting refusal
+/// would have nothing to do with what the user typed.
+fn parse_identity(field: Option<&str>) -> Identity {
+    let Some(text) = field.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Identity::default();
+    };
+    let (uid, gid) = match text.split_once(':') {
+        Some((uid, gid)) => (uid.trim().parse().ok(), gid.trim().parse().ok()),
+        None => (text.parse().ok(), None),
+    };
+    let default = Identity::default();
+    Identity {
+        uid: uid.unwrap_or(default.uid),
+        gid: gid.unwrap_or(default.gid),
+        gids: Vec::new(),
     }
 }
 

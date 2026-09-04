@@ -158,7 +158,11 @@ reconstruct it from git history.
 | **M3** | E6-S3 — Mutations | **Done** 2026-09-03 |
 | **M3** | E4-S1 — SMB client decision | **Done** 2026-09-03 (`smb`; see ADR 0001) |
 | **M3** | E4-S2…S6 — SMB backend | **Blocked** — `smb`'s `sspi` pins conflict with `russh` |
-| M3+ | E5 NFS, polish, packaging | Not started |
+| **M3** | E5-S1 — NFSv3 client | **Done** 2026-09-03 |
+| **M3** | E5-S2 — Identity and ports | **Done** 2026-09-03 |
+| **M3** | E5-S3 — Writability | **Done** 2026-09-03 |
+| **M3** | E5-S4 — Range I/O and transfers | **Partly done** (512 KiB cap; throughput unmeasured) |
+| M3+ | E5-S5 NFSv4/Kerberos, polish, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -841,36 +845,172 @@ subtle cryptographic bugs live, which is worse than not having SMB.
 
 ### E5 — NFS backend
 
-#### E5-S1 — NFSv3 client
-**AC**
-- `nfs3_client` (pure Rust) wrapped behind `ShareBackend`: `MOUNT` → root fh,
-  `LOOKUP`, `GETATTR`, `READDIRPLUS`, `READ`, `WRITE`+`COMMIT`, `CREATE`, `MKDIR`,
-  `RENAME`, `REMOVE`/`RMDIR`, `SETATTR`, `FSSTAT`, `FSINFO`, `ACCESS`, `READLINK`.
-- Tested against Linux `nfsd` (Docker, privileged) and macOS `nfsd` with
-  `ro`/`rw`/`root_squash` variants.
+#### E5-S1 — NFSv3 client — **Done**
 
-#### E5-S2 — Identity and ports
-**AC**
-- AUTH_SYS with configurable uid/gid (default: current user's), shown in the dialog
-  as "Identity"; `insecure`-less exports produce a clear message ("server requires
-  a privileged client port; add `insecure` to the export") — never an attempt to
-  bind < 1024.
-- TCP only; UDP not offered.
+*2026-09-03.*
 
-#### E5-S3 — Writability *(handoff §Screens/2)*
 **AC**
-- `writable` = `ACCESS` on root grants `MODIFY|EXTEND` ∧ `FSINFO`/`PATHCONF` not
-  read-only ∧ a create-probe in a temp name succeeds when the user did not request
-  RO (probe is skipped and result is `false` if the user asked RO). `reason` mirrors
-  the mock: "Read-only — export mapped `ro,root_squash`" is produced when `ACCESS`
-  denies write and the uid maps to `nobody` (detected via `GETATTR` on a probe or
-  `uid == 65534`).
-- `protocol_label` = `NFSv3`; `security_label` = `sys`.
+- [x] `nfs3_client` wrapped behind `ShareBackend`: `MOUNT` → root fh, `LOOKUP`,
+  `GETATTR`, `READDIRPLUS`, `READ`, `WRITE`+`COMMIT`, `CREATE`, `MKDIR`, `RENAME`,
+  `REMOVE`/`RMDIR`, `FSSTAT`, `FSINFO`, `ACCESS`. *(`SETATTR` is used through
+  `CREATE`'s attributes; no caller needs a standalone `set_mtime` yet, and
+  `READLINK` waits for a listing that reports link targets — `Attrs.link_target`
+  is `None` here, as it is in the SFTP backend.)*
+- [x] Tested against Linux `nfsd` in Docker with `rw`/`ro`/`root_squash` variants,
+  plus a fourth the AC did not ask for. **Not** tested against macOS `nfsd`, which
+  needs root on this machine.
 
-#### E5-S4 — Range I/O and transfers
+**Results**
+
+- **The crate is a wire codec, not a client.** It maps RFC 1813 one-to-one and
+  stops: no DNS, no connection pool, no retry, no path resolution, no attribute
+  translation, no `READDIRPLUS` paging. All of that is `backend/nfs.rs`, which is
+  why it is the longest backend in the tree despite NFS being the simplest
+  protocol of the four.
+- **Every call takes `&mut self`, so one connection answers one request.** Not by
+  convention — the socket is borrowed mutably across send-then-receive and the
+  transaction id is a bare counter with no in-flight map. Concurrency therefore
+  cannot come from a connection; it comes from *four* of them, which is what the
+  pool is. The pool fills lazily, so a mount that only lists a directory opens one
+  socket.
+- **NFS has no paths.** Every operation takes a file handle, so `resolve_handle`
+  walks from the export root with one `LOOKUP` per component. That is a round trip
+  per component and the obvious place for a cache; correctness first, and the
+  comment says so.
+- **A path that climbs out of the export is refused, not followed.** `..` in a
+  path is either a bug or an attempt, and neither should be served.
+- **Two bugs the tests found, both mine.** The write probe named its file after
+  the process id, so two mounts of one export in the same process picked the same
+  name and the `GUARDED` create failed with `EXIST` for whichever lost — reporting
+  a perfectly writable export as read-only. And `READDIRPLUS` attributes are
+  optional; the first version fell back to `EntryKind::Other`, which turns a
+  folder into a file and stops double-click descending into it.
+- **The fixture was wrong twice before it was right, and both times it would have
+  tested the wrong thing.** Host bind mounts under Docker Desktop go through
+  virtiofs, which gives NFS no stable file handles (writes died mid-way with
+  `NFS3ERR_STALE`), omits attributes from `READDIRPLUS`, and does not enforce
+  ownership — so `root_squash` silently did nothing and that test passed for the
+  wrong reason. Moving the exports onto the container's own filesystem then failed
+  outright: overlayfs answers `exportfs` with "does not support NFS export". Only
+  Docker named volumes, which are real directories on the VM's ext4, can be
+  exported at all. All three failing tests passed the moment the storage was real.
+
+**Next steps**
+
+- `READLINK` and `SETATTR`-as-`set_mtime` are unimplemented because nothing calls
+  them yet. Both are a few lines when a caller appears.
+- A handle cache would remove the per-component `LOOKUP` on every operation. Worth
+  doing when a listing of a deep tree feels slow, not before.
+- macOS `nfsd` remains untested; it needs root to export anything.
+
+#### E5-S2 — Identity and ports — **Done**
+
+*2026-09-03.*
+
 **AC**
-- `rsize`/`wsize` negotiated from `FSINFO` (`rtmax`/`wtmax`, cap 1 MiB); ≥ 4 reads in
-  flight; `COMMIT` on close; throughput ≥ 80% of the kernel client on the same pair.
+- [x] AUTH_SYS with configurable uid/gid (default: the current user's), shown in
+  the dialog as "Identity".
+- [x] `insecure`-less exports produce a clear message naming the option — never an
+  attempt to bind below 1024.
+- [x] TCP only; UDP not offered.
+
+**Results**
+
+- **The crate binds a privileged source port by default**, walking 300..=1023.
+  That is what a kernel client does and exactly what this program must not: it is
+  not root, the bind fails with `EACCES`, and E5-S2 is explicit that the answer is
+  to explain the export option. It is turned off unconditionally, and the refusal
+  that follows is translated into a sentence naming `insecure` and stating that
+  this program will not bind a privileged port. The fixture's fourth export exists
+  to prove that path, and it was verified independently first: mounting it with
+  `noresvport` gets "access denied by server while mounting", with a privileged
+  port it succeeds.
+- **UDP is not reachable even by mistake.** The crate hard-codes `IPPROTO_TCP` in
+  its port resolution and has no datagram RPC path at all, so this is a property
+  of the dependency rather than a discipline this code has to keep.
+- **The dialog's field is called "Identity", not "Username".** AUTH_SYS sends a
+  uid the server chooses to believe; calling it a username would promise an
+  authentication step that never happens. It takes `uid` or `uid:gid` and defaults
+  to the current user's. Anything unparseable falls back to *this user* rather
+  than to root — claiming uid 0 is precisely how `root_squash` maps you to
+  `nobody`, and the refusal would then have nothing to do with what was typed.
+- The identity is kept in the bookmark but left out of the previewed URI:
+  `nfs://501@host/export` is not a form anyone writes, but a bookmark that dropped
+  the identity would silently reconnect as somebody else.
+- **DNS is resolved here.** The crate parses the host as an IP literal, so a name
+  produces "invalid IP address syntax" from somewhere unrelated-looking. IPv4 is
+  preferred because one of the crate's connector paths binds an IPv4 socket
+  unconditionally, and an IPv6 answer would fail later for reasons that read as
+  something else.
+
+#### E5-S3 — Writability — **Done**
+
+*2026-09-03.*
+
+**AC**
+- [x] `writable` = `ACCESS` grants `MODIFY|EXTEND` ∧ a create-probe succeeds, and
+  the probe is skipped with `false` when the user asked for read-only.
+  *(`FSINFO`/`PATHCONF` is not consulted: NFSv3 has no read-only bit there. The
+  export's own read-only-ness arrives as `NFS3ERR_ROFS` from the probe, which is
+  the same fact observed rather than inferred.)*
+- [x] `reason` names the failing term, including the squash case.
+- [x] `protocol_label` = `NFSv3`; `security_label` = `sys`.
+
+**Results**
+
+- **Three ways to be refused, and they are not interchangeable.** The user asked
+  for read-only; the export is exported `ro`; or this identity is squashed to
+  `nobody`. The last is the one worth naming — "permission denied" sends a user
+  hunting through their own account instead of the export line, so the reason says
+  the export maps root to `nobody` and suggests `no_root_squash`.
+- **`ACCESS` is consulted first but is not trusted alone.** It is one round trip
+  and usually decisive, but it is advisory: a server may grant the bits and still
+  refuse the write. Only the create-probe answers the question the Upload button
+  will ask, which is the same reasoning the SFTP and xsync backends use.
+- The probe is genuinely skipped when read-only was requested. Creating a file on
+  a share the user asked to mount read-only would be a surprising thing for a
+  mount to do, and a test asserts the reason says "you asked" rather than anything
+  about the server.
+- `security_label` is `sys` and nothing grander. AUTH_SYS is an assertion the
+  server chooses to believe; E5-S5 is where that label becomes `krb5p`.
+
+#### E5-S4 — Range I/O and transfers — **Partly done**
+
+*2026-09-03.*
+
+**AC**
+- [x] `rsize`/`wsize` negotiated from `FSINFO` (`rtmax`/`wtmax`).
+- [x] Four reads in flight.
+- [x] `COMMIT` on close.
+- [~] Cap 1 MiB. **Capped at 512 KiB instead**, deliberately: the codec cannot
+  reassemble a reply split across RPC record fragments — it errors *and* leaves
+  unread bytes on the socket, which poisons the connection for everything after
+  it. Servers send single fragments for replies of ordinary size, so staying well
+  under the cap is the cheap way not to find out. Raising it needs the upstream
+  fix, not a config change.
+- [ ] Throughput ≥ 80% of the kernel client on the same pair. **Not measured.**
+  The only server available is a container on this machine, where the number would
+  say more about the loopback and the VM's virtiofs than about either client.
+
+**Results**
+
+- **Writes are `UNSTABLE` followed by one `COMMIT`**, which is what makes NFS
+  writes worth doing — `FILE_SYNC` would make the server wait on its disk for
+  every chunk. The price is the write verifier: if it changes between replies the
+  server restarted and everything uncommitted is gone. That is checked and
+  reported as a failed transfer rather than silently losing the tail.
+- **A short write is re-sent, not assumed.** A server may accept less than was
+  offered, and treating the offered length as written would leave a hole.
+- Reads are split across the pool and reassembled by offset, stopping at the first
+  short chunk. A version that concatenated in completion order would pass every
+  test whose file fits in one chunk and corrupt every file that does not, so
+  there is a test with a file that does not.
+- `capacity` reports `abytes`, not `fbytes` — the root reserve is not space this
+  user can write into. The same choice as the xsync and SFTP backends.
+- `Caps::atomic_rename` is **true**: NFS `RENAME` is POSIX rename and the server
+  does it atomically. That is better than the SFTP backend manages without an
+  extension. The no-clobber case is the weak one — v3 has no flag for it, so it is
+  a separate `LOOKUP` first and therefore racy, which the code says out loud.
 
 #### E5-S5 — NFSv4 and Kerberos (later)
 **AC**

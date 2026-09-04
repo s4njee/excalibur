@@ -207,6 +207,17 @@
   font-size: 11px;
 }
 
+/* A note under one field, inside the two-column form grid.
+   `grid-column: 2` is load-bearing: without it this lands in the label column
+   and pushes every field below it one cell out of alignment. */
+.fieldHint {
+  grid-column: 2;
+  margin: -4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 /* Host key trust prompt (E3-S4).
    Inside the dialog rather than stacked on top of it: it is a step in the
    connection the user just asked for, not a separate interruption. */

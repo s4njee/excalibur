@@ -24,7 +24,7 @@ the same discipline, and this file follows its format.
 
 ## Audit, 2026-09-03
 
-639 packages in `Cargo.lock`. `cargo deny check` passes all four gates:
+642 packages in `Cargo.lock`. `cargo deny check` passes all four gates:
 advisories, bans, licences, sources. One vulnerability is accepted with a
 written argument rather than fixed; it is the first, and it is described below.
 
@@ -99,6 +99,7 @@ as a transitive dependency of these.
 | `dirs` | engine | E3-S4. Locates the per-platform data directory the `known_hosts` file lives in. |
 | `russh` | engine | E6-S1. The SSH transport for the SFTP backend, exact-pinned. Speaking SSH in-process rather than spawning `ssh` is what lets the host key be checked during the handshake that uses it, closing the scan-then-connect window the xsync backend still has. |
 | `russh-sftp` | engine | E6-S1. SFTP v3 over that transport, exact-pinned. The backend drives its `RawSftpSession`, not the friendlier `SftpSession`: the raw one carries the offset in each request, which is what makes pipelined reads and `posix-rename@openssh.com` reachable. |
+| `nfs3_client` | engine | E5-S1. The NFSv3 wire codec. `Unlicense`, zero `unsafe`, and exactly two direct dependencies — a genuinely small tree for a network protocol. It is a codec rather than a client: no DNS, no connection pool, no retry, no path layer, so the session layer above it is ours. |
 | `notify` | `src-tauri` | E12-S1. Watches an edit-in-place working copy so a save in the user's own editor reaches the share. The alternative is polling every open file. |
 | `blake3` | engine | E12-S1. The whole-file digest a staged xsync commit verifies. Already in the tree via `xsync-client`. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync and SFTP integration tests. |

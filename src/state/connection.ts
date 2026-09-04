@@ -56,8 +56,33 @@ export function usesPassword(protocol: Protocol): boolean {
   return protocol === "smb" || protocol === "sftp";
 }
 
-export function usesUsername(protocol: Protocol): boolean {
+/**
+ * What the identity field is called, which is not "Username" everywhere.
+ *
+ * NFS has no login. AUTH_SYS sends a uid and gid the server chooses to
+ * believe, so calling it a username would suggest a credential that does not
+ * exist and an authentication step that never happens.
+ */
+export function usernameLabel(protocol: Protocol): string {
+  return protocol === "nfs" ? "Identity" : "Username";
+}
+
+/**
+ * Whether the identity belongs in the previewed URI.
+ *
+ * NFS's does not: `nfs://501@host/export` is not a form anyone writes, and the
+ * uid is not a user component of the URI even though the form collects it in
+ * the same place.
+ */
+export function identityInUri(protocol: Protocol): boolean {
   return protocol !== "nfs";
+}
+
+/** The hint under the identity field, where one helps. */
+export function usernameHint(protocol: Protocol): string {
+  return protocol === "nfs"
+    ? "uid or uid:gid — defaults to yours. The server decides whether to believe it."
+    : "";
 }
 
 /** SMB is the only one of the four with a Windows domain. */
@@ -69,6 +94,8 @@ export function defaultPort(protocol: Protocol): number | null {
   switch (protocol) {
     case "sftp":
       return 22;
+    case "nfs":
+      return 2049;
     case "xsync":
       // xsync reaches the server by running `xs --server` over SSH; the daemon
       // with a port of its own is a later phase.
@@ -86,7 +113,7 @@ export function defaultPort(protocol: Protocol): number | null {
  */
 export function previewUri(draft: Draft): string {
   const scheme = draft.protocol;
-  const user = usesUsername(draft.protocol) && draft.username ? `${draft.username}@` : "";
+  const user = identityInUri(draft.protocol) && draft.username ? `${draft.username}@` : "";
   const host = draft.host || "…";
   const fallback = defaultPort(draft.protocol);
   const port = draft.port && Number(draft.port) !== fallback ? `:${draft.port}` : "";
@@ -114,7 +141,7 @@ export function isImplemented(protocol: Protocol): boolean {
   // SMB and NFS are answered with `Unsupported` by the engine (E4, E5).
   // Saying so in the dialog is better than letting a user fill in a form that
   // cannot connect.
-  return protocol === "xsync" || protocol === "sftp";
+  return protocol === "xsync" || protocol === "sftp" || protocol === "nfs";
 }
 
 /**
@@ -131,7 +158,9 @@ export function toSpec(draft: Draft, id: string): Record<string, unknown> {
     host: draft.host.trim(),
     port: draft.port ? Number(draft.port) : null,
     share: draft.share.trim(),
-    username: usesUsername(draft.protocol) && draft.username ? draft.username : null,
+    // Kept for every protocol, NFS included: its identity is what the mount
+    // will claim, so a bookmark that dropped it would reconnect as someone else.
+    username: draft.username ? draft.username : null,
     mountPreference: draft.mountPreference,
   };
 }

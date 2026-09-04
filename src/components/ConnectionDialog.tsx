@@ -8,8 +8,9 @@ import {
   shareLabel,
   toSpec,
   usesDomain,
+  usernameHint,
+  usernameLabel,
   usesPassword,
-  usesUsername,
   validate,
   type Draft,
 } from "../state/connection";
@@ -223,16 +224,21 @@ export function ConnectionDialog(props: {
               />
             </Show>
 
-            <Show when={usesUsername(draft().protocol)}>
-              <label class={styles.label} for="username">
-                Username
-              </label>
-              <input
-                id="username"
-                class={styles.input}
-                value={draft().username}
-                onInput={(event) => set("username", event.currentTarget.value)}
-              />
+            {/* Every protocol has this field; only its name differs. NFS
+                calls it Identity, because AUTH_SYS sends a uid the server
+                chooses to believe rather than a name it authenticates. */}
+            <label class={styles.label} for="username">
+              {usernameLabel(draft().protocol)}
+            </label>
+            <input
+              id="username"
+              class={styles.input}
+              value={draft().username}
+              placeholder={draft().protocol === "nfs" ? "uid:gid" : ""}
+              onInput={(event) => set("username", event.currentTarget.value)}
+            />
+            <Show when={usernameHint(draft().protocol)}>
+              <p class={styles.fieldHint}>{usernameHint(draft().protocol)}</p>
             </Show>
 
             <Show when={usesPassword(draft().protocol)}>
@@ -312,7 +318,7 @@ export function ConnectionDialog(props: {
           <Show when={!supported()}>
             <div class={styles.notice}>
               {PROTOCOLS.find((p) => p.id === draft().protocol)?.label} is not connected yet — the
-              engine answers it with “unsupported”. xsync and SFTP work today.
+              engine answers it with “unsupported”. xsync, SFTP and NFS work today.
             </div>
           </Show>
 

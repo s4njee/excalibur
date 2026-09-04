@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  defaultPort,
   emptyDraft,
   isImplemented,
   previewUri,
   shareLabel,
   toSpec,
+  usernameHint,
+  usernameLabel,
   usesPassword,
   validate,
   type Draft,
@@ -65,7 +68,35 @@ describe("the connection draft", () => {
     // Letting a user fill in a form that cannot connect is worse than telling
     // them up front.
     expect(isImplemented("xsync")).toBe(true);
+    expect(isImplemented("sftp")).toBe(true);
+    expect(isImplemented("nfs")).toBe(true);
+    // SMB is decided but not linkable — see plan.md's E4-S1 blocker.
     expect(isImplemented("smb")).toBe(false);
+  });
+
+  it("calls NFS's identity field an identity, not a username", () => {
+    // AUTH_SYS sends a uid the server chooses to believe. Calling it a
+    // username would promise an authentication step that never happens.
+    expect(usernameLabel("nfs")).toBe("Identity");
+    expect(usernameLabel("smb")).toBe("Username");
+    expect(usernameHint("nfs")).not.toBe("");
+    expect(usernameHint("sftp")).toBe("");
+  });
+
+  it("keeps NFS's identity out of the previewed URI but inside the bookmark", () => {
+    // `nfs://501@host/export` is not a form anyone writes, so the preview does
+    // not invent it — but the identity is what the mount will claim, so a
+    // bookmark that dropped it would reconnect as somebody else.
+    const nfs = draft({ protocol: "nfs", host: "vault", share: "/exports/rw", username: "501:20" });
+    expect(previewUri(nfs)).not.toContain("501");
+    expect(toSpec(nfs, "id-nfs").username).toBe("501:20");
+
+    const sftp = draft({ protocol: "sftp", host: "vault", username: "dorian" });
+    expect(previewUri(sftp)).toContain("dorian@");
+  });
+
+  it("defaults NFS to its own port", () => {
+    expect(defaultPort("nfs")).toBe(2049);
   });
 
   it("carries the mount preference as a preference, and no secret", () => {
