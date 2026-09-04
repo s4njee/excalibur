@@ -165,7 +165,7 @@ reconstruct it from git history.
 | **M3** | E5-S4 — Range I/O and transfers | **Done** 2026-09-04 (1 MiB cap; throughput measured, see benchmarks.md) |
 | **M3** | E5-S5 — NFSv4 and Kerberos | **Spike done** 2026-09-04; implementation deferred (ADR 0002) |
 | **M4** | E17-S1 — Stored state | **Done** 2026-09-04 |
-| **M4** | E16-S1 — Shortcut map | **Done** 2026-09-04 (bar row-layout keys) |
+| **M4** | E16-S1 — Shortcut map | **Done** 2026-09-04 (row-layout keys bound with E8-S4) |
 | **M4** | E16-S2 — Accessibility | **Done** 2026-09-04 (one contrast exception) |
 | **M4** | E8-S3 — Layout `1g` name-led | **Done** 2026-09-04 |
 | **M4** | E8-S4 — Layout `1h` mono grid | **Done** 2026-09-04 (no View menu to add to) |
@@ -2524,10 +2524,10 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
   Cmd/Ctrl+U upload; Cmd/Ctrl+E edit; Cmd/Ctrl+[ / ] back/forward;
   Cmd/Ctrl+Shift+N new folder; Cmd/Ctrl+, preferences; Cmd/Ctrl+Shift+T
   transfers.
-- [ ] Cmd/Ctrl+1/2/3 row layouts. **Not bound**: `1g` and `1h` do not exist
-  (E8-S3/S4), so two of the three would silently do nothing. `rowLayout`
-  already persists, so binding them is a three-line change once there is
-  something to switch to.
+- [x] Cmd/Ctrl+1/2/3 row layouts. *(Bound with E8-S4, once `1g` and `1h`
+  existed. Until they did, two of the three would silently have done nothing —
+  and it was indeed a three-line change when there was something to switch
+  to.)*
 - [x] Every toolbar verb's tooltip shows its shortcut; the map is one table
   that generates both the bindings and the tooltips.
 
