@@ -163,7 +163,8 @@ reconstruct it from git history.
 | **M3** | E5-S2 — Identity and ports | **Done** 2026-09-03 |
 | **M3** | E5-S3 — Writability | **Done** 2026-09-03 |
 | **M3** | E5-S4 — Range I/O and transfers | **Done** 2026-09-04 (1 MiB cap; throughput measured, see benchmarks.md) |
-| M3+ | E5-S5 NFSv4/Kerberos, polish, packaging | Not started |
+| **M3** | E5-S5 — NFSv4 and Kerberos | **Spike done** 2026-09-04; implementation deferred (ADR 0002) |
+| M3+ | Polish, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -1142,12 +1143,95 @@ subtle cryptographic bugs live, which is worse than not having SMB.
   extension. The no-clobber case is the weak one — v3 has no flag for it, so it is
   a separate `LOOKUP` first and therefore racy, which the code says out loud.
 
-#### E5-S5 — NFSv4 and Kerberos (later)
+#### E5-S5 — NFSv4 and Kerberos — **Spike done; implementation deferred**
+
+*2026-09-04. No code was written; the deliverable is a decision.*
+
 **AC**
-- Spike `libnfs` bindings vs. a minimal v4.0 client for `krb5/krb5i/krb5p` via
-  `gssapi`; the dialog's Version/Security controls light up when a backend passes the
-  E5-S1 matrix; `security_label` becomes `krb5p` etc. Not a v1 blocker; UI is honest
-  until then.
+- [x] Spike `libnfs` bindings vs. a minimal v4.0 client for `krb5/krb5i/krb5p`
+  via `gssapi`. Recorded in
+  [ADR 0002](docs/decisions/0002-nfsv4-and-kerberos.md).
+- [n/a] The dialog's Version/Security controls light up when a backend passes
+  the E5-S1 matrix. No backend passes, so nothing lights up.
+- [n/a] `security_label` becomes `krb5p` etc. It stays `sys`, which is what
+  AUTH_SYS is.
+- [x] UI is honest until then. **Already true and unchanged** — E3-S1
+  deliberately did not build those controls, on the grounds that "a disabled
+  control that will never enable in this build is a promise". This story
+  confirms that was the right call rather than changing anything.
+
+**Results**
+
+- **The decision is to defer, and to split the story if it is ever picked up.**
+  The AC bundles "NFSv4 and Kerberos"; the most useful thing the spike found is
+  that their costs are nothing alike. NFSv4 without Kerberos is tractable.
+  Kerberos is expensive and currently blocked upstream on macOS.
+- **The licence is the opposite of the SMB story, and that is worth carrying
+  forward.** libnfs's `lib/` and `include/` are LGPL-2.1-or-later, the generated
+  protocol files are BSD, and only `examples/` — off by default — is GPL. So
+  dynamic linking raises no absorption question at all. The thing that forced
+  SMB behind a feature flag simply does not apply here. *Static* linking would
+  engage LGPL §6, which is one more reason not to reach for the static build.
+- **Upstream libnfs already has exactly the API this story wants** — verified in
+  its header, not inferred: `nfs_set_security(enum rpc_sec)`, the URL argument
+  `sec=<krb5|krb5i|krb5p>`, and `nfs_set_version` with `NFS_V4`/`NFS_V4_2`. The
+  C library is healthy and actively developed. **The Rust bindings are the dead
+  link**: both crates were last published in 2022, `libnfs-sys` pins a bindgen
+  that cannot run against a modern libclang, and the safe wrapper is NFSv3-only
+  by construction with its URL parsers sitting inside a block comment.
+- **`nfs_set_security()` degrades silently, and every easy build triggers it.**
+  The setter returns `void` and its body is inside `#ifdef HAVE_LIBKRB5`, so on
+  a Kerberos-less build — which is Homebrew's bottle and every apt package — it
+  links, runs, reports nothing, and the mount proceeds over AUTH_SYS. Asking for
+  `krb5p` and silently getting no authentication is the same class of failure as
+  a `writable` that is inferred rather than observed. The URL form fails loudly
+  and is the capability probe to use instead.
+- **libnfs's Kerberos build is broken on macOS today.** Its `krb5-wrapper` pulls
+  MIT-style `gssapi/gssapi.h` and Apple's `GSS/GSS.h` into one translation unit,
+  which define incompatible `gss_ctx_id_t` types; past that the link fails
+  because configure hardcodes `-lgssapi_krb5` where macOS needs
+  `-framework GSS`. Both are small upstream bugs and should be sent upstream
+  rather than carried.
+- **Kerberos also only covers the NFS program in libnfs.** The handshake is
+  gated on `program == 100003`, so under NFSv3 the MOUNT and portmap traffic
+  still goes out as AUTH_SYS. NFSv4 has no MOUNT, so this disappears there —
+  a second, independent reason Kerberos belongs with v4 rather than bolted onto
+  the v3 backend that exists.
+- **Nothing in Rust implements RPCSEC_GSS.** Not partially, not behind a
+  feature. The crate this backend depends on is worse than merely lacking it:
+  `nfs3_types`' `auth_flavor` stops at `AUTH_DES = 3` and its codec rejects
+  unknown tags, so flavour 6 is neither constructible **nor parseable** — it
+  cannot read a reply from a Kerberos-secured server at all. Writing the layer
+  means somewhere between 1700 and 5000 lines plus tests — two independent
+  readings of the RFC disagreed by roughly twofold, which is itself a signal —
+  and the failure modes that matter are invisible against a cooperative server. If it is ever done, the
+  host should be `onc-rpc-client`/`nfs-v4`, whose public `RpcTransport` trait
+  lets it be written *outside* the crate, rather than forking `nfs3_client`,
+  whose credential is fixed at construction.
+- **No existing NFSv4 crate is adoptable either**, for specific reasons rather
+  than general unease — the most complete one encodes `OPENATTR` as 20 when it
+  is 19, with a unit test that blesses the wrong value. ADR 0002 lists the rest.
+
+**Next steps**
+
+- Do nothing until a user actually needs v4 or Kerberos. This is not a v1
+  blocker and every route currently begins by adopting a fork.
+- If **NFSv4** is needed: fork `libnfs-sys` onto current bindgen and write a thin
+  safe layer against libnfs 7.x, built statically through CMake. No Kerberos, no
+  system package, no licence consequence — though note RFC 7530 says a v4 client
+  MUST *support* Kerberos, so an AUTH_SYS-only v4 backend is a documented
+  deviation rather than a complete client. On the *pure-Rust*
+  route, target **4.1 rather than the AC's 4.0** — `SECINFO_NO_NAME` removes
+  4.0's filehandle-to-parent reverse map and its blind `PUTROOTFH` iteration,
+  and the session backchannel removes 4.0's requirement that the client also be
+  a GSS *acceptor* — with `nfs4` 0.1.0 as a types-only starting point. Via
+  libnfs the choice does not exist: it offers v3, v4.0 and (unreleased,
+  single-slot) v4.2, and no 4.1 at all.
+- If **Kerberos** is needed: fix libnfs's macOS header collision and GSS link
+  upstream first.
+- Revisit the pure-Rust route if any crate ships RPCSEC_GSS. `libgssapi` already
+  resolves `-framework GSS` on macOS, so that route's platform story is the
+  better one — it is only the missing protocol layer that makes it expensive.
 
 ### E6 — SFTP backend
 
