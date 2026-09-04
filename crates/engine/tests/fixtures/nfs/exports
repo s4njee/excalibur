@@ -1,0 +1,4 @@
+/exports/rw     *(rw,sync,no_subtree_check,no_root_squash,insecure,fsid=1)
+/exports/ro     *(ro,sync,no_subtree_check,no_root_squash,insecure,fsid=2)
+/exports/squash *(rw,sync,no_subtree_check,root_squash,insecure,fsid=3)
+/exports/secure *(rw,sync,no_subtree_check,no_root_squash,fsid=4)
