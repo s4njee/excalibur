@@ -54,7 +54,8 @@ function browserPrefs(): Prefs {
   };
 }
 
-function inTauri(): boolean {
+/** Whether the shell is around us, or this is the browser preview. */
+export function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 

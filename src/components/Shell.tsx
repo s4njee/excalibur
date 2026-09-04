@@ -155,6 +155,9 @@ export function Toolbar(props: {
   onEdit?: () => void;
   onDownload?: () => void;
   onUpload?: () => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+  onPreferences: () => void;
 }) {
   const context = (): Context => ({
     writable: props.mount.writable,
@@ -164,6 +167,26 @@ export function Toolbar(props: {
 
   return (
     <div class={styles.toolbar}>
+      {/* The design says the sidebar is collapsible and that the flag persists
+          (E1-S3), but not where the control lives. Here because the sidebar's
+          own footer is three equal buttons at a specified size, and a fourth
+          would break that. Recorded in docs/design-gaps.md. */}
+      <button
+        class={styles.iconButton}
+        aria-label={props.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        aria-pressed={!props.sidebarCollapsed}
+        onClick={props.onToggleSidebar}
+      >
+        ▚
+      </button>
+      <button
+        class={styles.iconButton}
+        aria-label="Preferences"
+        title="Preferences (⌘,)"
+        onClick={props.onPreferences}
+      >
+        ⚙
+      </button>
       <div class={styles.segmented}>
         <button
           class={styles.segment}
@@ -229,6 +252,8 @@ export function Toolbar(props: {
 export function Sidebar(props: {
   /** Double-click: mount the bookmark and open its root. */
   onOpen: (id: string) => void;
+  /** Hidden entirely rather than narrowed: there is no rail in the design. */
+  collapsed?: boolean;
   bookmarks: Bookmark[];
   activeId: string;
   selectedId: string | null;
@@ -245,7 +270,7 @@ export function Sidebar(props: {
     // deliberate no-op with an explanation rather than something that looks
     // broken. `onDragOver` without a `preventDefault` is what refuses it.
     <div
-      class={styles.sidebar}
+      class={`${styles.sidebar} ${props.collapsed ? styles.sidebarCollapsed : ""}`}
       title="Dropping onto a share is coming later"
       onDragOver={(event) => event.stopPropagation()}
     >

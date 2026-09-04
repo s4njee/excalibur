@@ -45,6 +45,25 @@
   border-bottom: 1px solid var(--hairline-chrome);
 }
 
+/* The sidebar toggle (E1-S3's collapsible bullet, persisted by E17-S1).
+   Sized and coloured as a lone `.segment` so it sits with the navigation
+   group without pretending to be part of it. */
+.iconButton {
+  width: 30px;
+  height: var(--height-control);
+  flex: none;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: #55555c;
+  font-size: 12px;
+  transition: color var(--transition-state);
+}
+
+.iconButton[aria-pressed="false"] {
+  color: var(--text-tertiary);
+}
+
 .segmented {
   display: flex;
   flex: none;
@@ -179,6 +198,13 @@
   width: var(--width-sidebar);
   background: var(--sidebar-bg);
   border-right: 1px solid var(--hairline-chrome);
+}
+
+/* Hidden outright rather than narrowed to a rail: the design has no rail, and
+   inventing one would be a bigger liberty than honouring "collapsible". It
+   never auto-hides — only this class, driven by the stored flag, removes it. */
+.sidebarCollapsed {
+  display: none;
 }
 
 .sectionHeader {

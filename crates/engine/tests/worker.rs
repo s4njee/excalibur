@@ -335,3 +335,91 @@ async fn several_transfers_all_finish() {
     }
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 6);
 }
+
+#[tokio::test]
+async fn the_concurrency_limit_can_be_raised_and_lowered() {
+    // E17-S1 makes this a preference, so it has to move after construction.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let queue = Arc::new(TransferQueue::open(directory.path().join("q.json")));
+    let worker = worker(&queue, Arc::new(Fixed(mock())));
+
+    assert_eq!(worker.concurrency(), 3);
+    worker.set_concurrency(6);
+    assert_eq!(worker.concurrency(), 6);
+    worker.set_concurrency(1);
+    assert_eq!(worker.concurrency(), 1);
+
+    // Zero would not be a setting, it would be a way to hang the queue.
+    worker.set_concurrency(0);
+    assert_eq!(worker.concurrency(), 1);
+}
+
+#[tokio::test]
+async fn lowering_the_limit_still_runs_everything() {
+    // The shrink cannot recall a permit already held, so it is owed and taken
+    // out of the ones that come back. The risk in that design is a transfer
+    // that never starts because the debt is never paid, which is what this
+    // guards: six files, a limit dropped mid-flight, all six must still land.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let queue = Arc::new(TransferQueue::open(directory.path().join("q.json")));
+    for index in 0..6 {
+        queue
+            .add(Transfer::new(
+                format!("shrink{index}"),
+                Direction::Down,
+                "Arrival.2016.srt",
+                directory
+                    .path()
+                    .join(format!("shrink{index}.txt"))
+                    .to_str()
+                    .expect("utf-8"),
+                0,
+            ))
+            .await;
+    }
+
+    let worker = worker(&queue, Arc::new(Fixed(mock())));
+    worker.set_concurrency(1);
+    worker.drain().await;
+
+    for transfer in queue.all().await {
+        assert_eq!(transfer.status, Status::Done, "{}", transfer.id);
+    }
+    // And the limit that was asked for is the one in force afterwards, rather
+    // than whatever the debt happened to settle at.
+    assert_eq!(worker.concurrency(), 1);
+}
+
+#[tokio::test]
+async fn raising_after_lowering_nets_out() {
+    // Lower then raise must return to where it started. Adding permits without
+    // cancelling the outstanding debt would leave the worker permanently below
+    // its own stated limit.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let queue = Arc::new(TransferQueue::open(directory.path().join("q.json")));
+    let worker = worker(&queue, Arc::new(Fixed(mock())));
+
+    worker.set_concurrency(1);
+    worker.set_concurrency(3);
+    assert_eq!(worker.concurrency(), 3);
+
+    for index in 0..4 {
+        queue
+            .add(Transfer::new(
+                format!("net{index}"),
+                Direction::Down,
+                "Arrival.2016.srt",
+                directory
+                    .path()
+                    .join(format!("net{index}.txt"))
+                    .to_str()
+                    .expect("utf-8"),
+                0,
+            ))
+            .await;
+    }
+    worker.drain().await;
+    for transfer in queue.all().await {
+        assert_eq!(transfer.status, Status::Done, "{}", transfer.id);
+    }
+}

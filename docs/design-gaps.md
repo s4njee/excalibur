@@ -117,3 +117,38 @@ can currently make. The panel is the same 560px and the same content either way.
 can be left open beside the browser while working — that changes the priority
 and is worth saying. Same question as Quick Look's panel, and probably the same
 answer for both.
+
+## The preferences sheet, and where the sidebar toggle lives *(E17-S1, 2026-09-04)*
+
+**The mock** has no preferences screen at all. The handoff's §"Not yet designed"
+list names preferences explicitly, and E17-S1's own AC says as much: "a minimal
+native-feeling sheet with these fields only".
+
+**The problem** is that nine settings now persist and a user has no way to
+change most of them. Shipping the persistence without a way in would mean the
+values could only be edited by hand in `prefs.json`.
+
+**What was built** is a sheet borrowing the New Connection dialog's chrome —
+same scrim, same 460px card, same titlebar, same two-column form grid — with
+one control per setting that does something today. It is deliberately plain
+rather than an invention: reusing an approved container seemed a smaller
+liberty than designing a new one.
+
+Two settings persist without a control in the sheet, on purpose:
+
+- **`rowLayout`** has no picker, because `1g` and `1h` do not exist yet
+  (E8-S3/S4). A control offering one real layout and two absent ones would be
+  the promise E3-S1 refused to make.
+- **`sidebarCollapsed`** is toggled from the toolbar instead, where the user
+  can see what it does.
+
+**The sidebar toggle's placement is the second gap.** E1-S3's AC says the
+sidebar is "collapsible; the collapsed flag persists", but not where the control
+is. The sidebar's own footer is specified as three equal 28px buttons, so a
+fourth would break a pixel-level spec. It sits at the head of the toolbar
+instead, beside the preferences gear, as a `⚙`-sized icon button.
+
+**A designer might instead** want a proper preferences window rather than a
+sheet, the standard macOS toolbar segmented control for the sidebar, or the
+toggle in the titlebar. All three are cheap to move to; nothing here depends on
+the current placement.

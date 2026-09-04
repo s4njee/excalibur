@@ -46,6 +46,13 @@ export interface Backend {
    */
   supportedProtocols(): Promise<Protocol[]>;
   /**
+   * How many transfers may run at once.
+   *
+   * Told rather than read: the queue and its worker live in the engine, so the
+   * preference has to travel to where the semaphore is.
+   */
+  setTransferConcurrency(limit: number): Promise<void>;
+  /**
    * Save a credential for a bookmark.
    *
    * There is deliberately no counterpart that reads one back. The window
@@ -340,6 +347,8 @@ export function fixtureBackend(
     async supportedProtocols(): Promise<Protocol[]> {
       return ["xsync", "sftp", "nfs", "smb"];
     },
+    // The preview's transfers are simulated, so there is no worker to tell.
+    async setTransferConcurrency(): Promise<void> {},
     async saveSecret(): Promise<void> {
       throw new Error("no keychain in the browser preview");
     },
@@ -410,6 +419,10 @@ function tauriBackend(): Backend {
     async supportedProtocols(): Promise<Protocol[]> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<Protocol[]>("supported_protocols");
+    },
+    async setTransferConcurrency(limit: number): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("set_transfer_concurrency", { limit });
     },
     async saveSecret(account: string, secret: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");

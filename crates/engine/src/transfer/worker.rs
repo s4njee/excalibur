@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -65,6 +65,16 @@ pub struct Worker {
     /// Set when a transfer should stop; read between chunks.
     stopping: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     limit: Arc<Semaphore>,
+    /// What the limit is *meant* to be, which the semaphore may not have
+    /// reached yet — see [`Worker::set_concurrency`].
+    nominal: Arc<AtomicUsize>,
+    /// Permits still to be taken away once running transfers give them back.
+    ///
+    /// Lowering the limit cannot cancel work already in flight, so a shrink is
+    /// applied to whatever is free now and the rest is owed. Paying it down at
+    /// acquisition time is what makes the new limit real without interrupting
+    /// a transfer the user did not ask to stop.
+    debt: Arc<AtomicUsize>,
 }
 
 impl Worker {
@@ -85,7 +95,54 @@ impl Worker {
             backends,
             stopping: Arc::new(RwLock::new(HashMap::new())),
             limit: Arc::new(Semaphore::new(concurrency)),
+            nominal: Arc::new(AtomicUsize::new(concurrency)),
+            debt: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Change how many transfers may run at once (E17-S1).
+    ///
+    /// Raising takes effect immediately. Lowering takes effect as running
+    /// transfers finish: a permit already held cannot be recalled without
+    /// stopping work the user did not ask to stop, so the shortfall is
+    /// remembered and taken out of the permits that come back.
+    ///
+    /// A limit of zero would mean nothing ever runs, which is a way to hang
+    /// the queue rather than a setting, so it is clamped to one.
+    pub fn set_concurrency(&self, limit: usize) {
+        let limit = limit.max(1);
+        let previous = self.nominal.swap(limit, Ordering::SeqCst);
+        if limit > previous {
+            // Cancel any outstanding shrink first, so lowering and raising
+            // again nets out rather than compounding.
+            let owed = self.debt.swap(0, Ordering::SeqCst);
+            let granted = limit - previous;
+            if granted > owed {
+                self.limit.add_permits(granted - owed);
+            } else {
+                self.debt.store(owed - granted, Ordering::SeqCst);
+            }
+        } else if limit < previous {
+            let wanted = previous - limit;
+            let forgotten = self.limit.forget_permits(wanted);
+            self.debt.fetch_add(wanted - forgotten, Ordering::SeqCst);
+        }
+    }
+
+    /// The limit as it stands, for tests and for the window to read back.
+    #[must_use]
+    pub fn concurrency(&self) -> usize {
+        self.nominal.load(Ordering::SeqCst)
+    }
+
+    /// Take back permits owed by an earlier shrink, as far as possible now.
+    fn settle_debt(&self) {
+        let owed = self.debt.swap(0, Ordering::SeqCst);
+        if owed == 0 {
+            return;
+        }
+        let forgotten = self.limit.forget_permits(owed);
+        self.debt.fetch_add(owed - forgotten, Ordering::SeqCst);
     }
 
     /// Ask a running transfer to stop, and say whether it should keep its
@@ -119,6 +176,10 @@ impl Worker {
     pub async fn drain(self: &Arc<Self>) {
         let mut running = Vec::new();
         while let Some(transfer) = self.queue.next_queued().await {
+            // Before taking a permit, give back any the limit no longer
+            // allows. Done here rather than on release because a permit is
+            // returned by dropping it, which this type does not observe.
+            self.settle_debt();
             let Ok(permit) = Arc::clone(&self.limit).acquire_owned().await else {
                 return;
             };

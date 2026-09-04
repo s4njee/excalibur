@@ -164,7 +164,8 @@ reconstruct it from git history.
 | **M3** | E5-S3 — Writability | **Done** 2026-09-03 |
 | **M3** | E5-S4 — Range I/O and transfers | **Done** 2026-09-04 (1 MiB cap; throughput measured, see benchmarks.md) |
 | **M3** | E5-S5 — NFSv4 and Kerberos | **Spike done** 2026-09-04; implementation deferred (ADR 0002) |
-| M3+ | Polish, packaging | Not started |
+| **M4** | E17-S1 — Stored state | **Done** 2026-09-04 |
+| M4+ | E8-S3/S4/S9, E16, E1-S4/S5, E19, E7-S1/S3, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -243,8 +244,8 @@ is the same component tree with `mount.writable` false.
   story.
 - [ ] A `/tokens` dev route rendering every token as a swatch. **Not yet.**
 - [x] `data-theme` on `<html>` switches the palette.
-- [ ] `system` following `prefers-color-scheme`. **Not yet:** there is no preferences
-  store to hold the choice until E17-S1.
+- [x] `system` following `prefers-color-scheme`. *(E17-S1: it is the default
+  choice, followed live rather than read once at launch.)*
 
 **Results**
 
@@ -350,7 +351,9 @@ is the same component tree with `mount.writable` false.
   with subtitle "unreachable".
 - Footer `margin-top: auto`, 1px top border, three equal 28px buttons `+`, `−`, `Edit`.
 - Single-click selects; double-click mounts (if needed) and navigates to the root.
-- Collapsible; the collapsed flag persists; it never auto-hides *(handoff §Responsive)*.
+- [x] Collapsible; the collapsed flag persists; it never auto-hides *(handoff
+  §Responsive)*. *(E17-S1. Hidden outright rather than narrowed to a rail — the
+  design has no rail. The toggle's placement is a design gap.)*
 - Dark theme uses the dark sidebar tokens (`#26272a`, active `#1f3358`/`#4f86ff`,
   subtitle `#8fa8d8`).
 
@@ -1584,7 +1587,8 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 - The sort *model* here covers **E8-S6**'s first bullet; the filter half followed
   immediately after. **Done**, below.
-- `foldersFirst` is a signal with no UI, default on. **E17** gives it a control.
+- `foldersFirst` is a signal with no UI, default on. **Done** — E17-S1's sheet
+  gives it a checkbox, and the value persists.
 - `ROW_HEIGHT` is a constant in `Shell.tsx` that must match `--height-row`. Two places
   to keep in step; reading it from the token at mount would remove that, and is worth
   doing when `1g`/`1h` (**E8-S3/S4**) bring their own row heights.
@@ -1649,7 +1653,7 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 - Cmd/Ctrl+F should focus the filter (**E16-S1**); not wired. Escape's ordering landed
   with **E8-S8**.
-- `foldersFirst` is a signal with no control, default on. **E17** gives it one.
+- `foldersFirst` is a signal with no control, default on. **Done** in E17-S1.
 - The filter matches names only. Matching the Kind column too would be cheap now that
   every entry carries one, but it is not in the AC and would surprise anyone typing an
   extension expecting a name match.
@@ -2191,7 +2195,9 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 - [x] Downloads write `<name>.part`, fsync, atomic rename.
 - [x] Uploads use the backend's path; `Caps.atomic_rename` is true for xsync since
   `xsyncv3.md` E5-S4.
-- [ ] Concurrency as a *preference*. Fixed at 3 until **E17** has somewhere to put it.
+- [x] Concurrency as a *preference*. *(E17-S1. Raising applies at once;
+  lowering applies as running transfers finish, because a permit already held
+  cannot be recalled without stopping work nobody asked to stop.)*
 
 **Results**
 
@@ -2448,13 +2454,60 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 ### E17 — Preferences and persistence
 
-#### E17-S1 — Stored state
+#### E17-S1 — Stored state — **Done**
+
+*2026-09-04.*
+
 **AC**
-- `theme`, `rowLayout`, `sidebarCollapsed`, `showHidden`, `foldersFirst`,
-  `downloadFolder`, `transferConcurrency`, `conflictDefault`, column widths — persisted
-  and restored on launch.
-- Preferences UI is "not yet designed": a minimal native-feeling sheet with these
-  fields only, flagged in `docs/design-gaps.md`.
+- [x] `theme`, `rowLayout`, `sidebarCollapsed`, `showHidden`, `foldersFirst`,
+  `downloadFolder`, `transferConcurrency`, `conflictDefault`, column widths —
+  persisted and restored on launch.
+- [x] Preferences UI is "not yet designed": a minimal native-feeling sheet with
+  these fields only, flagged in
+  [`docs/design-gaps.md`](docs/design-gaps.md).
+
+**Results**
+
+- **`prefs.ts` stayed the storage seam; `settings.ts` is the schema.** The split
+  is deliberate: the store is shared with bookmarks and knows only keys and
+  JSON, while the schema knows what a preference *is* — its type, its default,
+  and what to do when the stored value is neither.
+- **Validation is per field, not per record.** A preferences file is
+  user-editable and outlives upgrades, so one bad value costs that value alone.
+  Discarding the record would silently reset a user's entire setup because they
+  mistyped one line. The column widths already worked this way; this applies it
+  to everything, and a test pins it by corrupting three fields and asserting the
+  fourth survives. `loadSettings` also survives a store that *throws* — a launch
+  is not the moment to fail over an unreadable preference.
+- **Concurrency is clamped rather than rejected.** Someone who edited the file
+  to 40 meant "more", and the ceiling is the nearest honest answer; 0 would mean
+  nothing ever runs, which is a hung queue rather than a setting.
+- **The choice and the painted theme are different values.** They diverge
+  exactly when the choice is `system`, and conflating them loses the ability to
+  tell "the user picked light" from "the OS is light today". `system` follows
+  `prefers-color-scheme` live, so a Mac flipping at sunset takes the window
+  with it.
+- **Lowering the transfer limit could not be done with the semaphore alone.**
+  `forget_permits` only removes permits that are *free*, so a shrink while
+  transfers are running is partial — and the rest would silently return when
+  those transfers finished, undoing it. The worker now tracks what it still owes
+  and pays it down at acquisition time. Recalling a permit already held would
+  mean stopping work the user did not ask to stop, so the new limit takes effect
+  as transfers finish. Three tests cover it, including that lowering mid-flight
+  still runs every queued transfer — the failure mode of that design is a
+  transfer that never starts.
+- Only *changed* keys are written. A fresh profile has an empty store, so the
+  defaults are the defaults rather than a snapshot of them.
+- Verified in the browser: theme switched light, hidden files disappeared and
+  the count fell 13 → 12, the sidebar collapsed, and all three survived a
+  reload.
+
+**Next steps**
+
+- The sheet is the plainest thing that works, and the sidebar toggle's placement
+  is a guess. Both are in `docs/design-gaps.md` awaiting sign-off.
+- `rowLayout` persists but has no control until E8-S3/S4 give it something to
+  choose between.
 
 ### E18 — Packaging and release
 

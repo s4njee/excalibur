@@ -397,6 +397,21 @@ async fn supported_protocols() -> std::result::Result<Vec<&'static str>, ()> {
     Ok(protocols)
 }
 
+/// How many transfers may run at once (E17-S1).
+///
+/// The preference lives in the window, the semaphore lives in the engine, so
+/// the value has to travel. Raising takes effect at once; lowering takes
+/// effect as running transfers finish, because recalling a permit already held
+/// would mean stopping work the user did not ask to stop.
+#[tauri::command]
+async fn set_transfer_concurrency(
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<(), ()> {
+    state.worker.set_concurrency(limit);
+    Ok(())
+}
+
 /// Save a credential for a bookmark.
 ///
 /// There is deliberately **no command to read one back**. The window collects a
@@ -1075,6 +1090,25 @@ fn mime_for(path: &str) -> &'static str {
 /// Panics if the platform has no data directory to keep accepted host keys in,
 /// or if the webview cannot be created. Neither is a condition the app can
 /// continue from.
+/// Where the transfer queue is kept between runs.
+///
+/// Beside the known hosts, for the same reason: it is app state that has to
+/// outlive the process, and the engine is what changes it.
+fn queue_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("excalibur")
+        .join("transfers.json")
+}
+
+/// Start the window.
+///
+/// # Panics
+///
+/// Panics when no data directory can be found for the host-key store. That is
+/// a fatal misconfiguration rather than something to degrade around: without
+/// it there is nowhere to record a trust decision, and every SSH connection
+/// would ask about the same host forever.
 pub fn run() {
     // A store that cannot be located is a fatal misconfiguration rather than
     // something to degrade around: without it there is nowhere to record a
@@ -1087,12 +1121,7 @@ pub fn run() {
     })));
 
     let demo: Arc<dyn ShareBackend> = Arc::new(MockBackend::media_share());
-    // Beside the known hosts, for the same reason: it is app state that has to
-    // outlive the process, and the engine is what changes it.
-    let queue_path = dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("excalibur")
-        .join("transfers.json");
+    let queue_path = queue_path();
     let queue = Arc::new(TransferQueue::open(queue_path));
     let worker = Arc::new(Worker::new(
         Arc::clone(&queue),
@@ -1173,6 +1202,7 @@ pub fn run() {
             reachable,
             keychain_available,
             supported_protocols,
+            set_transfer_concurrency,
             save_secret,
             forget_secret,
             trust_host_key,

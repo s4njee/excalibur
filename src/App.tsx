@@ -35,7 +35,7 @@ import type {
 } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
-import { DEFAULT_SORT, sortEntries, toggle, type Sort } from "./state/sort";
+import { sortEntries, toggle } from "./state/sort";
 import { filterEntries } from "./state/filter";
 import {
   acceptsDrop,
@@ -45,8 +45,16 @@ import {
 } from "./state/permissions";
 import { engineFailure } from "./state/errors";
 import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
-import { DEFAULT_WIDTHS, resize, sanitise, type Divider, type Widths } from "./state/columns";
-import { defaultPrefs, type Prefs } from "./state/prefs";
+import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
+import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
+import { Preferences } from "./components/Preferences";
+import {
+  DEFAULTS as DEFAULT_SETTINGS,
+  loadSettings,
+  resolveTheme,
+  saveSetting,
+  type Settings,
+} from "./state/settings";
 
 export default function App(props: {
   backend?: Backend;
@@ -79,38 +87,89 @@ export default function App(props: {
 
   const [filter, setFilter] = createSignal("");
   const prefs = props.prefs ?? defaultPrefs();
-  const [sort, setSort] = createSignal<Sort>(DEFAULT_SORT);
+
+  // Everything persisted lives here (E17-S1), except the column widths, which
+  // move on every pointer frame during a drag and would make this signal — and
+  // so the whole window — react at that rate.
+  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SETTINGS);
   const [widths, setWidths] = createSignal<Widths>(DEFAULT_WIDTHS);
 
-  onMount(async () => {
-    // Per layout, because `1g` and `1h` have no columns to size. Only `1f`
-    // exists today; the key is shaped for the other two rather than needing a
-    // migration when they land.
-    setWidths(sanitise(await prefs.get("columnWidths.columns")));
-    const saved = await prefs.get("sort");
-    if (saved && typeof saved === "object") {
-      const { column, ascending } = saved as Partial<Sort>;
-      if (typeof column === "string" && typeof ascending === "boolean") {
-        setSort({ column, ascending } as Sort);
-      }
+  /** Change one preference and remember it. */
+  const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    setSettings((current) => ({ ...current, [key]: value }));
+    void saveSetting(prefs, key, value);
+  };
+
+  const [showPreferences, setShowPreferences] = createSignal(false);
+
+  /**
+   * Change a preference, and carry it wherever it has to go.
+   *
+   * Most settings are read straight off the signal by whoever needs them. The
+   * transfer limit is the exception: the worker lives in the engine and holds
+   * its own semaphore, so it has to be told.
+   */
+  const changeSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    update(key, value);
+    if (key === "transferConcurrency") {
+      void backend.setTransferConcurrency(value as number);
     }
+  };
+
+  const pickDownloadFolder = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: true, multiple: false });
+      if (typeof picked === "string") changeSetting("downloadFolder", picked);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
+  const sort = () => settings().sort;
+  const showHidden = () => settings().showHidden;
+  const foldersFirst = () => settings().foldersFirst;
+
+  onMount(async () => {
+    const loaded = await loadSettings(prefs);
+    setSettings(loaded);
+    setWidths(loaded.columnWidths);
+    // The engine holds the transfer worker, so its concurrency has to be told
+    // rather than read.
+    void backend.setTransferConcurrency(loaded.transferConcurrency);
+  });
+
+  // The OS half of `theme: "system"`. Followed live rather than read once, so
+  // a Mac flipping to dark at sunset takes the window with it.
+  const [prefersDark, setPrefersDark] = createSignal(
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : false,
+  );
+  onMount(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (event: MediaQueryListEvent) => setPrefersDark(event.matches);
+    query.addEventListener("change", onChange);
+    onCleanup(() => query.removeEventListener("change", onChange));
+  });
+
+  createEffect(() => {
+    // `props.theme` is the design harness pinning a screen; a real window
+    // follows the preference.
+    const painted = props.theme ?? resolveTheme(settings().theme, prefersDark());
+    document.documentElement.dataset.theme = painted;
   });
 
   const onSort = (column: import("./state/types").SortColumn) => {
-    const next = toggle(sort(), column);
-    setSort(next);
-    void prefs.set("sort", next);
+    update("sort", toggle(sort(), column));
   };
 
   // The drag itself only moves the signal. Writing on every pointermove would
   // be a file write per frame, so it is persisted once when the drag ends.
   const onResize = (divider: Divider, delta: number) =>
     setWidths((current) => resize(current, divider, delta));
-  const onResizeEnd = () => void prefs.set("columnWidths.columns", widths());
-
-  const [showHidden] = createSignal(true);
-  // A preference, default on, per E8-S6. No UI yet; E17 gives it one.
-  const [foldersFirst] = createSignal(true);
+  const onResizeEnd = () => void saveSetting(prefs, "columnWidths", widths());
   const [selection, setSelection] = createSignal(clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"));
   // The row type-to-select jumped to, so the list can scroll it into view.
   const [reveal, setReveal] = createSignal<number | null>(null);
@@ -238,6 +297,13 @@ export default function App(props: {
         // clearing both at once would make one Escape do two things.
         if (filter() !== "") setFilter("");
         else setSelection(EMPTY_SELECTION);
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        // Where every Mac app puts it.
+        event.preventDefault();
+        setShowPreferences(true);
         return;
       }
 
@@ -589,6 +655,15 @@ export default function App(props: {
     if (sources.length === 0) return;
     try {
       const clashes = await backend.checkConflicts(sources, destination, upload);
+      const standing = settings().conflictDefault;
+      if (clashes.length > 0 && standing !== "ask") {
+        // A standing answer, applied to the whole batch. The prompt is still
+        // the default because replacing a file is not something to do on the
+        // user's behalf unless they said so once, deliberately.
+        setConflicts({ items: clashes, upload, sources, destination });
+        await resolveConflicts(standing, true);
+        return;
+      }
       if (clashes.length > 0) {
         setConflicts({ items: clashes, upload, sources, destination });
         return;
@@ -639,7 +714,9 @@ export default function App(props: {
   const downloadSelected = async () => {
     const chosen = selectedVisible();
     if (chosen.length === 0) return;
-    const folder = await backend.downloadFolder();
+    // The preference wins; `null` means "wherever the OS puts downloads",
+    // which only the engine can answer.
+    const folder = settings().downloadFolder ?? (await backend.downloadFolder());
     await startTransfer(chosen.map((entry) => entry.path), folder, false);
   };
 
@@ -869,6 +946,9 @@ export default function App(props: {
             onEdit={() => void editSelected()}
             onDownload={() => void downloadSelected()}
             onUpload={() => void uploadHere()}
+          sidebarCollapsed={settings().sidebarCollapsed}
+          onToggleSidebar={() => update("sidebarCollapsed", !settings().sidebarCollapsed)}
+          onPreferences={() => setShowPreferences(true)}
           />
           {/* The preview follows the selection: it shows whatever single row
               is selected, and closes on its own when that stops being one. */}
@@ -987,6 +1067,7 @@ export default function App(props: {
           </Show>
           <div class={styles.body}>
             <Sidebar
+              collapsed={settings().sidebarCollapsed}
               bookmarks={bookmarks()}
               activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
               selectedId={selectedBookmark()}
@@ -1087,6 +1168,16 @@ export default function App(props: {
                 </button>
               </div>
             )}
+          </Show>
+          <Show when={showPreferences()}>
+            <Preferences
+              settings={settings()}
+              onChange={changeSetting}
+              onClose={() => setShowPreferences(false)}
+              // The browser preview has no folder picker, so the field stays
+              // typeable and the button simply is not offered.
+              onPickFolder={inTauri() ? () => void pickDownloadFolder() : undefined}
+            />
           </Show>
           <Show when={connecting()}>
             {(pending) => (
