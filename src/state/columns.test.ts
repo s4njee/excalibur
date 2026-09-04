@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WIDTHS, MIN_WIDTH, resize, sanitise, template } from "./columns";
+import { DEFAULT_WIDTHS, MIN_WIDTH, resize, sanitise, template, visibleColumns } from "./columns";
 
 describe("template", () => {
   it("leaves Name as the flexible column", () => {
@@ -56,5 +56,38 @@ describe("sanitise", () => {
     expect(sanitise(null)).toEqual(DEFAULT_WIDTHS);
     expect(sanitise("nonsense")).toEqual(DEFAULT_WIDTHS);
     expect(sanitise(undefined)).toEqual(DEFAULT_WIDTHS);
+  });
+});
+
+describe("responsive column dropping", () => {
+  it("keeps every column at a comfortable width", () => {
+    expect(visibleColumns(1200)).toEqual({ modified: true, kind: true });
+  });
+
+  it("drops Kind first, then Modified", () => {
+    // The handoff's order. Kind is the least useful of the two to lose.
+    expect(visibleColumns(899)).toEqual({ modified: true, kind: false });
+    expect(visibleColumns(559)).toEqual({ modified: false, kind: false });
+  });
+
+  it("still shows a date at the minimum useful window", () => {
+    // The handoff calls ~820×480 the minimum useful *window*. The sidebar
+    // takes about 200px of that, so the list is around 620px — and a date
+    // should survive there. Comparing the two numbers directly is how an
+    // earlier threshold came to drop Modified at exactly that size.
+    expect(visibleColumns(620).modified).toBe(true);
+  });
+
+  it("builds a template with only the columns that are drawn", () => {
+    // Header and rows share this call; a dropped column that vanished from one
+    // and not the other would put every cell in the wrong place.
+    const widths = { size: 96, modified: 156, kind: 128 };
+    expect(template(widths, { modified: true, kind: true })).toBe("1fr 96px 156px 128px");
+    expect(template(widths, { modified: true, kind: false })).toBe("1fr 96px 156px");
+    expect(template(widths, { modified: false, kind: false })).toBe("1fr 96px");
+  });
+
+  it("defaults to every column, so existing callers are unchanged", () => {
+    expect(template({ size: 96, modified: 156, kind: 128 })).toBe("1fr 96px 156px 128px");
   });
 });

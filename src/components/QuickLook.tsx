@@ -23,12 +23,18 @@ export function QuickLook(props: {
   onClose: () => void;
   /** Open in the OS editor. Absent until E12 wires it. */
   onEdit?: () => void;
+  /** Playing its exit animation; the parent removes it when that ends. */
+  closing?: boolean;
 }) {
   const preview = () => previewFor(props.entry, props.caps);
   const url = () => streamUrl(props.entry.path);
 
   return (
-    <div class={styles.panel} role="dialog" aria-label={`Preview of ${props.entry.name}`}>
+    <div
+      class={`${styles.panel} ${props.closing ? styles.panelClosing : ""}`}
+      role="dialog"
+      aria-label={`Preview of ${props.entry.name}`}
+    >
       <div class={styles.header}>
         <span class={styles.filename}>{props.entry.name}</span>
         <span class={styles.meta}>

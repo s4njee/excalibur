@@ -123,6 +123,10 @@
   border-color: var(--accent);
   color: #ffffff;
   font-weight: 500;
+  transition:
+    background var(--transition-state),
+    border-color var(--transition-state),
+    color var(--transition-state);
 }
 
 .primary:disabled {
@@ -280,6 +284,7 @@
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-control);
+  transition: color var(--transition-state);
 }
 
 .sidebarFooterButton:disabled {
@@ -787,6 +792,7 @@
   left: 4px;
   width: 1px;
   background: var(--hairline-chrome);
+  transition: background var(--transition-state);
 }
 
 .columnDivider:hover::after {
@@ -851,6 +857,10 @@
   color: var(--text-control);
   font-size: 10px;
   cursor: pointer;
+  transition:
+    background var(--transition-state),
+    border-color var(--transition-state),
+    color var(--transition-state);
 }
 
 .statusAction:disabled {
@@ -964,6 +974,7 @@
   color: var(--error);
   font-size: 10.5px;
   cursor: pointer;
+  transition: opacity var(--transition-state);
 }
 
 .bannerAction:disabled {

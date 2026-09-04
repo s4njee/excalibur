@@ -482,6 +482,32 @@ export default function App(props: {
   const [saveConflict, setSaveConflict] = createSignal<EditSession | null>(null);
   /** Whether Quick Look is open. It follows the selection while it is. */
   const [quickLook, setQuickLook] = createSignal(false);
+  /**
+   * The panel outlives `quickLook` by the length of its exit animation
+   * (E1-S5).
+   *
+   * Solid unmounts on the frame the signal flips, so without this only the
+   * opening would ever be seen — the close would be a disappearance.
+   */
+  const [quickLookClosing, setQuickLookClosing] = createSignal(false);
+  const [quickLookMounted, setQuickLookMounted] = createSignal(false);
+  createEffect(() => {
+    if (quickLook()) {
+      setQuickLookClosing(false);
+      setQuickLookMounted(true);
+      return;
+    }
+    if (!quickLookMounted()) return;
+    setQuickLookClosing(true);
+    // Matches `--transition-panel`. A timer rather than `animationend`
+    // because a panel that never animates — reduced motion — would never
+    // fire it, and would then never unmount.
+    const timer = setTimeout(() => {
+      setQuickLookMounted(false);
+      setQuickLookClosing(false);
+    }, 140);
+    onCleanup(() => clearTimeout(timer));
+  });
   /** The row being renamed inline, by path. */
   const [renaming, setRenaming] = createSignal<string | null>(null);
   /** A delete waiting out its undo window, and the timer that will run it. */
@@ -1113,12 +1139,13 @@ export default function App(props: {
               </div>
             )}
           </Show>
-          <Show when={quickLook() && selectedVisible().length === 1 ? selectedVisible()[0] : null}>
+          <Show when={quickLookMounted() && selectedVisible().length === 1 ? selectedVisible()[0] : null}>
             {(entry) => (
               <QuickLook
                 entry={entry()}
                 mount={data().mount}
                 caps={data().mount.caps}
+                closing={quickLookClosing()}
                 onClose={() => setQuickLook(false)}
                 // The panel's own entry point into E12, offered only where it
                 // would work — the footer already says so on a read-only mount.

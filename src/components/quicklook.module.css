@@ -4,11 +4,40 @@
  * the app's theme.
  */
 
+/*
+ * Open and close (E1-S5): 140ms, opacity and a 4px rise.
+ *
+ * The rise has to compose with the centring transform rather than replace it,
+ * so both keyframes carry the `-50%` and only the extra offset moves.
+ */
+@keyframes quickLookIn {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-50% + 4px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+}
+
+@keyframes quickLookOut {
+  from {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(calc(-50% + 4px));
+  }
+}
+
 .panel {
   position: absolute;
   top: 50%;
   right: 24px;
   transform: translateY(-50%);
+  animation: quickLookIn var(--transition-panel);
   display: flex;
   flex-direction: column;
   width: 440px;
@@ -190,4 +219,20 @@
   flex: none;
   font-size: 10px;
   color: #63646a;
+}
+
+/* Held on screen for the length of the exit animation; the parent unmounts it
+   when that finishes. Without this the panel would vanish on the frame the
+   user pressed Escape, and only the opening would ever be animated. */
+.panelClosing {
+  animation: quickLookOut var(--transition-panel) forwards;
+  pointer-events: none;
+}
+
+/* Someone who asked the system not to animate should not be animated at. */
+@media (prefers-reduced-motion: reduce) {
+  .panel,
+  .panelClosing {
+    animation: none;
+  }
 }

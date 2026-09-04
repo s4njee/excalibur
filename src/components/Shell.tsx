@@ -14,7 +14,13 @@ import styles from "./shell.module.css";
 
 import type { Bookmark, Category, Entry, MountInfo, RowLayout, SortColumn } from "../state/types";
 import type { Sort } from "../state/sort";
-import { ROW_HEIGHTS, template, type Divider, type Widths } from "../state/columns";
+import {
+  ROW_HEIGHTS,
+  template,
+  visibleColumns,
+  type Divider,
+  type Widths,
+} from "../state/columns";
 import { rowsInBand, visibleRange } from "../state/virtual";
 import { gate, type Affordance, type Context } from "../state/permissions";
 import * as shortcuts from "../state/shortcuts";
@@ -436,6 +442,10 @@ export function FileList(props: {
   // arithmetic rather than measurement.
   const [scrollTop, setScrollTop] = createSignal(0);
   const [viewport, setViewport] = createSignal(0);
+  // The list's own width, not the window's: collapsing the sidebar gives the
+  // list ~200px back, and the columns should take it (E1-S4).
+  const [listWidth, setListWidth] = createSignal(Number.POSITIVE_INFINITY);
+  const columns = createMemo(() => visibleColumns(listWidth()));
   let rows!: HTMLDivElement;
 
   const range = createMemo(() =>
@@ -444,7 +454,10 @@ export function FileList(props: {
   const window_ = createMemo(() => props.entries.slice(range().start, range().end));
 
   onMount(() => {
-    const measure = () => setViewport(rows.clientHeight);
+    const measure = () => {
+      setViewport(rows.clientHeight);
+      setListWidth(rows.clientWidth);
+    };
     measure();
     // The list is a flex child of a resizable window, so its height changes
     // without anything scrolling. A resize that is not observed leaves the
@@ -566,7 +579,12 @@ export function FileList(props: {
         : "";
 
   /** How many columns this layout actually has, for the a11y tree. */
-  const columnCount = () => (props.layout === "columns" ? 4 : props.layout === "mono" ? 3 : 1);
+  const columnCount = () => {
+    if (props.layout === "mono") return 3;
+    if (props.layout === "name-led") return 1;
+    // Name and Size always; the other two only when they are drawn.
+    return 2 + (columns().modified ? 1 : 0) + (columns().kind ? 1 : 0);
+  };
 
   /** One `1h` header cell. Sortable, but with nothing to drag. */
   const monoHeader = (column: SortColumn, label: string) => (
@@ -601,14 +619,18 @@ export function FileList(props: {
         <div
           class={styles.columnHeader}
           role="row"
-          style={{ "grid-template-columns": template(props.widths) }}
+          style={{ "grid-template-columns": template(props.widths, columns()) }}
         >
           {/* Each divider sits on the right edge of the cell before it, so the
-              name of the divider is the column it resizes into. */}
+              name of the divider is the column it resizes into — and a divider
+              for a dropped column is withheld, because dragging it would
+              resize something nobody can see. */}
           {header("name", "Name", "size")}
-          {header("size", "Size", "modified", true)}
-          {header("modified", "Modified", "kind")}
-          {header("kind", "Kind")}
+          {header("size", "Size", columns().modified ? "modified" : undefined, true)}
+          <Show when={columns().modified}>
+            {header("modified", "Modified", columns().kind ? "kind" : undefined)}
+          </Show>
+          <Show when={columns().kind}>{header("kind", "Kind")}</Show>
         </div>
       </Show>
       {/* `1h`'s own header: mono, uppercase, and no dividers, because the
@@ -664,7 +686,10 @@ export function FileList(props: {
                     data-path={entry.path}
                     style={
                       props.layout === "columns"
-                        ? { "grid-template-columns": template(props.widths), height: `${rowHeight()}px` }
+                        ? {
+                            "grid-template-columns": template(props.widths, columns()),
+                            height: `${rowHeight()}px`,
+                          }
                         : { height: `${rowHeight()}px` }
                     }
                     role="row"
@@ -707,12 +732,16 @@ export function FileList(props: {
                             formatSize(entry.size)
                           )}
                         </div>
-                        <div class={styles.metaCell} role="gridcell">
-                          {formatModified(entry.modifiedMs)}
-                        </div>
-                        <div class={styles.metaCell} role="gridcell">
-                          {entry.kindLabel}
-                        </div>
+                        <Show when={columns().modified}>
+                          <div class={styles.metaCell} role="gridcell">
+                            {formatModified(entry.modifiedMs)}
+                          </div>
+                        </Show>
+                        <Show when={columns().kind}>
+                          <div class={styles.metaCell} role="gridcell">
+                            {entry.kindLabel}
+                          </div>
+                        </Show>
                       </Match>
 
                       {/* `1g` — name-led and two-line. One cell, because the

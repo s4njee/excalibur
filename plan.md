@@ -170,7 +170,9 @@ reconstruct it from git history.
 | **M4** | E8-S3 — Layout `1g` name-led | **Done** 2026-09-04 |
 | **M4** | E8-S4 — Layout `1h` mono grid | **Done** 2026-09-04 (no View menu to add to) |
 | **M4** | E8-S9 — Live refresh | **Partly done** (coalescer built; `watch` has no producer) |
-| M4+ | E1-S4/S5, E19, E7-S1/S3, packaging | Not started |
+| **M4** | E1-S4 — Responsive column dropping | **Done** 2026-09-04 |
+| **M4** | E1-S5 — Transitions | **Done** 2026-09-04 |
+| M4+ | E19, E7-S1/S3, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -362,16 +364,69 @@ is the same component tree with `mount.writable` false.
 - Dark theme uses the dark sidebar tokens (`#26272a`, active `#1f3358`/`#4f86ff`,
   subtitle `#8fa8d8`).
 
-#### E1-S4 — Responsive column dropping *(handoff §Responsive)*
-**AC**
-- Below ~900px list width the Kind column is removed, then Modified; header and rows
-  stay aligned; no horizontal scroll.
+#### E1-S4 — Responsive column dropping — **Done**
 
-#### E1-S5 — Transitions *(handoff §Transitions)*
+*2026-09-04.*
+
 **AC**
-- 120ms ease on hover/disabled colour changes; 140ms opacity + 4px rise on Quick Look
-  open/close; **no** layout animation in the list (verified by a test asserting no
-  `transition` on row geometry properties).
+- [x] Below ~900px list width the Kind column is removed, then Modified; header
+  and rows stay aligned; no horizontal scroll.
+
+**Results**
+
+- **The list's width, not the window's.** Collapsing the sidebar hands the list
+  ~200px back, and the columns should take it; measuring the window would keep
+  Kind hidden on a wide list inside a narrow-ish window.
+- **Header and rows share one `template()` call** with the same arguments. That
+  is the whole of "stay aligned" — a column that vanished from one and not the
+  other would put every cell one place out.
+- **A divider for a dropped column is withheld too**, otherwise the user can
+  drag a boundary that resizes something they cannot see.
+- **The second threshold is chosen, and the first attempt at it was wrong.** The
+  handoff gives 900 for Kind and says "then Modified" without a number. 700
+  looked right until the browser showed Modified disappearing at the handoff's
+  own "minimum useful window" of ~820px — because that is a *window* width and
+  this is a *list* width, and the sidebar takes about 200px of it. It is 560
+  now, which keeps a date at that size and still leaves Name 276px.
+- Verified at three widths: all four columns at a 1194px list, Kind gone at
+  894px, both gone at 654px — with header and row templates equal and no
+  horizontal scroll at any of them.
+
+#### E1-S5 — Transitions — **Done**
+
+*2026-09-04.*
+
+**AC**
+- [x] 120ms ease on hover/disabled colour changes.
+- [x] 140ms opacity + 4px rise on Quick Look open/close.
+- [x] **No** layout animation in the list, verified by a test asserting no
+  `transition` on row geometry properties.
+
+**Results**
+
+- **The close animation needed the panel to outlive the signal.** Solid unmounts
+  on the frame `quickLook` flips, so an exit animation had nothing to play on —
+  only the opening would ever have been seen, and the close would have been a
+  disappearance. The panel now stays mounted for the length of its animation.
+  The unmount is on a timer rather than `animationend`, because a panel that
+  does not animate — reduced motion — would never fire that event and would
+  never unmount.
+- **The rise composes with the centring transform** rather than replacing it:
+  both keyframes carry the `-50%`, and only the 4px moves. Overwriting
+  `transform` would have dropped the panel to the top of the window mid-animation.
+- **The no-layout-animation test was checked against a violation, not just run.**
+  Injecting `transition: height` on a row makes it fail with the selector and
+  property named. A rule about what must *not* be added is worth nothing if it
+  passes by matching nothing.
+- It also holds two smaller lines: transitions in the shell may only name
+  colour-ish properties, and none may hardcode a duration — a literal `120ms`
+  would drift the moment the token changed.
+- Four controls with hover or disabled states had no transition at all
+  (`.bannerAction`, `.primary`, `.sidebarFooterButton`, `.statusAction`) and the
+  column divider's hover changed its line's colour instantly. Each now
+  transitions exactly the properties its own states change.
+- `prefers-reduced-motion` turns the panel's animation off. Someone who asked
+  the system not to animate should not be animated at.
 
 ### E2 — Engine core and Tauri bridge
 

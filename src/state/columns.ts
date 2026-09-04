@@ -56,9 +56,61 @@ export function resize(widths: Widths, divider: Divider, delta: number): Widths 
   }
 }
 
-/** The CSS `grid-template-columns` these widths describe. */
-export function template(widths: Widths): string {
-  return `1fr ${widths.size}px ${widths.modified}px ${widths.kind}px`;
+/** Which optional columns a given list width has room for (E1-S4). */
+export type VisibleColumns = { modified: boolean; kind: boolean };
+
+/**
+ * The width below which Kind is dropped.
+ *
+ * The handoff's number. It is a *list* width, not a window width, because the
+ * sidebar collapsing gives the list ~200px back and the columns should take
+ * it.
+ */
+export const KIND_DROPS_BELOW = 900;
+
+/**
+ * And Modified.
+ *
+ * The handoff says Kind drops "then Modified" without giving a second number.
+ *
+ * 560 is chosen so that a date survives at the handoff's "minimum useful
+ * window" of ~820px. That is a *window* width and this is a *list* width: the
+ * sidebar takes about 200px, so an 820px window leaves the list around 620px.
+ * An earlier 700 here was picked by comparing the two directly, and dropped
+ * Modified at exactly the size the handoff calls usable.
+ *
+ * At 560 the fixed columns and gaps take 284px, so Name still gets 276px —
+ * enough to read a name by. Below that Name is the thing suffering, and it is
+ * the column nobody would trade away.
+ */
+export const MODIFIED_DROPS_BELOW = 560;
+
+/**
+ * Which columns to draw at a given list width.
+ *
+ * Dropping rather than shrinking, per the handoff: a Modified column narrow
+ * enough to fit at 700px shows a truncated date, which is worse than no date
+ * because it looks like information.
+ */
+export function visibleColumns(listWidth: number): VisibleColumns {
+  return {
+    kind: listWidth >= KIND_DROPS_BELOW,
+    modified: listWidth >= MODIFIED_DROPS_BELOW,
+  };
+}
+
+/**
+ * The CSS `grid-template-columns` these widths describe.
+ *
+ * The header and the rows both call this with the same arguments, which is
+ * what keeps them aligned — a dropped column has to disappear from both or the
+ * two grids stop agreeing about which cell is which.
+ */
+export function template(widths: Widths, visible: VisibleColumns = { modified: true, kind: true }): string {
+  const columns = [`1fr`, `${widths.size}px`];
+  if (visible.modified) columns.push(`${widths.modified}px`);
+  if (visible.kind) columns.push(`${widths.kind}px`);
+  return columns.join(" ");
 }
 
 /**
