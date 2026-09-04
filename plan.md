@@ -100,7 +100,7 @@ every `list_dir` so the status bar can never drift.
 
 | Risk | Why | Mitigation story |
 |---|---|---|
-| **Pure-Rust SMB** | `smb` (0.11, pure Rust SMB2/3, signing/encryption) is young; `pavao` wraps libsmbclient (C, LGPL, mature). Neither is battle-tested in a GUI. | E4-S1 spike compares both against Samba, macOS `smbd`, Synology, Windows; pick one, wrap it behind the trait so the choice is reversible. |
+| **Pure-Rust SMB** | `smb` (0.11, pure Rust SMB2/3, signing/encryption) is young and thinly maintained. *(This row used to call libsmbclient LGPL. It is **GPL-3.0-or-later**, which would have made the shipped binary GPLv3 as a whole — see [ADR 0001](docs/decisions/0001-smb-client.md). The error was the premise the whole comparison rested on.)* | **Settled by E4-S1: `smb`.** It sits behind `ShareBackend`, so the choice stays reversible — which is the mitigation that matters, since maintenance is the live risk. |
 | **NFSv4 / Kerberos in userspace** | `nfs3_client` (pure Rust) covers NFSv3 + AUTH_SYS well; NFSv4.x and `krb5p` (the handoff's `1b` status line) have no mature pure-Rust client. | E5 ships NFSv3 first; NFSv4 via `libnfs` bindings or a v4.0 minimal client is a later story; the UI labels honestly (`NFSv3 · sys`). |
 | **Privileged NFS source ports** | Many servers default to `secure` (client port < 1024). | E5-S2 detects `EACCES`/`PROG_MISMATCH`, explains `insecure` export option, and offers no privilege escalation. |
 | **xsync Phase 1 scope creep** | It is on the critical path (M-1) and is protocol work under `docs/protocol-ownership.md` review, which is slow by design. | Keep Phase 1 to the story list in E7-S0 — no daemon, no TLS, no locks, no notify; those are M6. Freeze the v3 table only for the types Phase 1 uses; later phases add types, never change them. |
@@ -156,7 +156,9 @@ reconstruct it from git history.
 | **M3** | E6-S1 — SFTP backend | **Done** 2026-09-03 |
 | **M3** | E6-S2 — Writability and capacity | **Done** (bar `security_label`) |
 | **M3** | E6-S3 — Mutations | **Done** 2026-09-03 |
-| M3+ | E4 SMB, E5 NFS, polish, packaging | Not started |
+| **M3** | E4-S1 — SMB client decision | **Done** 2026-09-03 (`smb`; see ADR 0001) |
+| **M3** | E4-S2…S6 — SMB backend | **Blocked** — `smb`'s `sspi` pins conflict with `russh` |
+| M3+ | E5 NFS, polish, packaging | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -718,15 +720,91 @@ is the same component tree with `mount.writable` false.
 
 ### E4 — SMB backend
 
-#### E4-S1 — Client library spike and decision
+#### E4-S1 — Client library spike and decision — **Done (decision made; see the blocker below)**
+
+*2026-09-03.*
+
 **AC**
-- Both `smb` (pure Rust) and `pavao` (libsmbclient) are wrapped behind `ShareBackend`
-  and run the same matrix: Samba 4.x (Docker), macOS built-in `smbd`, a Synology or
-  TrueNAS, Windows 11. Matrix records: dialect negotiated, signing, encryption,
-  auth (NTLMv2, Kerberos), RO-share detection, large-dir listing time, 1 GiB
-  read/write throughput, rename-with-replace.
-- Decision recorded in `docs/decisions/0001-smb-client.md`; the loser is deleted, not
-  left as dead code.
+- [~] Both candidates run the same four-target matrix. **Partly**: only Samba 4.x in
+  Docker was reachable here. macOS's `smbd`, a Synology/TrueNAS and Windows 11 were
+  not, and are recorded as untested rather than assumed.
+- [x] Decision recorded in [`docs/decisions/0001-smb-client.md`](docs/decisions/0001-smb-client.md).
+  **`smb` (pure Rust) wins.** `pavao` was never added to the workspace, so "the loser
+  is deleted" is satisfied by it never landing.
+
+**Results**
+
+- **The matrix did not decide this; three things did, and the first was a mistake in
+  this very file.** The risk register described `pavao` as wrapping "libsmbclient (C,
+  LGPL, mature)". **libsmbclient is GPL-3.0-or-later.** Samba's LGPL parts are only
+  `lib/{talloc,tdb,tevent,ldb}`; `source3/libsmb/` is plain GPL with no linking
+  exception. That is not a licence *conflict* — MIT and Apache-2.0 flow one-way into
+  GPLv3, so nothing would have errored. It is absorption: the shipped binary becomes
+  a combined work conveyable only under GPL-3.0-or-later, and every recipient gets
+  GPLv3 rights over Excalibur's own code too. It would also have closed the Mac App
+  Store permanently (GPLv3 §6/§7, the VLC precedent). The row has been corrected.
+- **`pavao` cannot answer E4-S2 at any effort level.** Negotiated dialect, signing
+  state, encryption state and cipher name are absent from `pavao`, from `pavao-sys`,
+  *and from `libsmbclient.h` itself* — `smbc_getOptionSmbEncryptionLevel` echoes back
+  what you set, not what was negotiated. Share writability is equally undetectable:
+  Samba's `SMBC_fstatvfs_ctx` never sets `SMBC_VFS_FEATURE_RDONLY`. This project's
+  rule that `writable` comes from the server and is never inferred from what the user
+  asked for would have had to be broken.
+- **`pavao` 0.3.1 serialises every libsmbclient call in the process behind one static
+  mutex** — not per client, not per file. For a browser that lists while previewing
+  while transferring, that is the defining workload, and `spawn_blocking` does not
+  help: calls queue on the mutex while holding blocking-pool threads.
+- **`smb` was validated against real Samba 4.13.7 before the decision, not after**: SMB
+  3.1.1 negotiated, `Aes128Gcm` readable, listing with the DOS hidden bit, positional
+  reads, capacity matching the host, and — the E4-S2 term — `file_write_data: false`
+  on a read-only share against `true` on a writable one, with a real
+  `STATUS_ACCESS_DENIED` on create. It is MIT, has zero `unsafe` with
+  `#![forbid(unsafe_code)]` in five of its eight crates, and needs no C library.
+- A known `smb` bug — a `read_block` pre-check that can spuriously deny reads on a
+  server returning a restrictive MxAc context, fixed at head but unreleased — was
+  tested for against both shares. Samba does not trigger it.
+
+**Blocker: `smb` cannot currently be linked into this binary at all**
+
+Adding `smb = "=0.11.2"` fails to resolve against the SFTP backend already shipped in
+E6:
+
+- `russh` 0.63.2 needs `crypto-bigint ^0.7.3` (resolves to 0.7.5).
+- `smb` 0.11.2 pins `sspi =0.18.7`, which pins `crypto-bigint =0.7.0-rc.8`.
+
+Both are in the same 0.7.x compatibility range, so cargo must unify them and cannot.
+This was investigated rather than assumed:
+
+- `sspi` is not optional in `smb`, and `crypto-bigint` is not optional or
+  feature-gated in `sspi` — it is used unconditionally in `sspi::utils`.
+- Every `smb` release back to 0.10.4 requires `sspi 0.18.x`, and **every** `sspi`
+  0.18.x pins the same release candidate. Choosing an older version does not help.
+- `russh` 0.63.2 is the newest release (published the same day), so there is no
+  upstream version to move to. It *declares* `crypto-bigint` but never uses it — no
+  Rust source in the crate references it.
+- Patching that unused declaration out was tried and gets one step further before
+  hitting `curve25519-dalek =5.0.0-pre.1`. **`sspi` 0.18.7 carries 27 exact pins on
+  pre-release RustCrypto crates**, and russh is built against the stable stack. This
+  is systemic, not a one-line fix, and several of those crates russh genuinely uses.
+
+The root cause is upstream: a stable `sspi` release pinned to release-candidate
+dependencies. Forking `sspi` onto the stable stack would mean carrying a patched
+security-critical authentication crate across exactly the rc→stable API drift where
+subtle cryptographic bugs live, which is worse than not having SMB.
+
+**Next steps**
+
+- **E4-S2 … E4-S6 are blocked on this and are not started.** The backend itself is
+  understood — the probe exercised nine of the ten operations against a real server —
+  so this is a dependency problem, not a design one.
+- Three ways out, in order of preference: (1) `sspi` ships a release against stable
+  RustCrypto, or `smb` moves off `sspi` — worth filing upstream, since a stable crate
+  pinned to release candidates breaks any consumer with a normal crypto stack;
+  (2) run the SMB backend out of process with its own dependency graph, which is a
+  real option because `ShareBackend` is already the seam, but it is a large story;
+  (3) drop `russh`, which is not on the table — E6 ships and works.
+- E5 (NFS) was checked for the same problem and `nfs3_client` 0.9.0 resolves cleanly
+  alongside `russh`, so M3 continues there.
 
 #### E4-S2 — Connect, tree connect, writability
 **AC**
