@@ -172,7 +172,15 @@ reconstruct it from git history.
 | **M4** | E8-S9 — Live refresh | **Partly done** (coalescer built; `watch` has no producer) |
 | **M4** | E1-S4 — Responsive column dropping | **Done** 2026-09-04 |
 | **M4** | E1-S5 — Transitions | **Done** 2026-09-04 |
-| M4+ | E19, E7-S1/S3, packaging | Not started |
+| **M4.5** | E1-S6 — First run and empty state | Not started (found driving the real app 2026-09-05) |
+| **M4.5** | E3-S5 — Dialog fields in the real webview; Quick Look button | Not started (found 2026-09-05) |
+| **M4.5** | E7-S4 — SSH failures reported, not swallowed | Not started (found 2026-09-05) |
+| **M4.5** | E7-S5 — Capacity on xsync | Not started (found 2026-09-05) |
+| **M4.5** | E13-S4 — Folder download (the recursive walk) | Not started (unmet bullet, needed for a real share) |
+| **M4.5** | E13-S7 — Streaming reads for transfers | Not started (22 MB/s vs 85 MB/s raw ssh, measured 2026-09-05) |
+| **M4.5** | E18-S1 — macOS build (local, unsigned) | Not started |
+| **M4.5** | E18-S4 — Staging `xs` on a server | Not started |
+| M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
 story, with the reason it was left. Nothing here is done-but-unmentioned.
@@ -427,6 +435,36 @@ is the same component tree with `mount.writable` false.
   transitions exactly the properties its own states change.
 - `prefers-reduced-motion` turns the panel's animation off. Someone who asked
   the system not to animate should not be animated at.
+
+#### E1-S6 — First run and empty state
+*Found 2026-09-05 by launching the bundled app with nothing saved.*
+
+The desktop app opened on the design's fixture: a fake `smb://nas.local/media`
+with fake films, an `RW` badge and `2.4 TB free of 16 TB`, and nothing mounted.
+That is right for the browser preview and wrong for a first run — a user who has
+just installed the app is looking at a share that does not exist, with verbs
+that act on it (Download queued a row for a file that is not there). The Tauri
+shell's `AppState::backend()` falls back to a demo mock when no session is
+active, and the window's chrome invents `nas.local` for it.
+
+Also found: the Transfers sheet is anchored over the toolbar's right half, so
+`Quick Look`, `Edit` and `Download` cannot be clicked while it is open — the
+click lands on the sheet. Selecting a file and pressing Download with the sheet
+up does nothing, silently.
+
+**AC**
+- In the desktop app, with no mount active, the list area shows an empty state
+  ("No share connected" + a `New connection…` button that opens the dialog) and
+  the status bar, breadcrumb and window title name nothing. No verb is enabled.
+  The fixture is served **only** in the browser preview (`!inTauri()`), never by
+  the Tauri shell — remove or gate the `demo` fallback so a command with no
+  active mount is an error the window can render, not a mock listing.
+- The browser preview (`pnpm dev`, `?screen=…`) is unchanged.
+- The Transfers sheet no longer covers the toolbar: it opens below the toolbar
+  row (or the toolbar's verbs stay clickable above it). Recorded in
+  `docs/design-gaps.md`, since the handoff draws it as a second window.
+- Tests: the empty-state render; a test that `defaultBackend()` in Tauri does
+  not fall back to the fixture.
 
 ### E2 — Engine core and Tauri bridge
 
@@ -786,6 +824,29 @@ is the same component tree with `mount.writable` false.
 - SFTP (E6-S1) reaches SSH through `russh` rather than a subprocess, so it will need the
   same `KnownHosts` store driven from a host-key callback instead of from `ssh-keyscan`.
   The store was written with that in mind; `verify` is the part that will not transfer.
+
+#### E3-S5 — Dialog fields in the real webview; the Quick Look button
+*Found 2026-09-05 by driving the bundled app.*
+
+Two things the browser preview could not show:
+
+1. **WKWebView autocapitalised the username.** Typing `root` produced `Root`,
+   the connection failed, and the failure read as a network error (see E7-S4).
+   The same applies to Server, Export, Port, Domain and the password field —
+   none of them is prose. Safari/WKWebView also autocorrects and spell-checks
+   text inputs by default.
+2. **The toolbar's `Quick Look` button does nothing.** `Shell.tsx` renders the
+   `Verb` with no `onClick`; only the Space shortcut opens the panel. The button
+   is enabled, has a tooltip, and is inert.
+
+**AC**
+- Every field in the New Connection dialog carries `autocapitalize="none"`,
+  `autocorrect="off"`, `spellcheck={false}` (and `autocomplete` set sensibly —
+  `off` for the password, `username` for the username). The Filter field too.
+- The toolbar `Quick Look` verb toggles the panel exactly as Space does,
+  including the one-selected-row rule.
+- A test that the dialog's inputs carry the attributes, and one that the verb's
+  click reaches the same handler as the shortcut.
 
 ### E4 — SMB backend
 
@@ -1538,6 +1599,49 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 **AC**
 - The dialog's "Browse exports…" lists `ListExports` results with access badges
   (RW/RO) and comments; picking one fills the Export field.
+
+#### E7-S4 — SSH failures reported, not swallowed
+*Found 2026-09-05 against `root@orion.local`.*
+
+`XsyncBackend::connect_ssh` inherits `ssh`'s stderr. In the desktop app that
+goes nowhere, so `Permission denied (publickey)` reached the user as
+`connection lost: connection closed before the request was answered` — a
+network error for what was an authentication failure (a capitalised username,
+E3-S5). Worse, `Disconnected` is `transient()`, so had this happened to an
+established mount the session manager would have retried a refused login
+forever — the exact loop E15-S2 exists to prevent.
+
+**AC**
+- `ssh`'s stderr is captured (piped, drained on a task, bounded) and, when the
+  session fails before the first reply, its last lines are the error. A
+  `Permission denied` / `Host key verification failed` / `Could not resolve
+  hostname` from `ssh` maps to `AuthenticationFailed` / `HostKeyChanged` /
+  `NotFound`-class errors respectively, and only genuine transport drops map to
+  `Disconnected`.
+- `xs: command not found` on the remote maps to a message that says so and names
+  the fix ("install xs on the server or put it on PATH"; see E18-S4).
+- After the session is up, `ssh`'s stderr lines are logged (`tracing`/`eprintln`
+  is fine) rather than dropped, so a later disconnect has a reason.
+- Tests using `rsh` (the existing test hook) with a fake `ssh` script that
+  prints a given stderr and exits.
+
+#### E7-S5 — Capacity on xsync
+*Found 2026-09-05: the status bar showed `5 items` and no capacity for a mount
+whose `StatFs` answers.*
+
+`XsyncBackend::mount_info()` returns `capacity: None` even though
+`capacity()` works (`xcal df` prints `357503451136 free of 491590631424`). The
+window takes capacity from the listing's mount facts (E10-S1), so nothing ever
+shows it.
+
+**AC**
+- `MountInfo.capacity` is populated at mount from `StatFs`, and refreshed on
+  each `list_dir` (one extra round trip per listing is acceptable; if it is not,
+  refresh at most every 30 s and say so).
+- The status bar shows `333 GB free of 458 GB` (or the app's formatting of the
+  numbers above) for the orion mount.
+- A test against `xs --server` (gated on `EXCALIBUR_XS`) that `list_dir`'s
+  mount facts carry a capacity.
 
 ### E8 — Browsing
 
@@ -2408,6 +2512,34 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 
 *(E13-S5 is written up with E15-S2 below, since they landed together.)*
 
+#### E13-S7 — Streaming reads for transfers
+*Measured 2026-09-05: a 1 GiB download from `root@orion.local` (Raspberry Pi 5,
+gigabit) took 48.5 s in the app (≈22 MB/s) against 12.6 s for
+`ssh orion cat file > /dev/null` (≈85 MB/s). Debug build; the release number is
+to be recorded below.*
+
+The worker downloads through `ShareBackend::read_range`, one 1 MiB chunk at a
+time, and the xsync implementation opens, reads and closes the file on every
+call — three round trips per chunk, serially. SFTP's `read_range` pipelines
+inside one call but still opens per call. The seam is right for previews and
+media seeking; it is the wrong shape for a transfer.
+
+**AC**
+- `ShareBackend` gains an `open_read(path) -> Box<dyn ReadHandle>` (name and
+  shape are the implementer's, but: one open per transfer, `read_at(offset,
+  length)` callable concurrently, an explicit close). A default implementation
+  wraps `read_range` so SFTP, NFS and SMB keep working unchanged; xsync
+  implements it over one `OpenFile` with `read_verified`.
+- The worker keeps N reads in flight per download (N configurable, default 4–8,
+  chunk 1 MiB or the mount's `max_read` if smaller) and writes them in order;
+  pause/cancel/resume semantics and the `.part` contract are unchanged, with
+  the existing tests still passing.
+- A 1 GiB download from orion in a **release** build reaches ≥ 70% of the raw
+  `ssh cat` figure measured the same day, recorded in `docs/benchmarks.md`
+  with the command used.
+- Quick Look's `excalibur-stream://` handler is left on `read_range` (a seek is
+  a range, not a stream) — say so in a comment rather than changing it.
+
 #### E14-S1 — New folder, rename, delete — **Done**
 
 *2026-09-03.*
@@ -2721,6 +2853,25 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 **AC**
 - Universal `.dmg`, hardened runtime, notarised; auto-update via Tauri updater with a
   signed manifest; app icon set.
+
+#### E18-S4 — Staging `xs` on a server
+The xsync backend needs `xs` on the remote's `PATH` (`connect_ssh` runs
+`PATH="$HOME/.local/bin:$PATH" xs --server <root>`). The user's servers are
+Linux (aarch64 and x86_64); the dev machine is a Mac with `cargo-zigbuild` and
+the `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` targets installed.
+
+**AC**
+- `scripts/stage-xs.sh [user@]host [--target <triple>]` cross-compiles `xs`
+  from the sibling `../xsync` checkout (release, the host's triple detected
+  over ssh with `uname -m` when not given) and installs it to
+  `~/.local/bin/xs` on the host (or `/usr/local/bin` when the login is root),
+  then prints `xs --version` from the remote as proof.
+- README gains a "Run it against your own server" section: build the app,
+  stage `xs`, open New Connection → xsync, what to type in each field, what the
+  host-key prompt means, and the two failure messages E7-S4 produces and what
+  to do about each.
+- Verified against `root@orion.local` (Gentoo, aarch64, glibc) — the script's
+  output pasted into the story's Results.
 
 #### E18-S2 — Linux
 **AC**
