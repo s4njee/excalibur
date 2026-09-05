@@ -733,6 +733,16 @@ up does nothing, silently.
   convenience, and an empty sidebar is recoverable where a window that will not open is
   not.
 
+- **Two probe defects found 2026-09-05 with the bundled app, fixed the same day.** The
+  sidebar dimmed `orion.local` while `nc` reached it in 39 ms: `orion.local` resolves to
+  an IPv6 link-local address *before* its IPv4 one, and `TcpStream::connect` on a name
+  tries addresses in order, so the link-local attempt spent the whole 2 s budget. The
+  probe now connects to every address at once and takes the first answer (27 ms on
+  orion; `xcal reachable HOST PORT` runs the same probe from a shell). And because
+  `reachable` is persisted with the row, the launch path only re-probed bookmarks still
+  marked reachable — one failed probe dimmed a bookmark for good. The app now probes
+  every bookmark on launch, whatever the store says.
+
 **Next steps**
 
 - **E3-S3 (keychain)** is the gate on the dialog's password field, which currently
@@ -1795,6 +1805,9 @@ forever — the exact loop E15-S2 exists to prevent.
   `AuthenticationFailed` from a bookmark should open the connection editor with
   the rejection named, which is E15-S2's own outstanding next step and now has
   an error worth naming.
+- *(Closed the same day by the lead:)* `hostkeys::Keyscan::scan` now maps a name that
+  does not resolve to `HostNotFound` — the same class `connect_ssh` uses — with a test
+  against a `.invalid` name, so a typo'd bookmark is shown once and never reconnected.
 
 #### E7-S5 — Capacity on xsync — **Done**
 

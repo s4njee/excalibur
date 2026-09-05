@@ -407,6 +407,19 @@ impl HostKeyScanner for Keyscan {
             // distinguishes a typo'd hostname from a firewall.
             let detail = String::from_utf8_lossy(&output.stderr);
             let detail = detail.trim();
+            // A name that does not resolve is not a host that is down, and
+            // must not be retried as one: `Disconnected` is transient and
+            // E15-S2's reconnect loop would chase a typo forever. The
+            // phrases are getaddrinfo's on macOS and glibc respectively.
+            if detail.contains("nodename nor servname")
+                || detail.contains("Name or service not known")
+                || detail.contains("Temporary failure in name resolution")
+                || detail.contains("Could not resolve hostname")
+            {
+                return Err(EngineError::HostNotFound(format!(
+                    "{host} could not be resolved ({detail})"
+                )));
+            }
             return Err(EngineError::Disconnected(if detail.is_empty() {
                 format!("{host}:{port} offered no SSH host keys")
             } else {
@@ -812,6 +825,23 @@ mod tests {
             check(&known, "other.local", 22, &good).expect("check"),
             Trust::Unknown { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_name_that_does_not_resolve_is_not_a_host_that_is_down() {
+        // `.invalid` is reserved never to resolve (RFC 2606), so this needs
+        // no network and cannot start passing because DNS changed. The
+        // point is the class: `HostNotFound` is not transient, so a typo in a
+        // bookmark is shown once rather than reconnected forever.
+        let error = Keyscan
+            .scan("no-such-host.invalid", 22)
+            .await
+            .expect_err("a name that cannot resolve is an error");
+        assert!(
+            matches!(error, EngineError::HostNotFound(_)),
+            "expected HostNotFound, got {error:?}"
+        );
+        assert!(!error.transient(), "{error:?} must not be retried");
     }
 
     #[test]

@@ -381,6 +381,21 @@ async fn reachability_answers_for_a_listener_and_for_nothing() {
 }
 
 #[tokio::test]
+async fn reachability_does_not_wait_on_the_first_address_that_fails() {
+    // `localhost` resolves to `::1` before `127.0.0.1` on macOS and most
+    // Linux boxes. A listener on the IPv4 side only is still reachable,
+    // and reachable quickly: the probe tries every address at once rather
+    // than spending its budget on the one that refuses or hangs. This is the
+    // shape of the `.local` case — an IPv6 link-local first, the real address
+    // second — that dimmed a live server in the sidebar on 2026-09-05.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let started = tokio::time::Instant::now();
+    assert!(excalibur_engine::session::reachable("localhost", port, Duration::from_secs(2)).await);
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test]
 async fn reachability_gives_up_rather_than_hanging() {
     // A host that will not answer. The point of the timeout is that a sidebar
     // full of unreachable bookmarks does not take minutes to render.

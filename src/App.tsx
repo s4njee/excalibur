@@ -231,8 +231,12 @@ export default function App(props: {
     // Probe once on start. Every 60s while idle is E3-S2's other half and wants
     // a visible-window check first, so it does not wake a sleeping laptop.
     // A bookmark the design shows as unreachable stays that way in the preview,
-    // where there is no engine to ask.
-    for (const bookmark of saved.filter((candidate) => candidate.reachable)) {
+    // where there is no engine to ask. In the app every bookmark is probed,
+    // whatever the store says: `reachable` is persisted with the rest of the
+    // row, so filtering on it meant one failed probe dimmed a bookmark for
+    // good — nothing would ever ask again.
+    const toProbe = inTauri() ? saved : saved.filter((candidate) => candidate.reachable);
+    for (const bookmark of toProbe) {
       void backend
         .reachable(bookmark.host, probePort(bookmark))
         .then((reachable) =>

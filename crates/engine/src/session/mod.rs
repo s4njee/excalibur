@@ -479,9 +479,26 @@ impl Drop for SessionManager {
 /// design uses it for exactly that, dimming a row rather than claiming the
 /// share is usable.
 pub async fn reachable(host: &str, port: u16, timeout: Duration) -> bool {
-    let target = format!("{host}:{port}");
-    matches!(
-        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(target)).await,
-        Ok(Ok(_))
-    )
+    // Every address at once, first answer wins. `TcpStream::connect` on a
+    // name tries the addresses one after another, and a `.local` host on
+    // this network resolves to an IPv6 link-local address *before* its IPv4
+    // one; the link-local attempt can sit in the timeout for the whole budget
+    // and the probe reports a reachable machine as down. Found 2026-09-05
+    // with orion.local, which `nc` reached in 39 ms while the sidebar dimmed it.
+    let probe = async {
+        let Ok(addresses) = tokio::net::lookup_host((host, port)).await else {
+            return false;
+        };
+        let mut attempts = tokio::task::JoinSet::new();
+        for address in addresses {
+            attempts.spawn(async move { tokio::net::TcpStream::connect(address).await.is_ok() });
+        }
+        while let Some(result) = attempts.join_next().await {
+            if matches!(result, Ok(true)) {
+                return true;
+            }
+        }
+        false
+    };
+    matches!(tokio::time::timeout(timeout, probe).await, Ok(true))
 }

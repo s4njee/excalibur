@@ -42,6 +42,8 @@ USAGE:
     xcal get REMOTE LOCAL download through the transfer worker
     xcal write PATH TEXT  write a file through the backend
     xcal df               capacity
+    xcal reachable HOST PORT
+                          the sidebar's TCP probe, for a host that dims
 
 By default these run against the in-memory mock. To drive a real xsync
 export instead:
@@ -297,6 +299,30 @@ async fn main() -> ExitCode {
                 .write_range(path, excalibur_engine::WriteMode::Create, text.as_bytes())
                 .await
                 .map(|count| println!("wrote {count} bytes"))
+        }
+        "reachable" => {
+            let (Some(host), Some(port)) = (positional.get(1), positional.get(2)) else {
+                eprintln!("reachable needs a host and a port");
+                return ExitCode::from(2);
+            };
+            let Ok(port) = port.parse::<u16>() else {
+                eprintln!("{port} is not a port");
+                return ExitCode::from(2);
+            };
+            let started = std::time::Instant::now();
+            let up =
+                excalibur_engine::session::reachable(host, port, std::time::Duration::from_secs(2))
+                    .await;
+            println!(
+                "{host}:{port} {} in {} ms",
+                if up { "reachable" } else { "unreachable" },
+                started.elapsed().as_millis()
+            );
+            return if up {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            };
         }
         "df" => backend.capacity().await.map(|capacity| {
             println!("{} free of {}", capacity.free, capacity.total);
