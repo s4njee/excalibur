@@ -4141,8 +4141,12 @@ independent of each other.
 
 ### E22 — xsync as the transfer engine
 
-#### E22-S0 — Prerequisites in `../xsync` *(asks, in xsync's terms)*
-Written against `xsync` `v3` @ `599d9d4529`. Each names the seam it would replace.
+#### E22-S0 — Prerequisites in `../xsync` — **filed as xsync Phase 14 (4.73–4.78), 2026-09-06**
+Moved into `../xsync/backlogv4.md` "Phase 14 — The engine as a library" (commit
+`66227f7bd6`): 4.73 endpoint traits + `sync_endpoints`, 4.74 cancellation, 4.75 events
+with ids, 4.76 the open P0, 4.77 push/pull over a caller-owned session, 4.78
+remote↔remote as relay. The asks below are kept as the record of what was requested;
+the stories there are the spec. Written against `xsync` `v3` @ `599d9d4529`.
 
 - **Endpoint traits.** `xsync-core` gains `Source` and `Sink` traits — the shape
   `source.rs:91` (`SourceReader::{new, read, read_range}`) and `sink.rs` (staged
