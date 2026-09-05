@@ -21,7 +21,7 @@
 //!   channel whose lag is silent, so there has to be a way back to the truth;
 //!   Kestrel has none and its UI can desync permanently.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -34,15 +34,31 @@ use tokio::sync::{RwLock, Semaphore};
 use super::queue::TransferQueue;
 use super::rate::{backoff, Progress};
 use super::{Direction, Status, Transfer};
-use crate::backend::{ShareBackend, WriteMode};
+use crate::backend::{read_handle, ReadHandle, ShareBackend, WriteMode};
 use crate::error::{EngineError, Result};
 
 /// Bytes moved per round trip.
 ///
 /// Large enough that a fast link is not dominated by round trips, small enough
-/// that pause and cancel take effect promptly — they are checked between
-/// chunks, so this is also the granularity of "stop now".
+/// that pause and cancel take effect promptly. It is capped by the handle's
+/// own `max_read` where that is smaller — xsync's mount says 1 MiB, and a
+/// larger read would be refused rather than split.
 const CHUNK: u32 = 1024 * 1024;
+
+/// How many reads a download keeps in flight (E13-S7).
+///
+/// One chunk at a time makes a transfer round-trip bound: the link is idle
+/// from the moment a chunk arrives until the next request reaches the server,
+/// and no chunk size fixes that. Depth does, and it is the only number here
+/// chosen from measurement rather than argument.
+///
+/// Four, because that is where the curve flattens: on a gigabit link to a
+/// Raspberry Pi 5, 1 GiB came down at 27.6 MB/s at depth 1, 43.5 at 2, 66.1 at
+/// 4 — and then 61.5, 62.7 and 59.9 at 6, 8 and 16. Past the plateau, depth
+/// buys nothing and costs something: a megabyte of buffer per read in flight
+/// per running transfer, and a longer wait for a cancel, which finishes the
+/// window it has already asked for. See `docs/benchmarks.md`.
+const DEFAULT_READ_DEPTH: usize = 4;
 
 /// Attempts before a transient failure is reported as a failure.
 const MAX_ATTEMPTS: u32 = 5;
@@ -75,6 +91,12 @@ pub struct Worker {
     /// acquisition time is what makes the new limit real without interrupting
     /// a transfer the user did not ask to stop.
     debt: Arc<AtomicUsize>,
+    /// Reads in flight per download (E13-S7).
+    ///
+    /// Per download rather than per worker: the point is to keep one file's
+    /// link full, and a queue running three transfers already has three of
+    /// these going at once.
+    read_depth: Arc<AtomicUsize>,
 }
 
 impl Worker {
@@ -97,7 +119,25 @@ impl Worker {
             limit: Arc::new(Semaphore::new(concurrency)),
             nominal: Arc::new(AtomicUsize::new(concurrency)),
             debt: Arc::new(AtomicUsize::new(0)),
+            read_depth: Arc::new(AtomicUsize::new(DEFAULT_READ_DEPTH)),
         }
+    }
+
+    /// Change how many reads a download keeps in flight.
+    ///
+    /// Applies to transfers that start after it, not to one already streaming:
+    /// the depth is read once when a download begins, so a change mid-file
+    /// cannot leave the in-flight window inconsistent with the plan that built
+    /// it. Zero would mean scheduling nothing, so it is clamped to one — which
+    /// is also how a caller asks for the old serial behaviour.
+    pub fn set_read_depth(&self, depth: usize) {
+        self.read_depth.store(depth.max(1), Ordering::SeqCst);
+    }
+
+    /// Reads in flight per download, as it stands.
+    #[must_use]
+    pub fn read_depth(&self) -> usize {
+        self.read_depth.load(Ordering::SeqCst).max(1)
     }
 
     /// Change how many transfers may run at once (E17-S1).
@@ -295,7 +335,31 @@ impl Worker {
         // beyond `bytes_done` in that file was written by something whose
         // record we do not have, and appending to it would corrupt the result.
         let mut offset = resume_offset(&partial, transfer.bytes_done)?;
-        let total = transfer.bytes_total;
+        // A size is what lets reads be scheduled ahead of the writes, so a row
+        // enqueued without one asks now. A stat that fails is not a failure —
+        // the stream falls back to reading until the file ends, which is what
+        // it did before there was a plan at all.
+        let total = if transfer.bytes_total > 0 {
+            transfer.bytes_total
+        } else {
+            let size = backend
+                .stat(&transfer.source_path)
+                .await
+                .map_or(0, |attrs| attrs.size);
+            // Told to the queue as well, so the row that had an indeterminate
+            // bar gets a real one rather than the worker keeping a better
+            // number to itself.
+            if size > 0 {
+                self.queue
+                    .update(&transfer.id, |item| {
+                        if item.bytes_total == 0 {
+                            item.bytes_total = size;
+                        }
+                    })
+                    .await;
+            }
+            size
+        };
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -307,27 +371,22 @@ impl Worker {
             .map_err(|error| EngineError::Io(format!("truncate {}: {error}", partial.display())))?;
         seek_to(&mut file, offset, &partial)?;
 
-        let mut progress = Progress::new();
-        progress.sample(offset, Instant::now());
-        loop {
-            if stop.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            let bytes = backend
-                .read_range(&transfer.source_path, offset, CHUNK)
-                .await?;
-            if bytes.is_empty() {
-                break;
-            }
-            file.write_all(&bytes).map_err(|error| {
-                EngineError::Io(format!("write {}: {error}", partial.display()))
-            })?;
-            offset += bytes.len() as u64;
-            self.publish(transfer, &mut progress, offset, total).await;
-            if total > 0 && offset >= total {
-                break;
-            }
-        }
+        // One open for the whole file, rather than one per chunk (E13-S7).
+        let handle = read_handle(backend, &transfer.source_path).await?;
+        let streamed = self
+            .stream(&handle, &mut file, transfer, offset, total, stop)
+            .await;
+        // Closed whether or not the transfer worked, and before the result is
+        // unwrapped: a handle leaked per failed attempt would exhaust the
+        // session's table after five retries of a flaky file.
+        let closed = handle.close().await;
+        let Some(end) = streamed? else {
+            // Paused or cancelled. The partial stays where it is; whether it
+            // survives is `stop`'s decision, not this one.
+            return Ok(());
+        };
+        closed?;
+        offset = end;
 
         // Before the rename, not after: a rename that lands before the content
         // leaves a correctly named file full of zeroes.
@@ -339,6 +398,113 @@ impl Worker {
         })?;
         self.settle(transfer, offset).await;
         Ok(())
+    }
+
+    /// Read a file into `file` with several reads in flight (E13-S7).
+    ///
+    /// Reads are scheduled ahead and **written strictly in order**: the window
+    /// is a queue, and the front of it is awaited before the bytes behind it
+    /// are looked at. Writing them as they arrive would need seeks and would
+    /// leave a `.part` with holes in it, which is exactly the file the resume
+    /// rule cannot tell from a good one.
+    ///
+    /// `Ok(None)` means the user paused or cancelled; the caller must not
+    /// publish. `Ok(Some(end))` is the offset one past the last byte written.
+    ///
+    /// Stopping is checked once per chunk written, as before. What has already
+    /// been scheduled is still awaited rather than aborted — those requests are
+    /// on the wire either way, and dropping the tasks would leave the
+    /// connection reading answers nobody is waiting for.
+    async fn stream(
+        &self,
+        handle: &Arc<dyn ReadHandle>,
+        file: &mut std::fs::File,
+        transfer: &Transfer,
+        start: u64,
+        total: u64,
+        stop: &AtomicBool,
+    ) -> Result<Option<u64>> {
+        let chunk = CHUNK.min(handle.max_read()).max(1);
+        let depth = self.read_depth();
+        let mut progress = Progress::new();
+        progress.sample(start, Instant::now());
+
+        if stop.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+
+        // (bytes asked for, the read). The length is kept because a read that
+        // comes back short is the end of the file, and only the request knows
+        // what short means.
+        let mut window: VecDeque<(u32, tokio::task::JoinHandle<Result<Vec<u8>>>)> =
+            VecDeque::with_capacity(depth);
+        let mut scheduled = start;
+        let mut written = start;
+
+        loop {
+            while window.len() < depth {
+                let want = if total == 0 {
+                    chunk
+                } else if scheduled >= total {
+                    break;
+                } else {
+                    u32::try_from((total - scheduled).min(u64::from(chunk))).unwrap_or(chunk)
+                };
+                let reader = Arc::clone(handle);
+                let at = scheduled;
+                window.push_back((
+                    want,
+                    tokio::spawn(async move { reader.read_at(at, want).await }),
+                ));
+                scheduled += u64::from(want);
+            }
+
+            let Some((want, read)) = window.pop_front() else {
+                break;
+            };
+            let bytes = match read.await {
+                Ok(bytes) => bytes,
+                // The read task itself died — a panic, or a runtime shutting
+                // down. Neither is transient, and neither is the file's fault.
+                Err(error) => Err(EngineError::Io(format!("read task: {error}"))),
+            };
+            let bytes = match bytes {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    discard(window).await;
+                    return Err(error);
+                }
+            };
+            if bytes.is_empty() {
+                break;
+            }
+            if let Err(error) = file.write_all(&bytes) {
+                discard(window).await;
+                // `.part` is what `partial_path` appends, so this names the
+                // file that actually failed rather than the destination it
+                // would have been promoted to.
+                return Err(EngineError::Io(format!(
+                    "write {}.part: {error}",
+                    transfer.dest_path
+                )));
+            }
+            written += bytes.len() as u64;
+            self.publish(transfer, &mut progress, written, total).await;
+            // Short means the file ended here. Every backend in the tree fills
+            // a read that is not at the end, so this cannot be a partial answer
+            // to a request that had more to give — and anything still in flight
+            // is past the end and has nothing to add.
+            if bytes.len() < want as usize {
+                break;
+            }
+            if stop.load(Ordering::SeqCst) {
+                discard(window).await;
+                return Ok(None);
+            }
+        }
+
+        discard(window).await;
+        Ok(Some(written))
     }
 
     /// Disk to share.
@@ -418,6 +584,19 @@ impl Worker {
                 }
             })
             .await;
+    }
+}
+
+/// Wait for reads that are no longer wanted, and throw the bytes away.
+///
+/// Awaited rather than aborted. The requests are already on the wire, and a
+/// client that stops reading answers leaves the connection with replies queued
+/// against handles nobody will claim; waiting for at most one window's worth
+/// costs a fraction of a second and keeps the session in a state the next
+/// transfer can use.
+async fn discard(window: VecDeque<(u32, tokio::task::JoinHandle<Result<Vec<u8>>>)>) {
+    for (_, read) in window {
+        let _ = read.await;
     }
 }
 

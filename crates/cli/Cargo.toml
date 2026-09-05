@@ -17,6 +17,10 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# Only to implement the engine's `BackendSource` for `xcal get`. Already in the
+# tree — the engine's own traits are written with it — so this adds nothing to
+# audit.
+async-trait = { workspace = true }
 excalibur-engine = { path = "../engine" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

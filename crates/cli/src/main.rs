@@ -8,9 +8,28 @@ use std::process::ExitCode;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use excalibur_engine::backend::mock::MockBackend;
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
-use excalibur_engine::{hostkeys, KnownHosts, ShareBackend, Trust};
+use excalibur_engine::transfer::queue::TransferQueue;
+use excalibur_engine::transfer::worker::{BackendSource, Worker};
+use excalibur_engine::transfer::{plan, Direction, Status, Transfer};
+use excalibur_engine::{hostkeys, EntryKind, KnownHosts, Result, ShareBackend, Trust};
+
+/// The one backend this process has, handed to the transfer worker.
+///
+/// The worker asks for a backend per attempt so a reconnect can hand it a new
+/// one. There is no session manager here, so the answer is always the same
+/// mount — which is also what makes `get` measure the transfer path and
+/// nothing else.
+struct Mounted(Arc<dyn ShareBackend>);
+
+#[async_trait]
+impl BackendSource for Mounted {
+    async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
+        Ok(Arc::clone(&self.0))
+    }
+}
 
 const USAGE: &str = "\
 xcal — headless Excalibur engine driver
@@ -20,6 +39,7 @@ USAGE:
     xcal stat PATH        metadata for one path
     xcal mount            the mount facts a status bar would show
     xcal cat PATH         read a file through the backend
+    xcal get REMOTE LOCAL download through the transfer worker
     xcal write PATH TEXT  write a file through the backend
     xcal df               capacity
 
@@ -32,6 +52,7 @@ export instead:
     --port N              ssh port (default 22)
     --user NAME           ssh username
     --trust               accept an unknown host key and record it
+    --depth N             reads in flight per download, for `get` (default 4)
 
 Every command takes --read-only, and --json to print machine-readable
 output.
@@ -49,7 +70,14 @@ async fn main() -> ExitCode {
     let trust = arguments.iter().any(|argument| argument == "--trust");
     // A flag's value is not a positional argument, so skip whatever follows
     // the flags that take one.
-    let takes_value = ["--xsync-local", "--xsync-ssh", "--xs", "--port", "--user"];
+    let takes_value = [
+        "--xsync-local",
+        "--xsync-ssh",
+        "--xs",
+        "--port",
+        "--user",
+        "--depth",
+    ];
     let mut positional: Vec<&String> = Vec::new();
     let mut skip_next = false;
     for argument in &arguments {
@@ -245,6 +273,21 @@ async fn main() -> ExitCode {
                 let _ = std::io::stdout().write_all(&bytes);
             })
         }
+        "get" => {
+            let (Some(remote), Some(local)) = (positional.get(1), positional.get(2)) else {
+                eprintln!("get needs a remote path and a local one");
+                return ExitCode::from(2);
+            };
+            let depth = match value_of("--depth").map(|value| value.parse::<usize>()) {
+                None => None,
+                Some(Ok(depth)) => Some(depth),
+                Some(Err(error)) => {
+                    eprintln!("xcal: --depth: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            get(&backend, remote, local, depth, json).await
+        }
         "write" => {
             let (Some(path), Some(text)) = (positional.get(1), positional.get(2)) else {
                 eprintln!("write needs a path and some text");
@@ -270,5 +313,127 @@ async fn main() -> ExitCode {
             eprintln!("xcal: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `xcal get REMOTE LOCAL` — a download through the real transfer worker.
+///
+/// The point of this command is measurement: the GUI's throughput is the
+/// worker's throughput, and a number taken through a window is a number taken
+/// through a window. Everything here — the queue, the worker, the streaming
+/// read path, the `.part` file and its fsync — is what the app itself runs, so
+/// `docs/benchmarks.md` can quote a figure that means something.
+///
+/// A directory is expanded by the same walk the Download verb uses (E13-S4),
+/// which is also the only way to exercise that walk against a real server
+/// without a mouse.
+async fn get(
+    backend: &Arc<dyn ShareBackend>,
+    remote: &str,
+    local: &str,
+    depth: Option<usize>,
+    json: bool,
+) -> Result<()> {
+    let attrs = backend.stat(remote).await?;
+    let queue = Arc::new(TransferQueue::in_memory());
+
+    if attrs.kind == EntryKind::Dir {
+        // `LOCAL` is the folder the copy lands *in*, as with `cp -r`.
+        let plan = plan::plan_downloads(
+            backend.as_ref(),
+            &[remote.to_owned()],
+            std::path::Path::new(local),
+        )
+        .await;
+        for problem in &plan.problems {
+            eprintln!("xcal: {}: {}", problem.path, problem.reason);
+        }
+        for directory in &plan.directories {
+            if let Err(error) = std::fs::create_dir_all(directory) {
+                eprintln!("xcal: create {}: {error}", directory.display());
+            }
+        }
+        for (index, file) in plan.files.iter().enumerate() {
+            queue
+                .add(Transfer::new(
+                    format!("f{index}"),
+                    Direction::Down,
+                    file.source.clone(),
+                    file.destination.to_string_lossy().into_owned(),
+                    file.size,
+                ))
+                .await;
+        }
+    } else {
+        // A single file goes exactly where it was told, rather than into a
+        // directory of that name: `get big.bin /tmp/big.bin` should write
+        // `/tmp/big.bin`.
+        queue
+            .add(Transfer::new(
+                "one",
+                Direction::Down,
+                remote.to_owned(),
+                local.to_owned(),
+                attrs.size,
+            ))
+            .await;
+    }
+
+    let worker = Arc::new(Worker::new(
+        Arc::clone(&queue),
+        Arc::new(Mounted(Arc::clone(backend))),
+        3,
+    ));
+    if let Some(depth) = depth {
+        worker.set_read_depth(depth);
+    }
+
+    let started = std::time::Instant::now();
+    worker.drain().await;
+    let elapsed = started.elapsed();
+
+    let done = queue.all().await;
+    let moved: u64 = done.iter().map(|transfer| transfer.bytes_done).sum();
+    let failed: Vec<&Transfer> = done
+        .iter()
+        .filter(|transfer| transfer.status != Status::Done)
+        .collect();
+    #[allow(clippy::cast_precision_loss)]
+    let rate = moved as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "bytes": moved,
+                "seconds": elapsed.as_secs_f64(),
+                "megabytesPerSecond": rate,
+                "files": done.len(),
+                "failed": failed.len(),
+                "depth": worker.read_depth(),
+            })
+        );
+    } else {
+        println!(
+            "{moved} bytes in {:.2}s — {rate:.1} MB/s ({} file(s), depth {})",
+            elapsed.as_secs_f64(),
+            done.len(),
+            worker.read_depth()
+        );
+    }
+    for transfer in &failed {
+        eprintln!(
+            "xcal: {} failed: {}",
+            transfer.source_path,
+            transfer.error.as_deref().unwrap_or("stopped")
+        );
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(excalibur_engine::EngineError::Io(format!(
+            "{} of {} transfers did not finish",
+            failed.len(),
+            done.len()
+        )))
     }
 }

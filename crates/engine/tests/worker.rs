@@ -209,8 +209,14 @@ async fn a_cancelled_transfer_is_not_settled_as_done() {
 
     // Slow enough that the cancel lands mid-flight rather than after the
     // transfer has already settled, which is the case being tested.
+    //
+    // 200ms rather than the 40ms this used before E13-S7: a download now keeps
+    // four reads in flight, so this file's eight chunks took two rounds rather
+    // than eight and the whole thing finished before the cancel at 80ms could
+    // land. The test was measuring "eight serial round trips take longer than
+    // 80ms", which stopped being true when they stopped being serial.
     let slow: Arc<dyn ShareBackend> =
-        Arc::new(MockBackend::media_share().with_latency(std::time::Duration::from_millis(40)));
+        Arc::new(MockBackend::media_share().with_latency(std::time::Duration::from_millis(200)));
     let payload: Vec<u8> = vec![7; 8 * 1024 * 1024];
     slow.write_range("big.bin", excalibur_engine::WriteMode::Create, &payload)
         .await
@@ -422,4 +428,232 @@ async fn raising_after_lowering_nets_out() {
     for transfer in queue.all().await {
         assert_eq!(transfer.status, Status::Done, "{}", transfer.id);
     }
+}
+
+/// A backend whose reads go through a handle that counts what it is asked
+/// (E13-S7). Everything else is the mock's.
+struct Handed {
+    inner: Arc<dyn ShareBackend>,
+    opens: Arc<AtomicU32>,
+    closes: Arc<AtomicU32>,
+    live: Arc<AtomicU32>,
+    peak: Arc<AtomicU32>,
+}
+
+struct Counted {
+    inner: Arc<dyn ShareBackend>,
+    path: String,
+    closes: Arc<AtomicU32>,
+    live: Arc<AtomicU32>,
+    peak: Arc<AtomicU32>,
+}
+
+#[async_trait]
+impl excalibur_engine::backend::ReadHandle for Counted {
+    async fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>> {
+        let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(live, Ordering::SeqCst);
+        // Long enough that a serial reader could not have overlapped by
+        // accident: the count below is the property, and this is what gives it
+        // something to count.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let bytes = self.inner.read_range(&self.path, offset, length).await;
+        self.live.fetch_sub(1, Ordering::SeqCst);
+        bytes
+    }
+
+    fn max_read(&self) -> u32 {
+        1024 * 1024
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.closes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ShareBackend for Handed {
+    fn mount_info(&self) -> excalibur_engine::MountInfo {
+        self.inner.mount_info()
+    }
+    fn caps(&self) -> excalibur_engine::Caps {
+        self.inner.caps()
+    }
+    async fn capacity(&self) -> Result<excalibur_engine::Capacity> {
+        self.inner.capacity().await
+    }
+    async fn list_dir(&self, path: &str) -> Result<excalibur_engine::Listing> {
+        self.inner.list_dir(path).await
+    }
+    async fn stat(&self, path: &str) -> Result<excalibur_engine::Attrs> {
+        self.inner.stat(path).await
+    }
+    async fn read_range(&self, path: &str, offset: u64, length: u32) -> Result<Vec<u8>> {
+        self.inner.read_range(path, offset, length).await
+    }
+    async fn open_read(
+        &self,
+        path: &str,
+    ) -> Result<Option<Arc<dyn excalibur_engine::backend::ReadHandle>>> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(Arc::new(Counted {
+            inner: Arc::clone(&self.inner),
+            path: path.to_owned(),
+            closes: Arc::clone(&self.closes),
+            live: Arc::clone(&self.live),
+            peak: Arc::clone(&self.peak),
+        })))
+    }
+    async fn write_range(
+        &self,
+        path: &str,
+        mode: excalibur_engine::WriteMode,
+        data: &[u8],
+    ) -> Result<u64> {
+        self.inner.write_range(path, mode, data).await
+    }
+    async fn mkdir(&self, path: &str) -> Result<()> {
+        self.inner.mkdir(path).await
+    }
+    async fn rename(&self, from: &str, to: &str, replace: bool) -> Result<()> {
+        self.inner.rename(from, to, replace).await
+    }
+    async fn remove(&self, path: &str, recursive: bool) -> Result<()> {
+        self.inner.remove(path, recursive).await
+    }
+    async fn ping(&self) -> Result<excalibur_engine::Health> {
+        self.inner.ping().await
+    }
+}
+
+/// A share holding `big.bin`, whose every byte depends on its offset.
+///
+/// A pattern rather than a constant fill: the property under test is that the
+/// chunks are written **in the order they were asked for**, and a file of
+/// identical bytes cannot tell a correct copy from a shuffled one.
+async fn patterned(size: usize) -> (Arc<Handed>, Vec<u8>) {
+    let payload: Vec<u8> = (0..size)
+        .map(|index| u8::try_from(index % 251).unwrap_or(0))
+        .collect();
+    let inner = mock();
+    inner
+        .write_range("big.bin", excalibur_engine::WriteMode::Create, &payload)
+        .await
+        .expect("seed");
+    (
+        Arc::new(Handed {
+            inner,
+            opens: Arc::new(AtomicU32::new(0)),
+            closes: Arc::new(AtomicU32::new(0)),
+            live: Arc::new(AtomicU32::new(0)),
+            peak: Arc::new(AtomicU32::new(0)),
+        }),
+        payload,
+    )
+}
+
+#[tokio::test]
+async fn a_download_opens_once_and_keeps_several_reads_in_flight() {
+    // E13-S7. One open per transfer rather than per chunk, and the chunks
+    // overlap — which is the whole reason the handle exists.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let destination = directory.path().join("big.bin");
+    let (share, payload) = patterned(8 * 1024 * 1024).await;
+
+    let queue = Arc::new(TransferQueue::in_memory());
+    queue
+        .add(Transfer::new(
+            "one",
+            Direction::Down,
+            "big.bin",
+            destination.to_str().expect("utf-8"),
+            payload.len() as u64,
+        ))
+        .await;
+
+    let running = worker(
+        &queue,
+        Arc::new(Fixed(Arc::clone(&share) as Arc<dyn ShareBackend>)),
+    );
+    running.set_read_depth(4);
+    running.drain().await;
+
+    let done = &queue.all().await[0];
+    assert_eq!(done.status, Status::Done, "{:?}", done.error);
+    // Eight chunks through one handle, not eight opens and eight closes.
+    assert_eq!(share.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(share.closes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        share.peak.load(Ordering::SeqCst),
+        4,
+        "reads did not overlap to the configured depth"
+    );
+    // And the bytes are in the order they were asked for. Writing them as they
+    // arrived would pass every length check and produce a shuffled file.
+    assert_eq!(std::fs::read(&destination).expect("read result"), payload);
+}
+
+#[tokio::test]
+async fn a_depth_of_one_is_the_serial_download_it_replaced() {
+    // The escape hatch, and the proof that depth is the only thing that
+    // changed: at one, this is chunk-at-a-time again and still correct.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let destination = directory.path().join("big.bin");
+    let (share, payload) = patterned(3 * 1024 * 1024).await;
+
+    let queue = Arc::new(TransferQueue::in_memory());
+    queue
+        .add(Transfer::new(
+            "one",
+            Direction::Down,
+            "big.bin",
+            destination.to_str().expect("utf-8"),
+            payload.len() as u64,
+        ))
+        .await;
+
+    let running = worker(
+        &queue,
+        Arc::new(Fixed(Arc::clone(&share) as Arc<dyn ShareBackend>)),
+    );
+    running.set_read_depth(1);
+    running.drain().await;
+
+    assert_eq!(share.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(std::fs::read(&destination).expect("read result"), payload);
+}
+
+#[tokio::test]
+async fn a_resumed_streaming_download_starts_where_the_queue_left_off() {
+    // The `.part` contract is unchanged by the pipelining: the reads are
+    // scheduled from the resume point, not from zero, and the bytes already on
+    // disk are not fetched again.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let destination = directory.path().join("big.bin");
+    let partial = directory.path().join("big.bin.part");
+    let (share, payload) = patterned(4 * 1024 * 1024).await;
+
+    let head = 1024 * 1024 + 7;
+    std::fs::write(&partial, &payload[..head]).expect("write");
+
+    let queue = Arc::new(TransferQueue::in_memory());
+    let mut transfer = Transfer::new(
+        "one",
+        Direction::Down,
+        "big.bin",
+        destination.to_str().expect("utf-8"),
+        payload.len() as u64,
+    );
+    transfer.bytes_done = head as u64;
+    queue.add(transfer).await;
+
+    worker(
+        &queue,
+        Arc::new(Fixed(Arc::clone(&share) as Arc<dyn ShareBackend>)),
+    )
+    .drain()
+    .await;
+
+    assert_eq!(std::fs::read(&destination).expect("read result"), payload);
 }

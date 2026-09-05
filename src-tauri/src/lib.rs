@@ -13,7 +13,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use excalibur_engine::backend::mock::MockBackend;
 use excalibur_engine::backend::nfs::{self, Identity, NfsBackend, NfsTarget};
 use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 #[cfg(feature = "smb")]
@@ -21,6 +20,7 @@ use excalibur_engine::backend::smb::{SmbBackend, SmbTarget};
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
 use excalibur_engine::transfer::conflict::{self, Conflict};
+use excalibur_engine::transfer::plan;
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::{
@@ -202,21 +202,16 @@ fn parse_identity(field: Option<&str>) -> Identity {
 /// underneath it.
 struct ActiveMount {
     sessions: Arc<SessionManager>,
-    demo: Arc<dyn ShareBackend>,
 }
 
 #[async_trait]
 impl BackendSource for ActiveMount {
     async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
-        Ok(self
-            .sessions
-            .active_backend()
-            .await
-            .unwrap_or_else(|_| Arc::clone(&self.demo)))
+        self.sessions.active_backend().await
     }
 }
 
-/// What the shell holds: the mounts, and a demo share when there are none.
+/// What the shell holds: the mounts, and everything that acts on them.
 struct AppState {
     sessions: Arc<SessionManager>,
     /// The OS credential store. Written to from the window, never read back to
@@ -231,18 +226,19 @@ struct AppState {
     transfers: Arc<TransferQueue>,
     /// Moves it. Held so a new enqueue can wake it.
     worker: Arc<Worker>,
-    /// Serves the design's fixed data until a real share is mounted, so the
-    /// window has something to draw on first run.
-    demo: Arc<dyn ShareBackend>,
 }
 
 impl AppState {
-    /// The backend a command should use: the active mount, or the demo.
-    async fn backend(&self) -> Arc<dyn ShareBackend> {
-        self.sessions
-            .active_backend()
-            .await
-            .unwrap_or_else(|_| Arc::clone(&self.demo))
+    /// The backend a command should use: the active mount, or nothing.
+    ///
+    /// There is deliberately no fallback (E1-S6). A mock share stood here so
+    /// the window had something to draw on first run, and what it drew was a
+    /// share that does not exist — with verbs that acted on it, so Download
+    /// queued a row for a file nobody has. "Nothing is mounted" is a fact the
+    /// window can render as an empty state; a fake listing is not something it
+    /// can tell apart from a real one.
+    async fn backend(&self) -> Result<Arc<dyn ShareBackend>> {
+        self.sessions.active_backend().await
     }
 }
 
@@ -327,7 +323,7 @@ async fn list_dir(
 ) -> std::result::Result<Listing, CommandError> {
     state
         .backend()
-        .await
+        .await?
         .list_dir(&path)
         .await
         .map_err(Into::into)
@@ -339,7 +335,7 @@ async fn list_dir(
 async fn mount_info(
     state: tauri::State<'_, AppState>,
 ) -> std::result::Result<MountInfo, CommandError> {
-    Ok(state.backend().await.mount_info())
+    Ok(state.backend().await?.mount_info())
 }
 
 /// Try a connection and report what it found, without keeping it.
@@ -493,7 +489,12 @@ async fn mkdir(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> std::result::Result<(), CommandError> {
-    state.backend().await.mkdir(&path).await.map_err(Into::into)
+    state
+        .backend()
+        .await?
+        .mkdir(&path)
+        .await
+        .map_err(Into::into)
 }
 
 /// Rename, refusing to clobber unless `replace` says otherwise.
@@ -506,7 +507,7 @@ async fn rename(
 ) -> std::result::Result<(), CommandError> {
     state
         .backend()
-        .await
+        .await?
         .rename(&from, &to, replace)
         .await
         .map_err(Into::into)
@@ -521,7 +522,7 @@ async fn remove(
 ) -> std::result::Result<(), CommandError> {
     state
         .backend()
-        .await
+        .await?
         .remove(&path, recursive)
         .await
         .map_err(Into::into)
@@ -539,35 +540,95 @@ async fn transfers(state: tauri::State<'_, AppState>) -> std::result::Result<Vec
 }
 
 /// Queue a download of each path, and start moving.
+///
+/// A folder becomes one row per file beneath it, at
+/// `<destination>/<folder>/<relative path>` — never a single row for the
+/// folder, because such a row can only report a percentage that means nothing
+/// once one file in it fails. The walk itself is
+/// [`plan::plan_downloads`](excalibur_engine::transfer::plan::plan_downloads).
 #[tauri::command]
 async fn enqueue_downloads(
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     destination: String,
 ) -> std::result::Result<Vec<String>, CommandError> {
-    let backend = state.backend().await;
+    let backend = state.backend().await?;
+    let root = std::path::PathBuf::from(destination.trim_end_matches('/'));
+    // A directory expands to one row per file (E13-S4). The walk is the
+    // engine's, so it can be tested without a window; the sizes it carries
+    // come from a fresh stat rather than the listing the window had, because a
+    // progress bar built on a number that has since changed is worse than one
+    // that admits it does not know.
+    let plan = plan::plan_downloads(backend.as_ref(), &paths, &root).await;
+
     let mut ids = Vec::new();
-    for path in paths {
-        // The size comes from a stat rather than the listing the window had:
-        // a progress bar built on a number that has since changed is worse
-        // than one that admits it does not know.
-        let size = backend.stat(&path).await.map_or(0, |attrs| attrs.size);
-        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+    // Directories before rows, and *all* of them: the worker creates a file's
+    // parent on its way past, which is exactly what an empty directory has
+    // nothing to trigger. Without this an empty folder is silently absent from
+    // a copy that reports success.
+    for directory in &plan.directories {
+        if let Err(error) = std::fs::create_dir_all(directory) {
+            ids.push(
+                report_problem(
+                    &state.transfers,
+                    String::new(),
+                    directory.to_string_lossy().into_owned(),
+                    format!("create {}: {error}", directory.display()),
+                )
+                .await,
+            );
+        }
+    }
+    for file in plan.files {
         let id = new_id();
         state
             .transfers
             .add(Transfer::new(
                 id.clone(),
                 Direction::Down,
-                path,
-                format!("{}/{name}", destination.trim_end_matches('/')),
-                size,
+                file.source,
+                file.destination.to_string_lossy().into_owned(),
+                file.size,
             ))
             .await;
         ids.push(id);
     }
+    // A subtree that could not be listed is a failed row, not one fewer file.
+    // The queue is where the user is already looking for what a copy did, and
+    // a copy that quietly omits a directory it could not read is the failure
+    // this story exists to prevent.
+    for problem in plan.problems {
+        ids.push(
+            report_problem(
+                &state.transfers,
+                problem.path,
+                problem.destination.to_string_lossy().into_owned(),
+                problem.reason,
+            )
+            .await,
+        );
+    }
     run_queue(&state);
     Ok(ids)
+}
+
+/// Put something the walk could not do in the queue, already failed.
+///
+/// A row rather than an error from the command: one unreadable subdirectory
+/// must not cancel the enqueue of everything beside it, and the transfer sheet
+/// is where a person looks to find out what a copy actually did.
+async fn report_problem(
+    queue: &TransferQueue,
+    source: String,
+    destination: String,
+    reason: String,
+) -> String {
+    let id = new_id();
+    let mut transfer = Transfer::new(id.clone(), Direction::Down, source, destination, 0);
+    transfer.status = TransferStatus::Failed;
+    transfer.error = Some(reason);
+    queue.add(transfer).await;
+    id
 }
 
 /// Queue an upload of each local path into `destination` on the share.
@@ -678,7 +739,7 @@ async fn check_conflicts(
     destination: String,
     upload: bool,
 ) -> std::result::Result<Vec<Conflict>, CommandError> {
-    let backend = state.backend().await;
+    let backend = state.backend().await?;
     let mut conflicts = Vec::new();
     for path in paths {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
@@ -729,7 +790,7 @@ async fn edit_file(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> std::result::Result<EditSession, CommandError> {
-    let backend = state.backend().await;
+    let backend = state.backend().await?;
     let session = state.edits.checkout(&backend, &path).await?;
     open_in_editor(&session.local_path);
     watch_for_saves(app, session.clone());
@@ -746,7 +807,7 @@ async fn save_edit(
     id: String,
     force: bool,
 ) -> std::result::Result<SaveOutcome, CommandError> {
-    let backend = state.backend().await;
+    let backend = state.backend().await?;
     state
         .edits
         .save(&backend, &id, force)
@@ -1024,6 +1085,11 @@ async fn stream_range(
             .unwrap_or_default();
     };
     let length = u32::try_from(end - start + 1).unwrap_or(u32::MAX);
+    // Deliberately still `read_range` and not the streaming handle E13-S7 gave
+    // transfers: a seek is a range, not a stream. Each request here is
+    // unrelated to the last — a player jumps, an image loads once — so a handle
+    // kept open between them would hold a file the user has already navigated
+    // away from, to save an open nobody is waiting on.
     let Ok(data) = backend.read_range(path, start, length).await else {
         return refuse(http::StatusCode::INTERNAL_SERVER_ERROR);
     };
@@ -1120,14 +1186,12 @@ pub fn run() {
         secrets: Arc::clone(&secrets),
     })));
 
-    let demo: Arc<dyn ShareBackend> = Arc::new(MockBackend::media_share());
     let queue_path = queue_path();
     let queue = Arc::new(TransferQueue::open(queue_path));
     let worker = Arc::new(Worker::new(
         Arc::clone(&queue),
         Arc::new(ActiveMount {
             sessions: Arc::clone(&sessions),
-            demo: Arc::clone(&demo),
         }),
         DEFAULT_CONCURRENCY,
     ));
@@ -1140,7 +1204,6 @@ pub fn run() {
         // Previews and media read through here, never through a command.
         .register_asynchronous_uri_scheme_protocol(STREAM_SCHEME, |context, request, responder| {
             let sessions = Arc::clone(&context.app_handle().state::<AppState>().sessions);
-            let demo = Arc::clone(&context.app_handle().state::<AppState>().demo);
             // The path is percent-encoded by the webview; a name with a space
             // or a `#` in it is common enough that decoding is not optional.
             let path = percent_decode(request.uri().path().trim_start_matches('/'));
@@ -1150,8 +1213,17 @@ pub fn run() {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             tauri::async_runtime::spawn(async move {
-                let backend = sessions.active_backend().await.unwrap_or(demo);
-                responder.respond(stream_range(backend, &path, range).await);
+                // Nothing mounted is not something to answer with a stand-in:
+                // a preview of a file that does not exist is worse than a
+                // broken image (E1-S6).
+                let response = match sessions.active_backend().await {
+                    Ok(backend) => stream_range(backend, &path, range).await,
+                    Err(_) => http::Response::builder()
+                        .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                        .body(Vec::new())
+                        .unwrap_or_default(),
+                };
+                responder.respond(response);
             });
         })
         .manage(AppState {
@@ -1161,7 +1233,6 @@ pub fn run() {
             edits: Arc::new(EditStore::app_default().expect("no cache directory for edits")),
             transfers: Arc::clone(&queue),
             worker: Arc::clone(&worker),
-            demo: Arc::clone(&demo),
         })
         .setup(move |app| {
             // Mount changes reach the window as events rather than by polling,

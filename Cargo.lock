@@ -1482,6 +1482,7 @@ dependencies = [
 name = "excalibur-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "excalibur-engine",
  "serde_json",
  "tokio",

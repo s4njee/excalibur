@@ -109,7 +109,7 @@ as a transitive dependency of these.
 | `tauri`, `tauri-build`, `tauri-plugin-store` | `src-tauri` | The shell: window, IPC, and persisted bookmarks. |
 | `xsync-client` | engine | The xsync v3 backend. Path dependency on the sibling repo until its `v3` branch is pushed (E7-S0). |
 | `tokio` | engine | Async runtime the backends and session manager are written against. |
-| `async-trait` | engine | `ShareBackend`/`Connector` need async methods on an object-safe trait. |
+| `async-trait` | engine, cli | `ShareBackend`/`Connector` need async methods on an object-safe trait. The CLI took it too for `xcal get`, which implements the worker's `BackendSource` (E13-S7); nothing new entered the tree. |
 | `serde`, `serde_json` | both | DTOs across IPC, and the CLI's fixture output. |
 | `thiserror` | engine | The engine's error enum. |
 | `keyring` | engine | E3-S3. The OS credential store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Chosen over writing three platform bindings because the workspace denies `unsafe_code` and all three need FFI. |

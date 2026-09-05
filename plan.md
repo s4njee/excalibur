@@ -172,14 +172,14 @@ reconstruct it from git history.
 | **M4** | E8-S9 — Live refresh | **Partly done** (coalescer built; `watch` has no producer) |
 | **M4** | E1-S4 — Responsive column dropping | **Done** 2026-09-04 |
 | **M4** | E1-S5 — Transitions | **Done** 2026-09-04 |
-| **M4.5** | E1-S6 — First run and empty state | Not started (found driving the real app 2026-09-05) |
-| **M4.5** | E3-S5 — Dialog fields in the real webview; Quick Look button | Not started (found 2026-09-05) |
-| **M4.5** | E7-S4 — SSH failures reported, not swallowed | Not started (found 2026-09-05) |
-| **M4.5** | E7-S5 — Capacity on xsync | Not started (found 2026-09-05) |
-| **M4.5** | E13-S4 — Folder download (the recursive walk) | Not started (unmet bullet, needed for a real share) |
-| **M4.5** | E13-S7 — Streaming reads for transfers | Not started (22 MB/s vs 85 MB/s raw ssh, measured 2026-09-05) |
-| **M4.5** | E18-S1 — macOS build (local, unsigned) | Not started |
-| **M4.5** | E18-S4 — Staging `xs` on a server | Not started |
+| **M4.5** | E1-S6 — First run and empty state | **Done** 2026-09-05 (the demo mock is gone from the shell) |
+| **M4.5** | E3-S5 — Dialog fields in the real webview; Quick Look button | **Done** 2026-09-05 |
+| **M4.5** | E7-S4 — SSH failures reported, not swallowed | **Done** 2026-09-05 (`ssh-keyscan` still swallows the same distinction) |
+| **M4.5** | E7-S5 — Capacity on xsync | **Done** 2026-09-05 (refreshed around a listing, 30 s) |
+| **M4.5** | E13-S4 — Folder download (the recursive walk) | **Done** 2026-09-05 (aggregating folder rows refused, not deferred) |
+| **M4.5** | E13-S7 — Streaming reads for transfers | **Done** 2026-09-05 (27.6 → 66.1 MB/s release; ≈101% of raw `ssh cat`) |
+| **M4.5** | E18-S1 — macOS build (local, unsigned) | **Partly done** 2026-09-05 (icon set and `.app`/`.dmg`; signing deferred) |
+| **M4.5** | E18-S4 — Staging `xs` on a server | **Done** 2026-09-05 (verified on `root@orion.local`) |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -436,8 +436,10 @@ is the same component tree with `mount.writable` false.
 - `prefers-reduced-motion` turns the panel's animation off. Someone who asked
   the system not to animate should not be animated at.
 
-#### E1-S6 — First run and empty state
-*Found 2026-09-05 by launching the bundled app with nothing saved.*
+#### E1-S6 — First run and empty state — **Done**
+
+*Found 2026-09-05 by launching the bundled app with nothing saved; fixed the
+same day.*
 
 The desktop app opened on the design's fixture: a fake `smb://nas.local/media`
 with fake films, an `RW` badge and `2.4 TB free of 16 TB`, and nothing mounted.
@@ -453,18 +455,77 @@ click lands on the sheet. Selecting a file and pressing Download with the sheet
 up does nothing, silently.
 
 **AC**
-- In the desktop app, with no mount active, the list area shows an empty state
-  ("No share connected" + a `New connection…` button that opens the dialog) and
-  the status bar, breadcrumb and window title name nothing. No verb is enabled.
-  The fixture is served **only** in the browser preview (`!inTauri()`), never by
-  the Tauri shell — remove or gate the `demo` fallback so a command with no
-  active mount is an error the window can render, not a mock listing.
-- The browser preview (`pnpm dev`, `?screen=…`) is unchanged.
-- The Transfers sheet no longer covers the toolbar: it opens below the toolbar
-  row (or the toolbar's verbs stay clickable above it). Recorded in
-  `docs/design-gaps.md`, since the handoff draws it as a second window.
-- Tests: the empty-state render; a test that `defaultBackend()` in Tauri does
+- [x] In the desktop app, with no mount active, the list area shows an empty
+  state ("No share connected" + a `New connection…` button that opens the
+  dialog) and the status bar, breadcrumb and window title name nothing. No verb
+  is enabled. The fixture is served **only** in the browser preview
+  (`!inTauri()`), never by the Tauri shell — the `demo` field is gone from
+  `AppState`, from the transfer worker's `BackendSource` and from the stream
+  protocol handler, and `AppState::backend()` now returns the session manager's
+  `Disconnected` error.
+- [x] The browser preview (`pnpm dev`, `?screen=…`) is unchanged. `?screen=empty`
+  is added, which is the only way to look at the new state in a browser.
+- [x] The Transfers sheet no longer covers the toolbar: it opens below the
+  toolbar row. Recorded in `docs/design-gaps.md`.
+- [x] Tests: the empty-state render; a test that `defaultBackend()` in Tauri does
   not fall back to the fixture.
+
+**Results**
+
+- **The bug was not a missing empty state; it was a convincing fake one.** The
+  window had no way to tell the mock from a real share, and neither did the
+  user: rows, an `RW` badge, `2.4 TB free of 16 TB`, and verbs that acted on it.
+  So the fix is mostly a subtraction — the mock is gone from all three places it
+  was wired in, not only from `AppState::backend()`. It also sat behind the
+  transfer worker (an upload with nothing mounted would have been "moved" into
+  a mock) and behind the streaming protocol (a Quick Look of a file that does
+  not exist). Fixing only the command path would have left both.
+- **The listing is the gate for the window's chrome, not the bookmark.** The
+  first version read the title and breadcrumb from `activeBookmark()`, which is
+  right until you relaunch with a bookmark still flagged `mounted` from the last
+  session — then the title bar names a share the shell is not holding, which is
+  the same bug in a second costume. The test seeds exactly that bookmark.
+- **"No listing" is not the same as "not connected".** There is one frame
+  before the first request settles where the listing is also null, and an empty
+  state that flashed before every window would be worse than none. The state is
+  `listing() === null && error() !== null` — the engine has actually answered.
+  A failed navigation on a live mount leaves the previous listing on screen, so
+  it does not land here either.
+- **`listingState.error()` had never been read by anything.** A listing failure
+  was silently swallowed, and its message was `String(problem)` on a serialised
+  Tauri error — "[object Object]". It goes through `engineFailure` now, which is
+  the module that exists for exactly that.
+- Every verb in the empty window is disabled through the *same* `gate` the
+  mounted window uses, with `NO_SHARE_REASON` as the context's reason. A
+  separate "if disconnected, disable everything" branch would be a second rule
+  that could disagree with the first, and E9-S1's whole point is that there is
+  one.
+- **The sheet's overlap was measured, not computed.** It was anchored to the
+  title bar at 34px; the verbs sit at y 43.5–67.5, and the sheet's 560px covered
+  the right half of the toolbar. It now opens at
+  `calc(var(--height-titlebar) + var(--height-toolbar))` = 78px, verified in the
+  preview by hit-testing each verb's centre with `elementFromPoint` rather than
+  by reading the stylesheet.
+
+- **Relaunch, checked by the lead in the bundled app:** a bookmark read back from the
+  store with `mounted: true` put itself under MOUNTED and titled the window after a share
+  no session was holding. Sessions are not persisted, so every stored `mounted` flag is
+  stale at launch; they are cleared on load (`withMounted(saved, new Set())`) and the
+  row appears under BOOKMARKS, where a double-click mounts it.
+
+**Next steps**
+
+- A bookmark keeps `mounted: true` across a relaunch even though no session
+  survives one, so the sidebar's `MOUNTED` section can show a row for a share
+  that is not mounted. The chrome no longer believes it, but the sidebar still
+  draws it. It wants either a "clear `mounted` on load" pass or a reconcile
+  against `mount://changed` — E17-S1's store is where that belongs.
+- The empty state does not offer the saved bookmarks directly, though it names
+  them. A "pick one of these" first run is the obvious next question for a
+  designer, and is flagged as such in `docs/design-gaps.md`.
+- The window title is the web title bar only; the OS window is still called
+  "Excalibur" from `tauri.conf.json`. Nothing reads wrong today, but a real
+  first run has no share name to put anywhere.
 
 ### E2 — Engine core and Tauri bridge
 
@@ -825,8 +886,9 @@ up does nothing, silently.
   same `KnownHosts` store driven from a host-key callback instead of from `ssh-keyscan`.
   The store was written with that in mind; `verify` is the part that will not transfer.
 
-#### E3-S5 — Dialog fields in the real webview; the Quick Look button
-*Found 2026-09-05 by driving the bundled app.*
+#### E3-S5 — Dialog fields in the real webview; the Quick Look button — **Done**
+
+*Found 2026-09-05 by driving the bundled app; fixed the same day.*
 
 Two things the browser preview could not show:
 
@@ -840,13 +902,51 @@ Two things the browser preview could not show:
    is enabled, has a tooltip, and is inert.
 
 **AC**
-- Every field in the New Connection dialog carries `autocapitalize="none"`,
+- [x] Every field in the New Connection dialog carries `autocapitalize="none"`,
   `autocorrect="off"`, `spellcheck={false}` (and `autocomplete` set sensibly —
   `off` for the password, `username` for the username). The Filter field too.
-- The toolbar `Quick Look` verb toggles the panel exactly as Space does,
+- [x] The toolbar `Quick Look` verb toggles the panel exactly as Space does,
   including the one-selected-row rule.
-- A test that the dialog's inputs carry the attributes, and one that the verb's
-  click reaches the same handler as the shortcut.
+- [x] A test that the dialog's inputs carry the attributes, and one that the
+  verb's click reaches the same handler as the shortcut.
+
+**Results**
+
+- **The four attributes travel as one value** (`PLAIN_FIELD`, spread onto each
+  input) rather than being repeated six times. The bug this story fixes is a
+  field that is missing one of them, and a set that has to be retyped per field
+  is a set that will be. `autocomplete` is `off` everywhere except Username,
+  which is `username`: a password manager may reasonably hold the account name
+  for a host, while the secret belongs in the OS keychain through the "Save in
+  keychain" box.
+- **The test enumerates whatever the dialog renders, per protocol tab**, instead
+  of naming the six fields. The dialog swaps its field set rather than disabling
+  what does not apply, so Password and Domain exist only on some tabs — and the
+  field that will actually break this is the one added later, which no named
+  case would cover.
+- **The Quick Look test asserts the two entry points are one verb, not that
+  each works.** Open with the button, close with Space, open with Space, close
+  with the button. Two handlers each holding their own copy of the
+  one-selected-row rule would pass "the button opens the panel" and fail this.
+  The rule itself is now `toggleQuickLook()`, which both call.
+- The Filter field got the same attributes for the same reason: a filter that
+  quietly became `Arrival` after the user typed `arrival` matches nothing, and
+  the failure looks like the filter being broken.
+- Verified in the rendered DOM rather than the source — all seven inputs
+  (six dialog fields across the SMB and xsync tabs, plus Filter) read back
+  `autocapitalize="none"`, `autocorrect="off"`, `spellcheck="false"` and an
+  `autocomplete` in the browser preview. jsdom does not implement the
+  `spellcheck` IDL property, so the test reads the attribute, which is what
+  WebKit reads too.
+
+**Next steps**
+
+- The same treatment is owed to any field added later — the rename input in the
+  list, and the Preferences sheet's download-folder box, are both plain text in
+  a WKWebView today. Neither was in this story's AC.
+- `autocapitalize`/`autocorrect` are WebKit's; nothing here is verified against
+  a Linux WebKitGTK build, where the defaults differ and the attributes are
+  harmless either way.
 
 ### E4 — SMB backend
 
@@ -1600,8 +1700,9 @@ For remotes running an older `xs` that only speaks browse v2 (xsyncv3 E11-S2 dow
 - The dialog's "Browse exports…" lists `ListExports` results with access badges
   (RW/RO) and comments; picking one fills the Export field.
 
-#### E7-S4 — SSH failures reported, not swallowed
-*Found 2026-09-05 against `root@orion.local`.*
+#### E7-S4 — SSH failures reported, not swallowed — **Done**
+
+*Found 2026-09-05 against `root@orion.local`; fixed the same day.*
 
 `XsyncBackend::connect_ssh` inherits `ssh`'s stderr. In the desktop app that
 goes nowhere, so `Permission denied (publickey)` reached the user as
@@ -1612,22 +1713,93 @@ established mount the session manager would have retried a refused login
 forever — the exact loop E15-S2 exists to prevent.
 
 **AC**
-- `ssh`'s stderr is captured (piped, drained on a task, bounded) and, when the
+- [x] `ssh`'s stderr is captured (piped, drained on a task, bounded) and, when the
   session fails before the first reply, its last lines are the error. A
   `Permission denied` / `Host key verification failed` / `Could not resolve
   hostname` from `ssh` maps to `AuthenticationFailed` / `HostKeyChanged` /
   `NotFound`-class errors respectively, and only genuine transport drops map to
-  `Disconnected`.
-- `xs: command not found` on the remote maps to a message that says so and names
+  `Disconnected`. *(The `NotFound` class became its own variant,
+  `EngineError::HostNotFound` — see Results.)*
+- [x] `xs: command not found` on the remote maps to a message that says so and names
   the fix ("install xs on the server or put it on PATH"; see E18-S4).
-- After the session is up, `ssh`'s stderr lines are logged (`tracing`/`eprintln`
+- [x] After the session is up, `ssh`'s stderr lines are logged (`tracing`/`eprintln`
   is fine) rather than dropped, so a later disconnect has a reason.
-- Tests using `rsh` (the existing test hook) with a fake `ssh` script that
+- [x] Tests using `rsh` (the existing test hook) with a fake `ssh` script that
   prints a given stderr and exits.
 
-#### E7-S5 — Capacity on xsync
+**Results**
+
+- **The user reads what `ssh` said.** `xcal mount --xsync-ssh
+  orion.local:/srv/strife --user nosuchuser` ended in `connection lost:
+  connection closed before the request was answered`; it now ends in
+  `authentication failed: nosuchuser@orion.local: Permission denied
+  (publickey).` The classification matters more than the wording:
+  `AuthenticationFailed` is not `transient()`, so an established mount that
+  fails this way stops at E15-S2's guard instead of re-offering a rejected
+  login until the account locks.
+- **Matching OpenSSH's English is unlovely and is the only signal there is.**
+  `ssh` exits 255 for a refused key, an unreachable host and a rejected
+  password alike, so the exit status separates only the *remote command's*
+  failures — 127 from the login shell being the one that says `xs` was not
+  found. Both the status and the wording are consulted there, because the
+  phrasing differs by shell (`bash: xs: command not found`, `sh: xs: not
+  found`).
+- **Anything unrecognised stays `Disconnected` — carrying the captured text.**
+  A phrase this build has never heard of is still a dropped session, and
+  putting `ssh`'s words in the message means the next unfamiliar failure is
+  readable rather than invisible. That was the actual bug: not the mapping, the
+  silence.
+- **A host that does not resolve needed a variant of its own.** Reported
+  through `NotFound` it would have read "no such file or directory" for a
+  mistyped hostname, so `EngineError::HostNotFound` says "no such host"
+  instead. It is deliberately *not* transient, for the same reason a rejected
+  credential is not: the common cause is a name that will never resolve, and
+  retrying one every few seconds hides it behind a banner that says
+  "reconnecting".
+- **The drain has to be a task, and the bound belongs on the buffer.** Reading
+  the pipe only after a failure would let it fill, and a full pipe blocks `ssh`
+  itself — hanging the connection instead of reporting it. It keeps the last 20
+  lines, each clamped to 512 bytes, and ends at EOF, which is when `ssh` exits:
+  it cannot outlive the process, and a chatty remote cannot grow it. Nothing is
+  stripped, because there is nothing secret in it — `BatchMode=yes` means `ssh`
+  never asks for a password and it never echoes one.
+- **The failure and the reason arrive on different descriptors.** The client
+  sees a closed pipe, `ssh` writes why; which lands first is a race, so the
+  error waits (bounded, 500 ms) for the drain to end before it decides. Without
+  that wait the reason would arrive a moment after the error that needed it.
+- Lines are logged as they arrive rather than only kept, which is what gives a
+  disconnect *after* the session is up a reason at all — the mount that drops
+  an hour in has no failing call to attach an explanation to.
+- The tests drive a fake `ssh` through the existing `rsh` hook: it prints one
+  of OpenSSH's real messages and exits with one of its real codes. One of them
+  asserts the opposite property on purpose — a refused *connection* stays
+  `transient()` — because a mapping that made every failure fatal would be
+  worse than the loop it replaced, which is the same balance E15-S2 struck.
+
+**Next steps**
+
+- **`ssh-keyscan` sits upstream of all this and still swallows the same
+  distinction.** `hostkeys::verify` runs before `connect_ssh`, and a host that
+  does not resolve fails *there* as `Disconnected("… nodename nor servname
+  provided …")` — transient, so a typo'd hostname in a bookmark reconnects
+  forever — and because the scan comes first, a mistyped host never reaches the
+  `HostNotFound` mapping written here at all (that one catches the narrower
+  case where the scan resolved the name and `ssh` then could not). It is this
+  story's bug one layer up, and the classifier written here is where the answer
+  lives; it was left alone because `hostkeys` belongs to E3-S4 and the fix
+  wants to be a shared helper rather than a second copy of the phrase list.
+- `connect_local` still inherits `xs`'s own stderr. That is right for a
+  terminal and wrong for the window, and it will want the same treatment when a
+  local export is something the app offers rather than a test fixture.
+- The dialog shows the message; it still does not use the *class*. An
+  `AuthenticationFailed` from a bookmark should open the connection editor with
+  the rejection named, which is E15-S2's own outstanding next step and now has
+  an error worth naming.
+
+#### E7-S5 — Capacity on xsync — **Done**
+
 *Found 2026-09-05: the status bar showed `5 items` and no capacity for a mount
-whose `StatFs` answers.*
+whose `StatFs` answers. Fixed the same day.*
 
 `XsyncBackend::mount_info()` returns `capacity: None` even though
 `capacity()` works (`xcal df` prints `357503451136 free of 491590631424`). The
@@ -1635,13 +1807,48 @@ window takes capacity from the listing's mount facts (E10-S1), so nothing ever
 shows it.
 
 **AC**
-- `MountInfo.capacity` is populated at mount from `StatFs`, and refreshed on
+- [x] `MountInfo.capacity` is populated at mount from `StatFs`, and refreshed on
   each `list_dir` (one extra round trip per listing is acceptable; if it is not,
-  refresh at most every 30 s and say so).
-- The status bar shows `333 GB free of 458 GB` (or the app's formatting of the
+  refresh at most every 30 s and say so). *(Refreshed around a listing, at most
+  every 30 s — said out loud below.)*
+- [x] The status bar shows `333 GB free of 458 GB` (or the app's formatting of the
   numbers above) for the orion mount.
-- A test against `xs --server` (gated on `EXCALIBUR_XS`) that `list_dir`'s
+- [x] A test against `xs --server` (gated on `EXCALIBUR_XS`) that `list_dir`'s
   mount facts carry a capacity.
+
+**Results**
+
+- **The number was never missing; it was never anywhere the window looks.**
+  `capacity()` worked all along, and nothing calls it: the status bar reads the
+  mount facts that rode along with the listing it already has (E10-S1). So the
+  fix is a cached `StatFs` answer behind `mount_info()`, which is synchronous
+  and therefore cannot make a round trip of its own.
+- **It refreshes at most every 30 s rather than once per listing**, which is
+  the alternative the AC allowed and asked to have stated: `list_dir` is also
+  the walk inside a recursive delete, where a `StatFs` per directory would
+  double the traffic of a delete to keep a figure nobody is reading. Thirty
+  seconds is well inside the time a user spends in one directory.
+- **A failed refresh keeps the previous answer.** A listing that worked must
+  not fail because the number beside it could not be updated — and a stale
+  capacity is a much smaller lie than a directory that would not open.
+- Seeded at mount, so the *first* listing carries a figure rather than the
+  second one. `capacity()` itself stays a live round trip and updates the cache
+  on the way past, so `xcal df` still asks the server.
+- Against orion the listing's mount facts now carry `{"free": 356355829760,
+  "total": 491590631424}`, which `formatCapacity` renders as **`356 GB free of
+  492 GB`** — the same bytes as the story's `333 GB free of 458 GB`, in the
+  decimal units `formatSize` uses everywhere else in the app.
+
+**Next steps**
+
+- **SFTP, NFS and SMB take their capacity once at connect and never update it**,
+  so a mount left open all day still shows the space it had when it was
+  mounted. The shape built here — a cached answer with a TTL, refreshed where a
+  listing already costs a round trip — transfers directly, but it belongs with
+  each backend's own story rather than being smuggled in behind this one.
+- Nothing invalidates the cache after a transfer completes, so a large upload
+  is reflected on the next listing after the TTL rather than immediately. The
+  transfer worker knows exactly when that happened and could say so.
 
 ### E8 — Browsing
 
@@ -2351,6 +2558,17 @@ shows it.
 - **A read-only mount refuses the *checkout*, not the save.** Downloading a file, letting
   the user edit it, and only then saying it cannot be written back would waste their work.
 
+- **Regression found and fixed 2026-09-05, while running the suite against the current
+  `xs`.** The third save of one file failed with `staged file does not match its digest`.
+  A refused compare-and-swap left its stage open on the server (the client's `Stage`
+  has no `Drop` that aborts), and `StageOpen` with an empty resume token adopts any
+  stage for that destination — so the next save *resumed* the refused one, wrote a
+  shorter edit over longer stale bytes, and failed its own digest. The write path now
+  aborts a refused or failed stage by its token, and opens a whole-file replacement on
+  a fresh stage (aborting any it finds with bytes in it). The test asserts no
+  `.xsync.tmp.*` survives a refusal. Nothing in xsync changed; the assumption that a
+  dropped handle was an aborted stage was Excalibur's.
+
 **Next steps**
 
 - `Keep both` on the write-back conflict, reusing E13-S6's naming.
@@ -2464,17 +2682,20 @@ shows it.
 - Retries are transient-only and capped at five. Retrying a permission error four more
   times only delays telling the user.
 
-#### E13-S4 — Download / Upload verbs — **Done (files, not folders)**
+#### E13-S4 — Download / Upload verbs — **Done**
 
-*2026-09-03.*
+*2026-09-03; the recursive walk 2026-09-05.*
 
 **AC**
 - [x] `Download` writes the selection to the configured download folder; `Upload` opens a
   picker targeting the cwd; one queue row per file.
-- [ ] …*recursively*, with folder rows aggregating. **Not built:** a folder expands to one
-  row per file, and the expansion itself is not written. A single row for a directory can
-  only report a percentage that means nothing when one file in it fails, so the row model
-  is right; the walk is the missing part.
+- [x] …*recursively*. A folder now expands to one row per file at
+  `<dest>/<folder>/<relative path>`, with the directories — including the empty ones —
+  created before any row runs.
+- [ ] …with folder rows **aggregating**. Refused rather than unbuilt: a single row for a
+  directory can only report a percentage that means nothing once one file in it fails,
+  and the row that says `31 of 402 files` is a *view* over rows the queue already has.
+  It belongs with grouping in the transfer sheet, not with the walk.
 
 **Results**
 
@@ -2483,6 +2704,49 @@ shows it.
 - The picker is `tauri-plugin-dialog`, granted **`dialog:allow-open` only** — never save
   or ask. The webview's own file input yields `File` objects and the engine needs paths,
   which is the whole reason the plugin is there; the capability file says so.
+
+*The walk, 2026-09-05.*
+
+- **The walk is in the engine, not in the command.** `transfer::plan::plan_downloads`
+  takes a `&dyn ShareBackend` and a destination and returns files, directories and
+  problems; `enqueue_downloads` turns that into rows. That is what let it be tested
+  against a rigged backend — an unreadable subdirectory and a listing that loops are
+  three lines to arrange in a test and an afternoon to arrange against a real server.
+- **Nothing is skipped silently, and that is the whole story.** A subdirectory that
+  cannot be listed becomes a **failed row** carrying the server's own words, not one
+  fewer file. A copy that quietly omits what it could not read is the worst outcome a
+  file transfer has, because it looks exactly like a copy that worked.
+- **A name from a listing is data, not a path.** Every component is checked before it
+  becomes part of a local path: `..`, `.`, an empty name, a separator or a NUL is
+  refused and reported. A server answering a listing with `..` is describing a write
+  outside the folder the user picked, and there is a test that asserts nothing escapes.
+  This is the class of bug that makes a file browser a security problem rather than a
+  buggy one.
+- **Empty directories are created explicitly.** The worker creates a file's parent on its
+  way past, which is exactly what an empty directory has nothing to trigger — so the plan
+  names every directory and the command creates them first, parents before children.
+- **A `stat` that fails still becomes a row.** Dropping it would be the silent skip; the
+  row carries the real error from the worker, which is where the user is already looking.
+- A directory symlink is **not** followed as a directory. It is copied as the bytes it
+  points at, like any other read. Following it would let a link to `/` walk a server's
+  whole filesystem into somebody's Downloads folder.
+- The walk is iterative and keeps a visited set, so a listing that names a directory
+  already walked is reported as a loop rather than followed forever. There is a backstop
+  at 100k directories for the endless tree the visited set cannot see.
+- Verified against the real share on `orion.local`: `xcal get excalibur-bench/tree` and
+  the server's own `find` produce the same tree, empty directories included.
+
+**Next steps**
+
+- **Conflicts are not checked for the expanded rows.** `check_conflicts` still runs over
+  the paths the window selected, so a folder download that would overwrite an existing
+  local tree is not prompted about. The prompt's "apply to all remaining" scope (E13-S6)
+  and this are the same conversation and should be had once.
+- **A folder is walked before anything moves.** For a share with a hundred thousand files
+  that is a visible pause with no feedback. Streaming the rows into the queue as they are
+  found is the fix, and it needs the sheet to cope with a queue that is still growing.
+- Uploads still take a list of files. The picker can select a directory; the walk for the
+  local side is the mirror of this one and is not written.
 
 #### E13-S6 — Conflicts and resume — **Partly done**
 
@@ -2512,11 +2776,14 @@ shows it.
 
 *(E13-S5 is written up with E15-S2 below, since they landed together.)*
 
-#### E13-S7 — Streaming reads for transfers
+#### E13-S7 — Streaming reads for transfers — **Done**
+
+*2026-09-05.*
+
 *Measured 2026-09-05: a 1 GiB download from `root@orion.local` (Raspberry Pi 5,
 gigabit) took 48.5 s in the app (≈22 MB/s) against 12.6 s for
 `ssh orion cat file > /dev/null` (≈85 MB/s). Debug build; the release number is
-to be recorded below.*
+recorded below.*
 
 The worker downloads through `ShareBackend::read_range`, one 1 MiB chunk at a
 time, and the xsync implementation opens, reads and closes the file on every
@@ -2525,20 +2792,81 @@ inside one call but still opens per call. The seam is right for previews and
 media seeking; it is the wrong shape for a transfer.
 
 **AC**
-- `ShareBackend` gains an `open_read(path) -> Box<dyn ReadHandle>` (name and
+- [x] `ShareBackend` gains an `open_read(path) -> Box<dyn ReadHandle>` (name and
   shape are the implementer's, but: one open per transfer, `read_at(offset,
   length)` callable concurrently, an explicit close). A default implementation
   wraps `read_range` so SFTP, NFS and SMB keep working unchanged; xsync
   implements it over one `OpenFile` with `read_verified`.
-- The worker keeps N reads in flight per download (N configurable, default 4–8,
+- [x] The worker keeps N reads in flight per download (N configurable, default 4–8,
   chunk 1 MiB or the mount's `max_read` if smaller) and writes them in order;
   pause/cancel/resume semantics and the `.part` contract are unchanged, with
   the existing tests still passing.
-- A 1 GiB download from orion in a **release** build reaches ≥ 70% of the raw
+- [x] A 1 GiB download from orion in a **release** build reaches ≥ 70% of the raw
   `ssh cat` figure measured the same day, recorded in `docs/benchmarks.md`
-  with the command used.
-- Quick Look's `excalibur-stream://` handler is left on `read_range` (a seek is
+  with the command used. **≈101%**, not 70.
+- [x] Quick Look's `excalibur-stream://` handler is left on `read_range` (a seek is
   a range, not a stream) — say so in a comment rather than changing it.
+
+**Results**
+
+- **The seam was the whole bug.** `read_range` opens, reads and closes on every call:
+  three serial round trips to move one megabyte, and the link idle between each of them.
+  Nothing about the chunk size fixes that, which is why the story is a new method rather
+  than a bigger constant. One 1 GiB file went from **27.6 MB/s to 66.1 MB/s** in the same
+  release build — and the 66 is now **≈101% of raw `ssh cat` on the same link,
+  interleaved run for run**, with every chunk BLAKE3-verified end to end, which `ssh cat`
+  does not do. The transfer is no longer round-trip bound; it is bound by what `ssh`
+  itself is bound by on a Pi 5.
+- **The 85 MB/s baseline in the story header did not reproduce.** Six `ssh cat` runs the
+  same morning read 99.2, 65.2, 61.9, 58.5, 62.1 and 64.1 MB/s. Taking the fastest as
+  *the* baseline would have been choosing a number rather than measuring one, so the
+  comparison in `docs/benchmarks.md` alternates one run of each and quotes the means.
+  Had the 85 stood, the bar would still have been cleared — but only just, and by luck.
+- **The default is 4, not 8.** The sweep flattens hard: 27.6 / 43.5 / 66.1 / 61.5 / 62.7 /
+  59.9 MB/s at depths 1, 2, 4, 6, 8, 16. Past the plateau depth buys nothing and costs a
+  megabyte of buffer per read in flight per running transfer, plus a longer tail on a
+  cancel — which finishes the window it has already asked for rather than abandoning it.
+- **The default implementation lives in `backend/mod.rs` and wraps `read_range` honestly.**
+  It is not a fast path: every call still opens and closes underneath. What it buys is one
+  shape at the call site, so the worker has a single code path and SFTP, NFS and SMB
+  behave exactly as they did. The trait method returns `Option`, and the free function
+  `backend::read_handle` does the wrapping — because a default body holding `&self`
+  cannot hand back a `'static` handle, and `'static` is what lets the worker spawn the
+  reads.
+- **Reads are scheduled ahead and written strictly in order.** The window is a queue and
+  its front is awaited before anything behind it is looked at. Writing chunks as they
+  arrived would need seeks and would leave a `.part` with holes — which is exactly the
+  file the resume rule cannot tell from a good one. The test uses a payload whose every
+  byte depends on its offset, because a file of identical bytes cannot tell a correct
+  copy from a shuffled one.
+- **A short read is the end of the file, and that is a contract now.** Every backend in
+  the tree already fills a read that is not at the end — SMB and NFS loop internally to
+  make it so — so the trait says it out loud and the worker stops there.
+- **One existing test had to change, and it was measuring the wrong thing.** The
+  cancel-mid-flight test relied on eight 1 MiB chunks taking longer than 80 ms *because
+  they were serial*. They are not any more, so the mock's latency went from 40 ms to
+  200 ms and the comment now says why. The property it asserts is untouched.
+- **A download without a size now asks for one.** Scheduling ahead needs a total, so a row
+  enqueued with `bytes_total == 0` stats the file and tells the queue — which also gives
+  it a real progress bar instead of an indeterminate one.
+- `xcal get REMOTE LOCAL` drives the queue, the worker and the streaming path headlessly,
+  so the benchmark measures the app rather than something shaped like it. It takes
+  `--depth`, which is how the sweep was run, and it walks a directory through E13-S4's
+  planner.
+
+**Next steps**
+
+- **Many small files are untouched by this.** The depth is *inside* a file; a thousand
+  1 MB files still pay one open each, serially, three transfers at a time. Depth across
+  transfers is the concurrency preference, and 3 was chosen for a serial reader.
+- **Uploads are still sequential**, by design — a pipelined write that failed halfway
+  would leave holes — but nothing has measured what that costs on this link.
+- **SFTP, NFS and SMB keep the wrapper.** SFTP pipelines *inside* one `read_range` and
+  still opens per call, so it has the most to gain from implementing `open_read`; that is
+  a story of its own, with its own measurement.
+- The read depth is not a preference. It is a `Worker` setter with no UI, like
+  concurrency was before E17-S1, and it should join it there rather than get its own
+  control.
 
 #### E14-S1 — New folder, rename, delete — **Done**
 
@@ -2849,29 +3177,192 @@ media seeking; it is the wrong shape for a transfer.
 
 ### E18 — Packaging and release
 
-#### E18-S1 — macOS
-**AC**
-- Universal `.dmg`, hardened runtime, notarised; auto-update via Tauri updater with a
-  signed manifest; app icon set.
+#### E18-S1 — macOS — **Partly done (a local build; everything signed is deferred)**
 
-#### E18-S4 — Staging `xs` on a server
+*2026-09-05.*
+
+**AC**
+- [x] App icon set. `pnpm tauri icon src-tauri/icons/icon.png` writes a twelve-member
+  `icon.icns` (16 through 1024, `@1x` and `@2x`), `bundle.icon` names it, and the
+  bundler copies it to `Contents/Resources/icon.icns`, points `CFBundleIconFile` at
+  it, and reuses it as the DMG's volume icon.
+- [x] A `.dmg`. `pnpm tauri build` produces
+  `target/release/bundle/dmg/Excalibur_0.1.0_aarch64.dmg` (4.6 MB, the app plus an
+  `/Applications` symlink) alongside a `Excalibur.app` that launches and stays up.
+- [ ] **Universal.** *Deferred:* the build is `aarch64` only. A universal binary is
+  `--target universal-apple-darwin` plus the `x86_64-apple-darwin` std, and nothing
+  in the tree is architecture-specific — but there is no Intel Mac here, and a slice
+  nobody has ever run is worse than one architecture honestly labelled.
+- [ ] **Hardened runtime, and notarised.** *Deferred:* both need a Developer ID.
+  The runtime flag itself is already reachable — `APPLE_SIGNING_IDENTITY=-` makes
+  Tauri sign with `--options runtime` — but hardened runtime is a promise about who
+  signed, and ad-hoc names nobody. Notarisation additionally needs a paid
+  certificate and App Store Connect credentials, which a build cannot invent.
+- [ ] **Auto-update via the Tauri updater with a signed manifest.** *Deferred:* the
+  updater plugin wants a keypair, an endpoint serving `latest.json`, and a signed
+  artifact to point at. That is E18-S3's release channel, and building the client
+  half first would be a client for nothing.
+
+**Results**
+
+- **With no `APPLE_SIGNING_IDENTITY`, Tauri does not run `codesign` at all** — it
+  does not ad-hoc sign the bundle, as one might assume from the fact that the built
+  app is nonetheless *reported* as ad-hoc. What `codesign -dv` shows is
+  `flags=0x20002(adhoc,linker-signed)`, `Info.plist=not bound`,
+  `Sealed Resources=none`: that is the **linker's** signature, which every arm64
+  Mach-O gets whether anyone asked or not. There is no `_CodeSignature` directory in
+  the bundle.
+- **So the bundle is not merely unsigned, it is inconsistently signed**, and
+  Gatekeeper says so rather than saying "unidentified developer":
+  `spctl --assess --type execute` and `codesign --verify --strict` both fail with
+  *code has no resources but signature indicates they must be present*, and
+  `syspolicy_check distribution` calls that a fatal notary error. This matters for
+  the README's one-line workaround: **right-click → Open does not help**, because
+  the assessment fails on a malformed signature rather than an unknown developer, so
+  macOS offers no override. `xattr -dr com.apple.quarantine` is the workaround, and
+  it is only needed for a copy that *arrived* somewhere — a locally built app carries
+  no quarantine flag and Gatekeeper is never consulted for it.
+- **`APPLE_SIGNING_IDENTITY=-` is a strictly better local artifact and is still not
+  distributable.** It gets a sealed `_CodeSignature`, `flags=0x10002(adhoc,runtime)`
+  — the hardened runtime, for free — and `codesign --verify` passes. `spctl` still
+  answers `rejected`. Documented in the README as the opt-in it is, rather than made
+  the default, because of the next point.
+- **The signing path is booby-trapped by Homebrew.** Tauri runs `xattr -cr` on the
+  bundle before signing; Homebrew's `xattr` does not implement `-r`, and when it is
+  first on `PATH` the bundle step dies with `failed to run xattr` *after* a full
+  release build. `PATH=/usr/bin:$PATH` in front of the command is the fix. Making
+  ad-hoc signing the default would have handed that failure to everyone building
+  here, for a signature that Gatekeeper rejects anyway.
+- **The bundler generates its own `.icns` when handed only PNGs, and it is a poor
+  one.** The pre-existing build's `Excalibur.icns` had six members —
+  `il32/l8mk`, `it32/t8mk`, `ic13`, `ic09` — three of them the 1990s 32/128px
+  formats, with no 256, no 1024, and nothing for the 16px sizes Finder uses in list
+  view. Supplying a real `icon.icns` in `bundle.icon` replaces that wholesale.
+- `pnpm tauri icon` also emits Windows Store logos and full Android and iOS asset
+  catalogues. They are deleted: this ships macOS and Linux, and unused generated
+  binaries in the tree are noise that will be stale before anyone needs them. The
+  `.ico` is kept, since the decisions table says Windows stays buildable.
+- CI gains a `package-macos` job that runs `pnpm tauri build --bundles app` and
+  asserts the `.icns` reached `Contents/Resources`. It needs no secrets and signs
+  nothing, deliberately: the bundle configuration is the one thing no other job
+  exercises, and a `bundle.icon` that quietly stops naming the `.icns` produces a
+  generic Dock icon that no test would ever notice.
+
+**Next steps**
+
+- **The artwork is still a flat blue square** — a 512px `#2f6bf1` fill with square
+  corners, which is not what a macOS icon looks like. The icon *set* is correct now;
+  the mark is E0-S3's, and this story deliberately did not invent one.
+- Signing, notarisation, the universal build and the updater all wait on a Developer
+  ID. Until then the `.dmg` is distributable only by hand, with the `xattr` line
+  attached to it.
+- E18-S2 (Linux `.AppImage`/`.deb`) is the other half of M5 and is untouched.
+
+#### E18-S4 — Staging `xs` on a server — **Done**
+
+*2026-09-05.*
+
 The xsync backend needs `xs` on the remote's `PATH` (`connect_ssh` runs
 `PATH="$HOME/.local/bin:$PATH" xs --server <root>`). The user's servers are
 Linux (aarch64 and x86_64); the dev machine is a Mac with `cargo-zigbuild` and
 the `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` targets installed.
 
 **AC**
-- `scripts/stage-xs.sh [user@]host [--target <triple>]` cross-compiles `xs`
+- [x] `scripts/stage-xs.sh [user@]host [--target <triple>]` cross-compiles `xs`
   from the sibling `../xsync` checkout (release, the host's triple detected
   over ssh with `uname -m` when not given) and installs it to
   `~/.local/bin/xs` on the host (or `/usr/local/bin` when the login is root),
   then prints `xs --version` from the remote as proof.
-- README gains a "Run it against your own server" section: build the app,
+- [x] README gains a "Run it against your own server" section: build the app,
   stage `xs`, open New Connection → xsync, what to type in each field, what the
   host-key prompt means, and the two failure messages E7-S4 produces and what
-  to do about each.
-- Verified against `root@orion.local` (Gentoo, aarch64, glibc) — the script's
-  output pasted into the story's Results.
+  to do about each. *(The section describes the two failure **classes** —
+  ssh refused the login, and ssh ran but could not find `xs` — with the command
+  that distinguishes them. It does not quote E7-S4's strings, which were being
+  written at the same time as this.)*
+- [x] Verified against `root@orion.local` (Gentoo, aarch64, glibc 2.43).
+
+**Results**
+
+- The whole run, unedited, first against the default destination:
+
+  ```text
+  $ scripts/stage-xs.sh root@orion.local
+  stage-xs.sh: probing root@orion.local
+  stage-xs.sh: root@orion.local is aarch64, glibc 2.43, login root -> /usr/local/bin/xs
+  stage-xs.sh: building xs for aarch64-unknown-linux-gnu.2.31 from /Users/sanjee/projects/xsync
+     Compiling xsync v0.1.0 (/Users/sanjee/projects/xsync/crates/xsync)
+      Finished `release` profile [optimized] target(s) in 1m 04s
+  stage-xs.sh: built 6874799a35cd -> …/target/aarch64-unknown-linux-gnu/release/xs (6377560 bytes)
+  stage-xs.sh: sending to root@orion.local:/usr/local/bin/xs
+
+  xs 0.1.0 (6874799a35cd 2026-09-05) aarch64-unknown-linux-gnu
+  commit:    6874799a35cd
+  built:     2026-09-05
+  target:    aarch64-unknown-linux-gnu
+  protocol:  wire v2, browse v2
+  features:  blake3, zstd, unix-permissions, non-utf8-paths
+
+  xs on the backend's PATH: /root/.local/bin/xs
+  stage-xs.sh: warning: that is not the copy just staged (/usr/local/bin/xs) — an older xs shadows it
+  ```
+
+- **That last warning is the reason the check exists, and it fired on the first
+  real run.** `/usr/local/bin` is the obvious place to install for root, and it is
+  the wrong one: the backend prepends `$HOME/.local/bin` to `PATH`, orion already
+  had an `xs` there from an older commit, and a staging script that stopped at
+  "installed successfully" would have left the app running a binary that was
+  replaced. Re-running with `--dest '$HOME/.local/bin'` staged over the shadowing
+  copy and printed the same version block with no warning.
+- **The staged binary is executed on the host before it replaces anything.** It
+  arrives as `.xs.staged.$$` next to its destination, is run there with `--version`,
+  and only then `mv`s into place; a glibc or architecture mismatch fails with the
+  previous `xs` untouched. Nothing is ever removed recursively — the single `rm -f`
+  in the script targets the staged file it just wrote, on the failure path.
+- **glibc is pinned to 2.31 by default, not left to the toolchain.** zig links
+  against whatever it defaults to, which is newer than several of the machines this
+  is aimed at, and the failure mode is a `GLIBC_2.xx not found` at exec time on the
+  server rather than anything the build says. 2.31 is old enough for any host worth
+  supporting; the script reads the host's own version with `getconf
+  GNU_LIBC_VERSION` and refuses to install a binary that would need a newer one.
+- **`--locked` on the cross build, because the xsync checkout is not ours.** Only
+  `target/` is written; the sibling repo's `Cargo.lock` is left exactly as it was.
+- An architecture that is neither aarch64 nor x86_64 stops the script before it
+  builds anything, and says to build on the host instead. Every ssh call carries
+  `BatchMode=yes`, so a host that wants a password fails in ten seconds rather than
+  hanging on a prompt nobody will see.
+- The round trip from this Mac, headless, after staging:
+
+  ```text
+  $ cargo run -q --bin xcal -- ls --xsync-ssh orion.local:/srv/strife --user root
+  ssh[orion.local]: [xsync server] process started: pid=416148, root=/srv/strife, read_only=false, attr_cache_ms=1000, dir_cache_ms=30000
+  ssh[orion.local]: [xsync server] waiting for client handshake
+  ssh[orion.local]: [xsync server] received handshake: frame_id=1, role=Session, capabilities=0xcc
+  ssh[orion.local]: [xsync server] v3 features: client=0x0, server=0x3900, common=0x0
+  nvme                                   4096 Folder
+  app                                    4096 Folder
+  ext                                    4096 Folder
+  postgres                               4096 Folder
+  cache                                  4096 Folder
+  excalibur-bench                        4096 Folder
+
+  RW · 6 items · read & write
+  ```
+
+  The `ssh[orion.local]:` lines are E7-S4's stderr drain, which landed while this
+  story was being written; before it, those server lines went nowhere.
+
+**Next steps**
+
+- The script installs; it does not *uninstall*, and it does not notice that the
+  staged commit differs from the one the desktop app was built against. A version
+  skew check belongs with E7-S1 (reduced mode), which is where protocol mismatch is
+  already being thought about.
+- x86_64 is implemented but untested — there is no x86_64 Linux host here. The only
+  thing that differs is the triple, but that is not the same as having run it.
+- Nothing stages `xs` for the user automatically from the app. It should stay that
+  way: a share browser that copies binaries onto servers is a different, larger
+  promise than the one on the tin.
 
 #### E18-S2 — Linux
 **AC**

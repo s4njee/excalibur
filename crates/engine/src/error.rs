@@ -31,6 +31,15 @@ pub enum EngineError {
     /// Authentication was rejected.
     #[error("authentication failed: {0}")]
     AuthenticationFailed(String),
+    /// The host itself could not be found: no DNS answer for the name.
+    ///
+    /// Separate from [`Self::NotFound`], which names a path inside a share, so
+    /// that a mistyped hostname is not reported as a missing file. Not
+    /// transient for the same reason a rejected credential is not: the common
+    /// cause is a name that will never resolve, and retrying a typo every few
+    /// seconds hides it behind a "reconnecting" banner instead of showing it.
+    #[error("no such host: {0}")]
+    HostNotFound(String),
     /// The host's SSH key has never been accepted on this machine.
     ///
     /// Carries the fingerprint rather than a formatted sentence because the
@@ -102,9 +111,10 @@ impl EngineError {
     pub const fn surface(&self) -> Surface {
         match self {
             Self::HostKeyUnknown { .. } => Surface::TrustPrompt,
-            Self::Disconnected(_) | Self::AuthenticationFailed(_) | Self::HostKeyChanged { .. } => {
-                Surface::Banner
-            }
+            Self::Disconnected(_)
+            | Self::AuthenticationFailed(_)
+            | Self::HostNotFound(_)
+            | Self::HostKeyChanged { .. } => Surface::Banner,
             Self::Unsupported(_) => Surface::Field,
             _ => Surface::TransferRow,
         }
@@ -174,6 +184,17 @@ mod tests {
         assert!(unknown().host_key());
         assert!(changed().host_key());
         assert!(!EngineError::NotFound("x".to_owned()).host_key());
+    }
+
+    #[test]
+    fn a_host_that_does_not_resolve_is_not_a_missing_file_and_is_not_retried() {
+        // `ssh: Could not resolve hostname` reported through `NotFound` would
+        // read "no such file or directory" for a mistyped host, and retrying a
+        // name that will never resolve is the loop E15-S2 stops.
+        let error = EngineError::HostNotFound("orion.locale".to_owned());
+        assert!(error.to_string().starts_with("no such host:"), "{error}");
+        assert!(!error.transient());
+        assert_eq!(error.surface(), Surface::Banner);
     }
 
     #[test]

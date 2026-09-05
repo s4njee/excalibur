@@ -272,6 +272,21 @@ async fn a_guarded_write_is_atomic_and_refuses_a_file_that_moved() {
         b"first edit",
         "a refused write published anyway"
     );
+    // And the refused bytes are gone from the server, not parked in a stage
+    // for the next save to resume. Found 2026-09-05: the third write below
+    // used to inherit "second edit" from the abandoned stage and fail its
+    // digest, because `StageOpen` with an empty token adopts any stage for
+    // the destination.
+    let leftovers: Vec<_> = std::fs::read_dir(root.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".xsync.tmp."))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a refused write left a stage behind: {leftovers:?}"
+    );
 
     // No expectation writes unconditionally.
     let forced = backend
@@ -283,4 +298,31 @@ async fn a_guarded_write_is_atomic_and_refuses_a_file_that_moved() {
         std::fs::read(root.path().join("notes.txt")).unwrap(),
         b"forced"
     );
+}
+
+#[tokio::test]
+async fn the_mount_facts_a_listing_carries_include_capacity() {
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+        .await
+        .expect("mount the export");
+
+    // Seeded at mount, so the first listing already has a number to carry
+    // rather than the second one (E7-S5).
+    let mounted = backend
+        .mount_info()
+        .capacity
+        .expect("mounting reads StatFs once");
+    assert!(mounted.total > 0, "{mounted:?}");
+    assert!(mounted.free <= mounted.total, "{mounted:?}");
+
+    // The window never calls `capacity()`: the status bar reads the mount
+    // facts that rode along with the listing (E10-S1), so a capacity that is
+    // only available from its own call is a capacity nothing ever shows.
+    let listing = backend.list_dir("").await.expect("list the root");
+    assert_eq!(listing.mount.capacity, Some(mounted));
 }

@@ -8,6 +8,8 @@ pub mod sftp;
 pub mod smb;
 pub mod xsync;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -305,6 +307,27 @@ pub trait ShareBackend: Send + Sync {
     /// reports `caps().random_access == false` rather than emulating it.
     async fn read_range(&self, path: &str, offset: u64, length: u32) -> Result<Vec<u8>>;
 
+    /// Open `path` once, for a caller that will read all of it (E13-S7).
+    ///
+    /// `None` — the default — means this backend has nothing better than
+    /// `read_range` to offer, and the caller should wrap that instead. Use
+    /// [`read_handle`] rather than calling this directly: it does the
+    /// wrapping, so a caller has one shape either way.
+    ///
+    /// Overriding it is worth it only where an open costs a round trip that a
+    /// handle then stops paying per chunk. xsync does; SFTP, NFS and SMB
+    /// currently do not, and their transfers are unaffected by this method
+    /// existing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be opened. A backend that simply has no
+    /// handle to give returns `Ok(None)`, which is not a failure.
+    async fn open_read(&self, path: &str) -> Result<Option<Arc<dyn ReadHandle>>> {
+        let _ = path;
+        Ok(None)
+    }
+
     /// Write `data` at `offset` under `mode`.
     async fn write_range(&self, path: &str, mode: WriteMode, data: &[u8]) -> Result<u64>;
 
@@ -369,4 +392,99 @@ pub trait ShareBackend: Send + Sync {
 
     /// Whether the connection is still answering.
     async fn ping(&self) -> Result<Health>;
+}
+
+/// One file, opened once and read many times (E13-S7).
+///
+/// `read_range` is the right seam for a preview or a media seek: a seek is a
+/// range, and each one is unrelated to the last. It is the wrong one for a
+/// transfer, where the same file is read a thousand times in order and every
+/// call pays for an open and a close it did not need — three round trips per
+/// megabyte on xsync, which is what held a 1 GiB download to a quarter of the
+/// link.
+///
+/// A handle is opened once per download attempt and closed when it finishes.
+#[async_trait]
+pub trait ReadHandle: Send + Sync {
+    /// Read `length` bytes at `offset`.
+    ///
+    /// **Callable concurrently on one handle**, and meant to be: the offset
+    /// travels in the request, so there is no cursor to protect and the
+    /// pipelining is the whole point.
+    ///
+    /// Returns fewer bytes than asked for **only at the end of the file**.
+    /// Every backend in the tree already honours that in `read_range` — SMB
+    /// and NFS loop internally to make it true — so a caller may treat a
+    /// short read as the end and stop.
+    ///
+    /// # Errors
+    ///
+    /// Fails as the underlying read does. `length` above [`Self::max_read`]
+    /// is a failure, not a short read: silently truncating would look like an
+    /// end of file that is not there.
+    async fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>>;
+
+    /// The largest single read this handle accepts.
+    fn max_read(&self) -> u32;
+
+    /// Release the handle.
+    ///
+    /// Explicit rather than left to `Drop`, because dropping cannot await and
+    /// cannot report. Calling it twice is not an error; reading after it is.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the close itself is refused or the connection has gone.
+    async fn close(&self) -> Result<()>;
+}
+
+/// What [`RangeReads`] claims as its limit.
+///
+/// The transfer worker's own chunk, so wrapping `read_range` neither splits a
+/// chunk the backend would have taken whole nor invents a bigger one.
+const RANGE_MAX_READ: u32 = 1024 * 1024;
+
+/// A [`ReadHandle`] over `read_range`, for a backend that has no handle.
+///
+/// It is the honest wrapper rather than a fast path: every call still opens
+/// and closes underneath. What it buys is one shape at the call site, so the
+/// worker has a single code path and SFTP, NFS and SMB behave exactly as they
+/// did before this trait existed.
+struct RangeReads {
+    share: Arc<dyn ShareBackend>,
+    path: String,
+}
+
+#[async_trait]
+impl ReadHandle for RangeReads {
+    async fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>> {
+        self.share.read_range(&self.path, offset, length).await
+    }
+
+    fn max_read(&self) -> u32 {
+        RANGE_MAX_READ
+    }
+
+    async fn close(&self) -> Result<()> {
+        // Nothing was held open: each read closed itself.
+        Ok(())
+    }
+}
+
+/// A handle for reading all of `path`, whatever the backend can give.
+///
+/// The backend's own handle where it has one, and a wrapper around
+/// `read_range` where it does not.
+///
+/// # Errors
+///
+/// Fails when the backend has a handle to give and cannot open the file.
+pub async fn read_handle(share: &Arc<dyn ShareBackend>, path: &str) -> Result<Arc<dyn ReadHandle>> {
+    if let Some(handle) = share.open_read(path).await? {
+        return Ok(handle);
+    }
+    Ok(Arc::new(RangeReads {
+        share: Arc::clone(share),
+        path: path.to_owned(),
+    }))
 }
