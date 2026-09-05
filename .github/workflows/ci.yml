@@ -49,6 +49,29 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
+  package-macos:
+    # Not a release job: it signs nothing and needs no secrets. It exists
+    # because the bundle configuration — the icon set, the identifier, the CSP —
+    # is only exercised by `tauri build`, and a broken one is invisible to every
+    # other job here until someone tries to ship.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build --bundles app
+      # The .icns is generated from icon.png and copied in by the bundler; if
+      # bundle.icon stops naming it the app silently falls back to a generic
+      # Dock icon, which no test would notice.
+      - name: The bundle carries its icon
+        run: test -f target/release/bundle/macos/Excalibur.app/Contents/Resources/icon.icns
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
