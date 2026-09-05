@@ -160,6 +160,16 @@ export function fixtureBackend(
      * not a simulation — the worker is Rust and does not run in a browser.
      */
     queue?: Transfer[];
+    /**
+     * Refuse every listing the way the shell does with nothing mounted, so
+     * E1-S6's empty state can be looked at in a browser.
+     *
+     * The real thing only happens in the Tauri app, where a command with no
+     * active mount is an error — which is exactly the state a preview cannot
+     * otherwise reach, and the reason the mock share was there in the first
+     * place.
+     */
+    disconnected?: boolean;
   } = {},
 ): Backend {
   const hostKeyFailure = () => {
@@ -192,6 +202,11 @@ export function fixtureBackend(
 
   return {
     async listDir(path = ""): Promise<Listing> {
+      if (options.disconnected) {
+        // The shape `AppState::backend()` rejects with, so the window is
+        // reading the same failure it would in the app.
+        throw { message: "no share is mounted", surface: "banner", transient: false };
+      }
       if (options.latencyMs) {
         await new Promise((resolve) => setTimeout(resolve, options.latencyMs));
       }

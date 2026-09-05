@@ -28,6 +28,27 @@ const PROTOCOLS: { id: Protocol; label: string }[] = [
 
 type TestResult = { ok: true; mount: MountInfo } | { ok: false; message: string };
 
+/**
+ * What every field in this dialog needs from the webview (E3-S5).
+ *
+ * WKWebView capitalises the first letter of a text input, autocorrects it and
+ * spell-checks it, and none of that was visible in the browser preview. Typing
+ * `root` into Username produced `Root`; the server refused it, and the failure
+ * arrived looking like a network error. Nothing here is prose — a hostname, an
+ * export path, a port, an account name — so the platform's help can only ever
+ * corrupt it.
+ *
+ * Spread onto the input rather than repeated per field: a field added later
+ * that forgets one of these is the bug, and there is nothing to forget if the
+ * set travels as one value.
+ */
+const PLAIN_FIELD = {
+  autocapitalize: "none",
+  autocorrect: "off",
+  spellcheck: false,
+  autocomplete: "off",
+} as const;
+
 /** The host-key state the dialog can be in. */
 type HostKeyState =
   /** The host is unknown. A question, with an answer that unblocks it. */
@@ -202,6 +223,7 @@ export function ConnectionDialog(props: {
             </label>
             <input
               id="host"
+              {...PLAIN_FIELD}
               class={`${styles.input} ${styles.inputMono}`}
               value={draft().host}
               placeholder="nas.local"
@@ -213,6 +235,7 @@ export function ConnectionDialog(props: {
             </label>
             <input
               id="share"
+              {...PLAIN_FIELD}
               class={`${styles.input} ${styles.inputMono}`}
               value={draft().share}
               placeholder={draft().protocol === "smb" ? "media" : "/srv/media"}
@@ -225,6 +248,7 @@ export function ConnectionDialog(props: {
               </label>
               <input
                 id="port"
+                {...PLAIN_FIELD}
                 class={`${styles.input} ${styles.inputMono}`}
                 value={draft().port}
                 placeholder={String(defaultPort(draft().protocol))}
@@ -240,6 +264,10 @@ export function ConnectionDialog(props: {
             </label>
             <input
               id="username"
+              {...PLAIN_FIELD}
+              // The one field a password manager should recognise: it is the
+              // account half of the credential it stores for this host.
+              autocomplete="username"
               class={styles.input}
               value={draft().username}
               placeholder={draft().protocol === "nfs" ? "uid:gid" : ""}
@@ -255,6 +283,7 @@ export function ConnectionDialog(props: {
               </label>
               <input
                 id="password"
+                {...PLAIN_FIELD}
                 type="password"
                 class={styles.input}
                 value={draft().password}
@@ -268,6 +297,7 @@ export function ConnectionDialog(props: {
               </label>
               <input
                 id="domain"
+                {...PLAIN_FIELD}
                 class={styles.input}
                 value={draft().domain}
                 onInput={(event) => set("domain", event.currentTarget.value)}

@@ -16,6 +16,7 @@
 // what enforces it.
 
 import { createSignal, onCleanup, type Accessor } from "solid-js";
+import { engineFailure } from "./errors";
 import type { Listing } from "./types";
 
 /** How long a listing may take before the window admits it is waiting. */
@@ -79,7 +80,12 @@ export function createListing(fetchListing: (path: string) => Promise<Listing>):
         // The previous listing stays on screen underneath the error. A failed
         // navigation that also wiped the view would leave nothing to go back
         // from.
-        setError(problem instanceof Error ? problem.message : String(problem));
+        //
+        // Read through `engineFailure`: a Tauri command rejects with a plain
+        // serialised object, and `String()` on one of those is
+        // "[object Object]" — which is what this recorded before E1-S6 gave
+        // the value a reader.
+        setError(engineFailure(problem).message);
       })
       .finally(() => {
         if (mine !== generation) return;

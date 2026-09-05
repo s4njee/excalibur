@@ -22,7 +22,7 @@ import {
   type Widths,
 } from "../state/columns";
 import { rowsInBand, visibleRange } from "../state/virtual";
-import { gate, type Affordance, type Context } from "../state/permissions";
+import { NO_SHARE_REASON, gate, type Affordance, type Context } from "../state/permissions";
 import * as shortcuts from "../state/shortcuts";
 import {
   extensionOf,
@@ -35,13 +35,47 @@ import {
 } from "../state/format";
 import { formatSize } from "../state/format";
 
-/** `<share> — <host>`, centred, as the design specifies. */
-export function TitleBar(props: { share: string; host: string }) {
+/**
+ * `<share> — <host>`, centred, as the design specifies.
+ *
+ * Both are null when nothing is mounted, and then the bar names nothing
+ * (E1-S6). The design draws no first-run title, and the alternative — keeping
+ * the last share's name, or the demo's — would title the window after a share
+ * it is not showing.
+ */
+export function TitleBar(props: { share: string | null; host: string | null }) {
   return (
     <div class={styles.titlebar}>
-      <span class={styles.title}>
-        {props.share} — {props.host}
-      </span>
+      <Show when={props.share !== null && props.host !== null}>
+        <span class={styles.title}>
+          {props.share} — {props.host}
+        </span>
+      </Show>
+    </div>
+  );
+}
+
+/**
+ * The list area with no share behind it (E1-S6).
+ *
+ * The handoff has no mock for a window that is not connected to anything —
+ * every screen it draws has a share in it — so this is deliberately the
+ * smallest thing that answers "what now": the state, and the one action that
+ * changes it. Recorded in `docs/design-gaps.md`.
+ */
+export function EmptyState(props: { onNewConnection: () => void }) {
+  return (
+    <div class={styles.emptyState}>
+      <div class={styles.emptyTitle}>No share connected</div>
+      <p class={styles.emptyBody}>
+        Connect to an SMB, NFS, SFTP or xsync share, or open one of your bookmarks.
+      </p>
+      <button
+        class={`${styles.button} ${styles.primary}`}
+        onClick={props.onNewConnection}
+      >
+        New connection…
+      </button>
     </div>
   );
 }
@@ -169,9 +203,10 @@ export function Banner(props: {
  * `mount.writable` alone.
  */
 export function Toolbar(props: {
-  mount: MountInfo;
-  scheme: string;
-  host: string;
+  /** Absent when nothing is mounted; every verb is then refused (E1-S6). */
+  mount?: MountInfo;
+  scheme: string | null;
+  host: string | null;
   segments: string[];
   hasSelection: boolean;
   filter: string;
@@ -183,6 +218,7 @@ export function Toolbar(props: {
   onForward: () => void;
   onAscend: () => void;
   onCrumb: (depth: number) => void;
+  onQuickLook?: () => void;
   onEdit?: () => void;
   onDownload?: () => void;
   onUpload?: () => void;
@@ -192,9 +228,12 @@ export function Toolbar(props: {
   /** So ⌘F can put the caret here. */
   filterRef?: (element: HTMLInputElement) => void;
 }) {
+  // With no mount there is nothing writable and nothing selected, so every
+  // verb comes back disabled from the same gate the mounted case uses — no
+  // second rule for the empty window to disagree with (E1-S6).
   const context = (): Context => ({
-    writable: props.mount.writable,
-    reason: props.mount.reason,
+    writable: props.mount?.writable ?? false,
+    reason: props.mount?.reason ?? NO_SHARE_REASON,
     hasSelection: props.hasSelection,
   });
 
@@ -249,17 +288,31 @@ export function Toolbar(props: {
       >
         ↑
       </button>
-      <PathField
-        scheme={props.scheme}
-        host={props.host}
-        segments={props.segments}
-        onCrumb={props.onCrumb}
-      />
+      {/* An empty field rather than `://` over a blank crumb: with nothing
+          mounted there is no path, and half a URI would read as one that
+          failed to load (E1-S6). */}
+      <Show
+        when={props.scheme !== null && props.host !== null}
+        fallback={<div class={styles.pathField} />}
+      >
+        <PathField
+          scheme={props.scheme ?? ""}
+          host={props.host ?? ""}
+          segments={props.segments}
+          onCrumb={props.onCrumb}
+        />
+      </Show>
       <div class={styles.verbs}>
         {/* Every verb goes through `gate`. None of them reads `writable`
             directly: an inline condition here is exactly how a write affordance
             ends up gated on something that is not the mount. */}
-        <Verb affordance="quickLook" context={context()} label="Quick Look" shortcut="quickLook" />
+        <Verb
+          affordance="quickLook"
+          context={context()}
+          label="Quick Look"
+          shortcut="quickLook"
+          onClick={props.onQuickLook}
+        />
         <Verb
           affordance="edit"
           context={context()}
@@ -283,12 +336,19 @@ export function Toolbar(props: {
           onClick={props.onUpload}
         />
       </div>
+      {/* A filename is not prose. WKWebView capitalises, autocorrects and
+          spell-checks a text input by default, and a filter that quietly
+          became `Arrival` after `arrival` matches nothing (E3-S5). */}
       <input
         ref={props.filterRef}
         class={styles.filter}
         placeholder="Filter"
         title={shortcuts.tooltip("focusFilter")}
         value={props.filter}
+        autocapitalize="none"
+        autocorrect="off"
+        autocomplete="off"
+        spellcheck={false}
         onInput={(event) => props.onFilter(event.currentTarget.value)}
       />
     </div>
@@ -891,7 +951,8 @@ function glyphClass(category: Category): string | undefined {
  * write before anything else, which is the whole point of its ordering.
  */
 export function StatusBar(props: {
-  mount: MountInfo;
+  /** Absent when nothing is mounted (E1-S6). */
+  mount?: MountInfo;
   path: string;
   items: number;
   selected: number;
@@ -909,56 +970,70 @@ export function StatusBar(props: {
     // read-only. `polite` because it should not interrupt, and it is the only
     // place that news appears.
     <div class={styles.statusbar} role="status" aria-live="polite">
-      <span class={`${styles.badge} ${props.mount.writable ? styles.badgeRw : styles.badgeRo}`}>
-        {props.mount.writable ? "RW" : "RO"}
-      </span>
-      <span class={styles.truncate}>
-        <Show
-          when={props.mount.writable}
-          fallback={
-            <>
-              <span>{props.mount.reason}</span>
-              {/* The design's only Remount button lives on a failed transfer
-                  row (E13-S2), which does not exist yet — leaving a read-only
-                  mount with no recovery path at all. Recorded in
-                  docs/design-gaps.md for sign-off. */}
-              <Show when={props.onRemount}>
-                {(remount) => (
-                  <button
-                    class={styles.statusAction}
-                    disabled={props.remounting}
-                    onClick={() => remount()()}
-                  >
-                    {props.remounting ? "Remounting…" : "Remount as RW"}
-                  </button>
-                )}
-              </Show>
-            </>
-          }
-        >
-          Read &amp; write on <span class={styles.statusPath}>{props.path}</span>
-        </Show>
-      </span>
-      <span class={styles.divider} />
-      <span>{formatCounts(props.items, props.selected, props.selectedBytes, props.total)}</span>
-      <Show when={props.mount.capacity}>
-        {(capacity) => (
+      {/* Nothing is claimed when there is no mount (E1-S6): no badge, no
+          capacity, no protocol. `RO` here would describe a share the window
+          does not have, and the badge is the one thing in this bar a user is
+          meant to be able to trust. */}
+      <Show when={props.mount} fallback={<span>Not connected</span>}>
+        {(mount) => (
           <>
+            <span
+              class={`${styles.badge} ${mount().writable ? styles.badgeRw : styles.badgeRo}`}
+            >
+              {mount().writable ? "RW" : "RO"}
+            </span>
+            <span class={styles.truncate}>
+              <Show
+                when={mount().writable}
+                fallback={
+                  <>
+                    <span>{mount().reason}</span>
+                    {/* The design's only Remount button lives on a failed
+                        transfer row (E13-S2), which does not exist yet —
+                        leaving a read-only mount with no recovery path at all.
+                        Recorded in docs/design-gaps.md for sign-off. */}
+                    <Show when={props.onRemount}>
+                      {(remount) => (
+                        <button
+                          class={styles.statusAction}
+                          disabled={props.remounting}
+                          onClick={() => remount()()}
+                        >
+                          {props.remounting ? "Remounting…" : "Remount as RW"}
+                        </button>
+                      )}
+                    </Show>
+                  </>
+                }
+              >
+                Read &amp; write on <span class={styles.statusPath}>{props.path}</span>
+              </Show>
+            </span>
             <span class={styles.divider} />
-            <span>{formatCapacity(capacity().free, capacity().total)}</span>
+            <span>
+              {formatCounts(props.items, props.selected, props.selectedBytes, props.total)}
+            </span>
+            <Show when={mount().capacity}>
+              {(capacity) => (
+                <>
+                  <span class={styles.divider} />
+                  <span>{formatCapacity(capacity().free, capacity().total)}</span>
+                </>
+              )}
+            </Show>
+            <span class={styles.statusRight}>
+              <span class={styles.protocol}>
+                {mount().protocolLabel} · {mount().securityLabel}
+              </span>
+              <span
+                class={`${styles.healthDot} ${
+                  mount().status === "ready" ? "" : styles.healthDotFailed
+                }`}
+              />
+            </span>
           </>
         )}
       </Show>
-      <span class={styles.statusRight}>
-        <span class={styles.protocol}>
-          {props.mount.protocolLabel} · {props.mount.securityLabel}
-        </span>
-        <span
-          class={`${styles.healthDot} ${
-            props.mount.status === "ready" ? "" : styles.healthDotFailed
-          }`}
-        />
-      </span>
     </div>
   );
 }

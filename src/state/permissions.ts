@@ -58,6 +58,15 @@ export const AFFORDANCES: readonly Affordance[] = [
 /** Affordances that need something selected to act on. */
 const NEEDS_SELECTION: readonly Affordance[] = ["quickLook", "download", "edit", "rename", "delete"];
 
+/**
+ * Why every verb is refused when nothing is mounted at all (E1-S6).
+ *
+ * Lives here rather than in the two components that build a `Context`, so the
+ * toolbar's tooltip and the window's banner cannot come to say different
+ * things about the same state.
+ */
+export const NO_SHARE_REASON = "No share connected";
+
 /** What the window knows when it draws a verb. */
 export interface Context {
   /** From the latest `list_dir`/`mount_info`. Never from what the user asked for. */

@@ -118,6 +118,17 @@ can be left open beside the browser while working — that changes the priority
 and is worth saying. Same question as Quick Look's panel, and probably the same
 answer for both.
 
+**Amended 2026-09-05 (E1-S6): the sheet now opens below the toolbar.** It was
+anchored to the bottom of the title bar, and its own 560px then covered the
+right half of the toolbar — `Quick Look`, `Edit` and `Download`. Selecting a
+file and pressing Download with the queue open did nothing at all: the click
+landed on the sheet. The mock has no opinion here, because it draws the queue
+as a separate window and a separate window overlaps nothing. Moving it down
+44px is the smallest change that keeps the drawn panel intact and stops it
+swallowing the verbs it sits over. It still covers the right end of the
+connection banner when both are up, which is worth a look if the separate
+window is not coming.
+
 ## The preferences sheet, and where the sidebar toggle lives *(E17-S1, 2026-09-04)*
 
 **The mock** has no preferences screen at all. The handoff's §"Not yet designed"
@@ -211,3 +222,38 @@ duplicating them.
 toolbar beside the sidebar toggle, or a right-click menu on the column header.
 The state and the shortcuts are already in place for any of them; only the
 control would change.
+
+## No mock for a window with nothing mounted *(E1-S6, 2026-09-05)*
+
+**The mock** has no first-run screen. Every screen in the handoff has a share
+in it — `1a` through `1h` all draw `smb://nas.local/media` with rows, an `RW`
+badge and `2.4 TB free of 16 TB`.
+
+**The problem** is that the app took that literally. The Tauri shell fell back
+to a mock share whenever no session was active, so a user who had just
+installed Excalibur opened on a share that does not exist, with verbs that
+acted on it — Download queued a row for a file nobody has. That is worse than
+an unstyled empty window, because nothing on screen said it was not real.
+
+**What was built:** with no mount, the list area carries a centred
+`No share connected`, one line of explanation, and a `New connection…` button
+that opens the same dialog the sidebar's `+` does. The title bar names nothing,
+the breadcrumb is an empty field, the status bar reads `Not connected` with no
+badge, no capacity and no protocol, and every verb is disabled through the same
+permission gate the mounted window uses — there is no second rule for the empty
+case to disagree with. The sidebar still lists bookmarks, because a saved
+connection is worth seeing whether or not it is mounted.
+
+The typography is the design's own — the toolbar's control size for the button,
+the row size for the heading — rather than a new scale invented for one screen.
+
+**Sign-off:** the state is live in the browser preview at `?screen=empty`,
+which renders it from a backend that refuses listings the way the shell does.
+Same substitution as the connection banner above: a reproducible route rather
+than a screenshot that goes stale.
+
+**A designer might instead** want an illustration, the bookmark list promoted
+into the empty area (a "pick one of these" screen rather than a "connect
+something" one), or the window to open straight into the New Connection dialog
+on a true first run. All three are changes to this one component; nothing else
+depends on its shape.

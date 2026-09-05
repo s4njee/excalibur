@@ -301,6 +301,34 @@
   background: var(--list-bg);
 }
 
+/* The first-run empty state (E1-S6). The handoff draws no such screen; this
+   borrows the sizes it does give — control text, the toolbar's button — so it
+   is the design's typography rather than a second scale. */
+.emptyState {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 24px;
+  text-align: center;
+}
+
+.emptyTitle {
+  font-size: var(--text-row);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.emptyBody {
+  margin: 0 0 4px;
+  max-width: 320px;
+  font-size: var(--text-control);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .columnHeader,
 .row {
   display: grid;

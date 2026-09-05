@@ -2,7 +2,13 @@
 
 .panel {
   position: absolute;
-  top: var(--height-titlebar);
+  /* Below the toolbar, not over it (E1-S6). Anchored to the title bar, the
+     sheet's own 560px covered Quick Look, Edit and Download: clicking
+     Download with the queue open landed on the sheet and did nothing, which
+     is indistinguishable from a broken button. The design draws the queue as
+     a separate window, so it has no opinion about what it overlaps —
+     recorded in docs/design-gaps.md. */
+  top: calc(var(--height-titlebar) + var(--height-toolbar));
   right: 0;
   display: flex;
   flex-direction: column;

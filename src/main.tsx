@@ -30,6 +30,10 @@ const latencyMs = screen === "slow" ? 1500 : undefined;
 // carry. Nothing else about the window changes.
 const rows = screen === "huge" ? 100_000 : undefined;
 
+// `empty` renders E1-S6's first run: the desktop app with nothing mounted,
+// which a browser cannot otherwise reach — the fixture always answers.
+const disconnected = screen === "empty";
+
 // `banner` renders E15-S1's connection failure: the strip under the toolbar,
 // the dimmed list and the red health dot, all from one dropped mount event.
 const dropped = screen === "banner";
@@ -72,8 +76,10 @@ const queue =
 
 render(
   () =>
-    hostKey || latencyMs || rows || dropped || queue ? (
-      <App backend={fixtureBackend({ hostKey, latencyMs, rows, dropped, queue })} />
+    hostKey || latencyMs || rows || dropped || queue || disconnected ? (
+      <App
+        backend={fixtureBackend({ hostKey, latencyMs, rows, dropped, queue, disconnected })}
+      />
     ) : (
       <App readOnly={readOnly} />
     ),

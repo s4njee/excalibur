@@ -10,11 +10,13 @@ import {
   restore,
   toDraft,
   upsert,
+  withMounted,
   type BookmarkStore,
 } from "./state/bookmarks";
 import { toSpec, type Draft } from "./state/connection";
 import {
   Banner,
+  EmptyState,
   FileList,
   shellStyles as styles,
   Sidebar,
@@ -38,6 +40,7 @@ import * as nav from "./state/navigation";
 import { sortEntries, toggle } from "./state/sort";
 import { filterEntries } from "./state/filter";
 import {
+  NO_SHARE_REASON,
   acceptsDrop,
   gate,
   type Affordance,
@@ -97,6 +100,18 @@ export default function App(props: {
    */
   const refresh = coalesce(() => listingState.load(path()));
   onCleanup(() => refresh.dispose());
+
+  /**
+   * Nothing is mounted: the engine refused the listing rather than returning
+   * a directory (E1-S6).
+   *
+   * Deliberately not "there is no listing yet", which is also true for the
+   * frame before the first request settles — an empty state that flashed
+   * before every window would be worse than none. `error` is set only once a
+   * request has come back, and a *failed navigation* on a live mount leaves
+   * the previous listing in place, so it does not land here either.
+   */
+  const disconnected = () => listing() === null && listingState.error() !== null;
 
   const goTo = (target: string) => setHistory((current) => nav.go(current, target));
   const ascend = () => goTo(nav.parent(path()));
@@ -205,7 +220,13 @@ export default function App(props: {
   };
 
   onMount(async () => {
-    const saved = await store.load();
+    // Nothing is mounted when the app starts: sessions are not persisted, so
+    // a `mounted` flag read back from the store is from a previous run and
+    // describes a share the shell is not holding. Found 2026-09-05 by
+    // relaunching with a saved xsync bookmark: the sidebar showed it under
+    // MOUNTED and the window titled itself after it, over no listing at all.
+    // Double-clicking the row under BOOKMARKS is what mounts it.
+    const saved = withMounted(await store.load(), new Set<string>());
     setBookmarks(saved);
     // Probe once on start. Every 60s while idle is E3-S2's other half and wants
     // a visible-window check first, so it does not wake a sleeping laptop.
@@ -314,7 +335,7 @@ export default function App(props: {
         case "quickLook":
           if (renaming() !== null) return;
           event.preventDefault();
-          setQuickLook((open) => !open && selectedVisible().length === 1);
+          toggleQuickLook();
           return;
 
         case "rename": {
@@ -483,6 +504,15 @@ export default function App(props: {
   /** Whether Quick Look is open. It follows the selection while it is. */
   const [quickLook, setQuickLook] = createSignal(false);
   /**
+   * Open or close the panel, on exactly one selected row.
+   *
+   * One function rather than one per entry point (E3-S5): the toolbar button
+   * and the Space key are the same verb, and the toolbar's was inert because
+   * the rule lived in the keyboard handler where a button could not reach it.
+   */
+  const toggleQuickLook = () =>
+    setQuickLook((open) => !open && selectedVisible().length === 1);
+  /**
    * The panel outlives `quickLook` by the length of its exit animation
    * (E1-S5).
    *
@@ -559,12 +589,14 @@ export default function App(props: {
    * travel with it. The *status* comes from the event stream, which is the only
    * thing that knows about a mount that has stopped answering.
    */
-  const mountFacts = (fallback: MountInfo): MountInfo => {
+  const mountFacts = (): MountInfo | undefined => {
+    const current = listing()?.mount;
+    if (!current) return undefined;
     const event = mountEvent();
     // A banner and a green health dot at the same time would be the window
     // disagreeing with itself, so the dot follows whichever is worse.
-    const status = event?.status ?? (problem() === null ? fallback.status : "error");
-    return { ...fallback, status };
+    const status = event?.status ?? (problem() === null ? current.status : "error");
+    return { ...current, status };
   };
 
   /**
@@ -643,7 +675,9 @@ export default function App(props: {
   /** The mount as the permission gate reads it. */
   const permissions = (): PermissionContext => ({
     writable: listing()?.mount.writable ?? false,
-    reason: listing()?.mount.reason ?? "",
+    // With nothing mounted, every verb is refused for a reason the user can
+    // act on: there is a share to connect (E1-S6).
+    reason: listing()?.mount.reason ?? NO_SHARE_REASON,
     hasSelection: selectedVisible().length > 0,
   });
 
@@ -975,20 +1009,40 @@ export default function App(props: {
     selectedVisible().reduce((total, entry) => total + entry.size, 0),
   );
 
-  // The chrome that names the mount follows the mount. Falling back to the
-  // design's two demo screens only when nothing is mounted, which is what the
-  // preview and a first run both are — the fixture describes a share that no
-  // session is holding, and inventing a connection for it would be worse than
-  // naming the one the mock draws.
-  const host = () => activeBookmark()?.host ?? (props.readOnly ? "10.0.0.4" : "nas.local");
-  const share = () => activeBookmark()?.share.split("/").filter(Boolean).pop()
-    ?? (props.readOnly ? "scratch" : "media");
-  const scheme = () => activeBookmark()?.protocol ?? (props.readOnly ? "nfs" : "smb");
-  const rootSegments = () => {
+  /**
+   * What the title bar, the breadcrumb and the status path name.
+   *
+   * **The listing is the gate, not the bookmark.** A window with no listing has
+   * no share behind it, and a bookmark still flagged `mounted` from a previous
+   * session would otherwise title the window after a share the shell is not
+   * holding — which is the first-run bug in a second costume (E1-S6).
+   *
+   * Below that gate the bookmark wins, and the design's two demo screens fill
+   * in for the preview: the fixture describes a share no session is holding,
+   * and the mock's own names are a better answer there than a connection
+   * invented to justify them.
+   */
+  const named = () => {
+    if (listing() === null) return null;
     const bookmark = activeBookmark();
-    if (bookmark) return bookmark.share.split("/").filter(Boolean);
-    return props.readOnly ? ["export", "scratch"] : ["media"];
+    if (bookmark) {
+      const root = bookmark.share.split("/").filter(Boolean);
+      return {
+        host: bookmark.host,
+        share: root[root.length - 1] ?? bookmark.share,
+        scheme: bookmark.protocol as string,
+        root,
+      };
+    }
+    return props.readOnly
+      ? { host: "10.0.0.4", share: "scratch", scheme: "nfs", root: ["export", "scratch"] }
+      : { host: "nas.local", share: "media", scheme: "smb", root: ["media"] };
   };
+
+  const host = () => named()?.host ?? null;
+  const share = () => named()?.share ?? null;
+  const scheme = () => named()?.scheme ?? null;
+  const rootSegments = () => named()?.root ?? [];
   const segments = () => [...rootSegments(), ...nav.segments(path())];
   const mountPath = () => ["", ...segments()].join("/");
 
@@ -1022,124 +1076,127 @@ export default function App(props: {
   };
 
   return (
-    <Show when={listing()} fallback={<div class={styles.window} />}>
-      {(data) => (
-        <div class={styles.window}>
-          <TitleBar share={share()} host={host()} />
-          <Toolbar
-            mount={data().mount}
-            scheme={scheme()}
-            host={host()}
-            segments={segments()}
-            hasSelection={selectedVisible().length > 0}
-            filter={filter()}
-            onFilter={setFilter}
-            canBack={nav.canBack(history())}
-            canForward={nav.canForward(history())}
-            canAscend={nav.canAscend(path())}
-            onBack={() => setHistory(nav.back)}
-            onForward={() => setHistory(nav.forward)}
-            onAscend={ascend}
-            onCrumb={onCrumb}
-            filterRef={(element) => (filterInput = element)}
-            onEdit={() => void editSelected()}
-            onDownload={() => void downloadSelected()}
-            onUpload={() => void uploadHere()}
-          sidebarCollapsed={settings().sidebarCollapsed}
-          onToggleSidebar={() => update("sidebarCollapsed", !settings().sidebarCollapsed)}
-          onPreferences={() => setShowPreferences(true)}
-          />
-          {/* The preview follows the selection: it shows whatever single row
-              is selected, and closes on its own when that stops being one. */}
-          <Show when={notice()}>
-            {(message) => (
-              <div class={styles.toast}>
-                <span>{message()}</span>
-                <button class={styles.toastAction} onClick={() => setNotice(null)}>
-                  Dismiss
+    <div class={styles.window}>
+      <TitleBar share={share()} host={host()} />
+      <Toolbar
+        mount={listing()?.mount}
+        scheme={scheme()}
+        host={host()}
+        segments={segments()}
+        hasSelection={selectedVisible().length > 0}
+        filter={filter()}
+        onFilter={setFilter}
+        canBack={nav.canBack(history())}
+        canForward={nav.canForward(history())}
+        canAscend={nav.canAscend(path())}
+        onBack={() => setHistory(nav.back)}
+        onForward={() => setHistory(nav.forward)}
+        onAscend={ascend}
+        onCrumb={onCrumb}
+        filterRef={(element) => (filterInput = element)}
+        onQuickLook={toggleQuickLook}
+        onEdit={() => void editSelected()}
+        onDownload={() => void downloadSelected()}
+        onUpload={() => void uploadHere()}
+        sidebarCollapsed={settings().sidebarCollapsed}
+        onToggleSidebar={() => update("sidebarCollapsed", !settings().sidebarCollapsed)}
+        onPreferences={() => setShowPreferences(true)}
+      />
+      {/* The preview follows the selection: it shows whatever single row
+          is selected, and closes on its own when that stops being one. */}
+      <Show when={notice()}>
+        {(message) => (
+          <div class={styles.toast}>
+            <span>{message()}</span>
+            <button class={styles.toastAction} onClick={() => setNotice(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+      </Show>
+      <Show when={saveConflict()}>
+        {(session) => (
+          <div class={styles.scrim}>
+            <div class={styles.sheet} role="alertdialog" aria-label="Remote changed">
+              <div class={styles.sheetTitle}>
+                “{session().name}” changed on the share
+              </div>
+              <div class={styles.sheetBody}>
+                Somebody else edited it since you opened it, so nothing has been
+                written. Your copy is still where your editor has it open.
+              </div>
+              <div class={styles.sheetActions}>
+                <button class={styles.action} onClick={() => setSaveConflict(null)}>
+                  Cancel
+                </button>
+                <button
+                  class={`${styles.action} ${styles.actionDanger}`}
+                  onClick={() => {
+                    const pending = session();
+                    setSaveConflict(null);
+                    void writeBack(pending, true);
+                  }}
+                >
+                  Replace
                 </button>
               </div>
-            )}
-          </Show>
-          <Show when={saveConflict()}>
-            {(session) => (
-              <div class={styles.scrim}>
-                <div class={styles.sheet} role="alertdialog" aria-label="Remote changed">
-                  <div class={styles.sheetTitle}>
-                    “{session().name}” changed on the share
-                  </div>
-                  <div class={styles.sheetBody}>
-                    Somebody else edited it since you opened it, so nothing has been
-                    written. Your copy is still where your editor has it open.
-                  </div>
-                  <div class={styles.sheetActions}>
-                    <button class={styles.action} onClick={() => setSaveConflict(null)}>
-                      Cancel
-                    </button>
-                    <button
-                      class={`${styles.action} ${styles.actionDanger}`}
-                      onClick={() => {
-                        const pending = session();
-                        setSaveConflict(null);
-                        void writeBack(pending, true);
-                      }}
-                    >
-                      Replace
-                    </button>
-                  </div>
-                </div>
+            </div>
+          </div>
+        )}
+      </Show>
+      <Show when={showTransfers()}>
+        <Transfers
+          transfers={transfers()}
+          onClose={() => setShowTransfers(false)}
+          onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
+          onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
+          onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
+          onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
+          onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
+          onRemount={remountAction()}
+        />
+      </Show>
+      <Show when={conflicts()}>
+        {(pending) => (
+          <div class={styles.scrim}>
+            <div class={styles.sheet} role="alertdialog" aria-label="Destination exists">
+              <div class={styles.sheetTitle}>
+                “{pending().items[0]?.name}” is already there
               </div>
-            )}
-          </Show>
-          <Show when={showTransfers()}>
-            <Transfers
-              transfers={transfers()}
-              onClose={() => setShowTransfers(false)}
-              onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
-              onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
-              onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
-              onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
-              onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
-              onRemount={remountAction()}
-            />
-          </Show>
-          <Show when={conflicts()}>
-            {(pending) => (
-              <div class={styles.scrim}>
-                <div class={styles.sheet} role="alertdialog" aria-label="Destination exists">
-                  <div class={styles.sheetTitle}>
-                    “{pending().items[0]?.name}” is already there
-                  </div>
-                  <div class={styles.sheetBody}>
-                    Keep both would call it “{pending().items[0]?.keepBothAs}”.
-                    <Show when={pending().items.length > 1}>
-                      {" "}
-                      {pending().items.length - 1} more like this. Your answer applies to all
-                      of them.
-                    </Show>
-                  </div>
-                  <div class={styles.sheetActions}>
-                    <button class={styles.action} onClick={() => void resolveConflicts("skip", true)}>
-                      Skip
-                    </button>
-                    <button
-                      class={styles.action}
-                      onClick={() => void resolveConflicts("keepBoth", true)}
-                    >
-                      Keep both
-                    </button>
-                    <button
-                      class={`${styles.action} ${styles.actionDanger}`}
-                      onClick={() => void resolveConflicts("replace", true)}
-                    >
-                      Replace
-                    </button>
-                  </div>
-                </div>
+              <div class={styles.sheetBody}>
+                Keep both would call it “{pending().items[0]?.keepBothAs}”.
+                <Show when={pending().items.length > 1}>
+                  {" "}
+                  {pending().items.length - 1} more like this. Your answer applies to all
+                  of them.
+                </Show>
               </div>
-            )}
-          </Show>
-          <Show when={quickLookMounted() && selectedVisible().length === 1 ? selectedVisible()[0] : null}>
+              <div class={styles.sheetActions}>
+                <button class={styles.action} onClick={() => void resolveConflicts("skip", true)}>
+                  Skip
+                </button>
+                <button
+                  class={styles.action}
+                  onClick={() => void resolveConflicts("keepBoth", true)}
+                >
+                  Keep both
+                </button>
+                <button
+                  class={`${styles.action} ${styles.actionDanger}`}
+                  onClick={() => void resolveConflicts("replace", true)}
+                >
+                  Replace
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+      <Show when={listing()}>
+        {(data) => (
+          <Show
+            when={quickLookMounted() && selectedVisible().length === 1 ? selectedVisible()[0] : null}
+          >
             {(entry) => (
               <QuickLook
                 entry={entry()}
@@ -1149,159 +1206,164 @@ export default function App(props: {
                 onClose={() => setQuickLook(false)}
                 // The panel's own entry point into E12, offered only where it
                 // would work — the footer already says so on a read-only mount.
-                onEdit={
-                  data().mount.writable ? () => void editSelected() : undefined
-                }
+                onEdit={data().mount.writable ? () => void editSelected() : undefined}
               />
             )}
           </Show>
-          <Show when={problem()}>
-            {(message) => (
-              <Banner
-                message={message()}
-                reconnecting={remounting()}
-                onReconnect={remountAction()}
-                onDismiss={() => setProblem(null)}
-              />
-            )}
-          </Show>
-          <div class={styles.body}>
-            <Sidebar
-              collapsed={settings().sidebarCollapsed}
-              bookmarks={bookmarks()}
-              activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
-              selectedId={selectedBookmark()}
-              onNewConnection={() => setConnecting(true)}
-              onSelect={setSelectedBookmark}
-              onOpen={(id) => void mountBookmark(id)}
-              onRemove={removeSelected}
-              onEdit={(id) => {
-                const bookmark = bookmarks().find((candidate) => candidate.id === id);
-                if (bookmark) setConnecting(toDraft(bookmark));
-              }}
+        )}
+      </Show>
+      <Show when={problem()}>
+        {(message) => (
+          <Banner
+            message={message()}
+            reconnecting={remounting()}
+            onReconnect={remountAction()}
+            onDismiss={() => setProblem(null)}
+          />
+        )}
+      </Show>
+      <div class={styles.body}>
+        <Sidebar
+          collapsed={settings().sidebarCollapsed}
+          bookmarks={bookmarks()}
+          activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
+          selectedId={selectedBookmark()}
+          onNewConnection={() => setConnecting(true)}
+          onSelect={setSelectedBookmark}
+          onOpen={(id) => void mountBookmark(id)}
+          onRemove={removeSelected}
+          onEdit={(id) => {
+            const bookmark = bookmarks().find((candidate) => candidate.id === id);
+            if (bookmark) setConnecting(toDraft(bookmark));
+          }}
+        />
+        <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
+          {/* Nothing mounted is not an empty directory: there is no list to
+              draw, and the one thing to offer is the way out of it (E1-S6). */}
+          <Show
+            when={!disconnected()}
+            fallback={<EmptyState onNewConnection={() => setConnecting(true)} />}
+          >
+            <FileList
+              layout={settings().rowLayout}
+              entries={entries()}
+              selected={selected}
+              onSelect={select}
+              onBand={selectBand}
+              reveal={reveal()}
+              onOpen={open}
+              slow={listingState.slow()}
+              sort={sort()}
+              onSort={onSort}
+              widths={widths()}
+              onResize={onResize}
+              onResizeEnd={onResizeEnd}
+              renaming={renaming()}
+              dropTarget={dropTarget()}
+              onRename={(from, name) => void commitRename(from, name)}
             />
-            <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
-              <FileList
-                layout={settings().rowLayout}
-                entries={entries()}
-                selected={selected}
-                onSelect={select}
-                onBand={selectBand}
-                reveal={reveal()}
-                onOpen={open}
-                slow={listingState.slow()}
-                sort={sort()}
-                onSort={onSort}
-                widths={widths()}
-                onResize={onResize}
-                onResizeEnd={onResizeEnd}
-                renaming={renaming()}
-                dropTarget={dropTarget()}
-                onRename={(from, name) => void commitRename(from, name)}
-              />
-              <StatusBar
-                mount={mountFacts(data().mount)}
-                path={mountPath()}
-                items={entries().length}
-                total={totalEntries()}
-                selected={selectedVisible().length}
-                remounting={remounting()}
-                onRemount={remountAction()}
-                selectedBytes={selectedBytes()}
-              />
-            </div>
+          </Show>
+          <StatusBar
+            mount={mountFacts()}
+            path={mountPath()}
+            items={entries().length}
+            total={totalEntries()}
+            selected={selectedVisible().length}
+            remounting={remounting()}
+            onRemount={remountAction()}
+            selectedBytes={selectedBytes()}
+          />
+        </div>
+      </div>
+      <Show when={pendingDelete()}>
+        {(pending) => (
+          <div class={styles.toast}>
+            <span>
+              Deleting {pending().paths.length}{" "}
+              {pending().paths.length === 1 ? "item" : "items"}
+            </span>
+            <button class={styles.toastAction} onClick={undoDelete}>
+              Undo
+            </button>
           </div>
-          <Show when={pendingDelete()}>
-            {(pending) => (
-              <div class={styles.toast}>
-                <span>
-                  Deleting {pending().paths.length}{" "}
-                  {pending().paths.length === 1 ? "item" : "items"}
-                </span>
-                <button class={styles.toastAction} onClick={undoDelete}>
-                  Undo
+        )}
+      </Show>
+      <Show when={confirmDelete()}>
+        {(paths) => (
+          <div class={styles.scrim}>
+            <div class={styles.sheet} role="alertdialog" aria-label="Confirm delete">
+              <div class={styles.sheetTitle}>Delete {paths().length} items?</div>
+              <div class={styles.sheetBody}>
+                This cannot be undone. Deleting more than five items at once is not
+                in the design yet, so this asks rather than guessing — see
+                docs/design-gaps.md.
+              </div>
+              <div class={styles.sheetActions}>
+                <button class={styles.action} onClick={() => setConfirmDelete(null)}>
+                  Cancel
                 </button>
-              </div>
-            )}
-          </Show>
-          <Show when={confirmDelete()}>
-            {(paths) => (
-              <div class={styles.scrim}>
-                <div class={styles.sheet} role="alertdialog" aria-label="Confirm delete">
-                  <div class={styles.sheetTitle}>Delete {paths().length} items?</div>
-                  <div class={styles.sheetBody}>
-                    This cannot be undone. Deleting more than five items at once is not
-                    in the design yet, so this asks rather than guessing — see
-                    docs/design-gaps.md.
-                  </div>
-                  <div class={styles.sheetActions}>
-                    <button class={styles.action} onClick={() => setConfirmDelete(null)}>
-                      Cancel
-                    </button>
-                    <button
-                      class={`${styles.action} ${styles.actionDanger}`}
-                      onClick={() => {
-                        const doomed = paths();
-                        setConfirmDelete(null);
-                        setSelection(EMPTY_SELECTION);
-                        void runDelete(doomed);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </Show>
-          <Show when={undo()}>
-            {(pending) => (
-              <div class={styles.toast}>
-                <span>Removed “{pending().bookmark.name}”</span>
                 <button
-                  class={styles.toastAction}
+                  class={`${styles.action} ${styles.actionDanger}`}
                   onClick={() => {
-                    persist(restore(bookmarks(), pending().bookmark, pending().index));
-                    setUndo(null);
+                    const doomed = paths();
+                    setConfirmDelete(null);
+                    setSelection(EMPTY_SELECTION);
+                    void runDelete(doomed);
                   }}
                 >
-                  Undo
+                  Delete
                 </button>
               </div>
-            )}
-          </Show>
-          <Show when={showPreferences()}>
-            <Preferences
-              settings={settings()}
-              onChange={changeSetting}
-              onClose={() => setShowPreferences(false)}
-              // The browser preview has no folder picker, so the field stays
-              // typeable and the button simply is not offered.
-              onPickFolder={inTauri() ? () => void pickDownloadFolder() : undefined}
-            />
-          </Show>
-          <Show when={connecting()}>
-            {(pending) => (
-              <ConnectionDialog
-                backend={backend}
-                initial={pending() === true ? undefined : (pending() as Draft)}
-                onCancel={() => setConnecting(null)}
-                onConnected={(draft) => {
-                  setConnecting(null);
-                  // The bookmark is saved on a successful connect, not on
-                  // opening the dialog: a connection that never worked is not
-                  // worth remembering.
-                  persist(upsert(bookmarks(), { ...fromDraft(draft), mounted: true }));
-                  // A new mount is a new root, so the history starts over
-                  // rather than keeping paths that belonged to the old share.
-                  setHistory(nav.initial());
-                  listingState.load("");
-                }}
-              />
-            )}
-          </Show>
-        </div>
-      )}
-    </Show>
+            </div>
+          </div>
+        )}
+      </Show>
+      <Show when={undo()}>
+        {(pending) => (
+          <div class={styles.toast}>
+            <span>Removed “{pending().bookmark.name}”</span>
+            <button
+              class={styles.toastAction}
+              onClick={() => {
+                persist(restore(bookmarks(), pending().bookmark, pending().index));
+                setUndo(null);
+              }}
+            >
+              Undo
+            </button>
+          </div>
+        )}
+      </Show>
+      <Show when={showPreferences()}>
+        <Preferences
+          settings={settings()}
+          onChange={changeSetting}
+          onClose={() => setShowPreferences(false)}
+          // The browser preview has no folder picker, so the field stays
+          // typeable and the button simply is not offered.
+          onPickFolder={inTauri() ? () => void pickDownloadFolder() : undefined}
+        />
+      </Show>
+      <Show when={connecting()}>
+        {(pending) => (
+          <ConnectionDialog
+            backend={backend}
+            initial={pending() === true ? undefined : (pending() as Draft)}
+            onCancel={() => setConnecting(null)}
+            onConnected={(draft) => {
+              setConnecting(null);
+              // The bookmark is saved on a successful connect, not on
+              // opening the dialog: a connection that never worked is not
+              // worth remembering.
+              persist(upsert(bookmarks(), { ...fromDraft(draft), mounted: true }));
+              // A new mount is a new root, so the history starts over
+              // rather than keeping paths that belonged to the old share.
+              setHistory(nav.initial());
+              listingState.load("");
+            }}
+          />
+        )}
+      </Show>
+    </div>
   );
 }
