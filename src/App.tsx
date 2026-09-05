@@ -1256,6 +1256,9 @@ export default function App(props: {
               onBand={selectBand}
               reveal={reveal()}
               onOpen={open}
+              // Undefined at the share root, which is what withholds the `..`
+              // row — read from the same `canAscend` as the toolbar's arrow.
+              onAscend={nav.canAscend(path()) ? ascend : undefined}
               slow={listingState.slow()}
               sort={sort()}
               onSort={onSort}

@@ -170,6 +170,7 @@ reconstruct it from git history.
 | **M4** | E8-S3 — Layout `1g` name-led | **Done** 2026-09-04 |
 | **M4** | E8-S4 — Layout `1h` mono grid | **Done** 2026-09-04 (no View menu to add to) |
 | **M4** | E8-S9 — Live refresh | **Partly done** (coalescer built; `watch` has no producer) |
+| **M4.5** | E8-S10 — The `..` row | **Done** 2026-09-05 (asked for directly; beyond the mocks) |
 | **M4** | E1-S4 — Responsive column dropping | **Done** 2026-09-04 |
 | **M4** | E1-S5 — Transitions | **Done** 2026-09-04 |
 | **M4.5** | E1-S6 — First run and empty state | **Done** 2026-09-05 (the demo mock is gone from the shell) |
@@ -2232,6 +2233,63 @@ shows it.
 - Overflow cancels a pending relist rather than queueing behind it — the point
   of overflow is that the pending one's result is already known to be stale.
 - The clock is injected, so the tests drive time rather than wait for it.
+
+#### E8-S10 — The `..` row — **Done**
+
+*2026-09-05. Asked for directly: "in the files view there should be a '..' entry to
+go to the parent folder". The handoff draws no such row — recorded in
+`docs/design-gaps.md`.*
+
+**AC**
+- [x] A `..` row at the top of the list in every folder below the share root, and
+  **not** at the root, where there is nowhere above to go.
+- [x] Double-click ascends, the same gesture that opens any other folder row.
+- [x] It is not an entry: it has no path, is not selectable, is not counted by the
+  status bar, and cannot be sorted, filtered, downloaded, renamed or deleted.
+- [x] It survives the virtual window: indices, the rubber band, type-to-select's
+  scroll and `aria-rowindex` all still name the right row.
+- [x] Drawn in all three row layouts at that layout's row height.
+
+**Results**
+
+- **It is drawn beside the listing, not inserted into it.** The alternative — a
+  synthetic `Entry` in the array the window already has — would have had to be
+  excluded from the selection, the sort, the filter, the status bar's count, the
+  rubber band, Download, Delete and the drag-and-drop hit test, one at a time, and
+  the first exclusion anyone forgot would be a real operation aimed at a row that
+  is not a file. Instead the row has no `data-path`, which is the attribute every
+  one of those paths keys on, so none of them can see it without being told to.
+- **The cost is one row of offset**, and it is expressed once: `leadRows()` is
+  0 or 1, and the spacer's height, the drawn window's transform, the reveal
+  scroll, the band's origin and `aria-rowindex` each add it. A test breaks the
+  `aria-rowindex` term deliberately to prove the offset is actually asserted —
+  an off-by-one there aims a rubber band or a screen reader one row wrong, which
+  is exactly the kind of bug that survives a screenshot review.
+- **Its absence is what says "you are at the root".** `FileList` takes an
+  optional `onAscend` and draws the row only when it has one; `App` passes
+  `nav.canAscend(path()) ? ascend : undefined` — the same predicate the toolbar's
+  `↑` reads. There is no second piece of state that could come to disagree.
+- **Double-click, not single.** Single-clicking it does nothing, which is what
+  clicking past the last row already does. A single click that ascended would
+  make the second click of an ordinary double-click land on whichever row of the
+  *parent* listing happened to be under the pointer, and select it.
+- **No hover or selected state.** No row in this list has one, and giving the
+  only non-file row the only pointer response would misdescribe it.
+- Verified from computed style on the rendered page, not from the stylesheet: the
+  row is exactly one row tall, its name cell starts at the same x as every other
+  row's, the spacer is one row taller than the entries, and it scrolls with the
+  content rather than pinning to the viewport.
+
+**Next steps**
+
+- Keyboard ascent is still the toolbar's `↑` and its shortcut; the row itself is
+  a pointer affordance and is not in the tab order. Making it focusable would put
+  a tab stop in the middle of the rowgroup, and arrow-key navigation through the
+  list is the selection's, which this row is deliberately outside of.
+- Dropping a dragged file **on** the `..` row uploads into the current folder,
+  not the parent — the row has no `data-path`, so the hit test reads it as list
+  background. That is the safe reading of an ambiguous gesture, but it is a
+  guess; the alternative wants a real decision.
 
 ### E9 — Permission gating
 

@@ -833,6 +833,47 @@
   position: relative;
 }
 
+/* The `..` row (E8-S10).
+
+   Absolutely positioned at the top of the spacer rather than drawn with the
+   window's rows, so it scrolls with the content and costs the virtual window
+   one row of offset instead of an entry it would then have to keep out of
+   every list operation. Deliberately has no hover or selected state: no row
+   in this list has one, and inventing one here would make `..` look like the
+   only thing on screen that responds to a pointer. */
+.rowParent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--hairline-row);
+}
+
+.rowParentCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Secondary, because it names a place rather than a thing in this one. */
+.rowParentName {
+  color: var(--text-secondary);
+}
+
+.rowParentMono {
+  padding: 0 10px;
+}
+
+.rowParentMono .rowParentName {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 /* Per-category glyph tints (E8-S5).
    Placeholder colour until E0-S3 brings the Lucide set — but the routing is
    real: the engine's kind table decides which of these applies, so adding a

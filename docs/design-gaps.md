@@ -257,3 +257,25 @@ into the empty area (a "pick one of these" screen rather than a "connect
 something" one), or the window to open straight into the New Connection dialog
 on a true first run. All three are changes to this one component; nothing else
 depends on its shape.
+
+## A `..` row in the file list *(E8-S10, 2026-09-05)*
+
+**What the handoff shows.** Nothing. Every screen `1a`–`1h` draws a listing of
+files and folders, and the only way up the tree the design gives is the
+toolbar's `↑` and the breadcrumb.
+
+**What was built.** A `..` row pinned above the listing in every folder below
+the share root, with a folder glyph and the name in `--text-secondary`, at the
+current layout's row height. It ascends on a double-click, exactly as a folder
+row descends. It is not selectable and not counted.
+
+**Why.** Asked for directly by the user: "in the files view there should be a
+'..' entry to go to the parent folder". Every file browser that lists a
+directory has one, and its absence sends a user back to the toolbar for the
+most common navigation there is.
+
+**What a designer still owns.** Whether the row is styled as a row at all or as
+something quieter (a thinner strip, no glyph); whether it should respond to a
+single click, given nothing else in the list does; and whether it belongs in
+the `1h` mono layout, where `ls -a` would print `..` as an ordinary entry with
+a mode and a date rather than as a control.

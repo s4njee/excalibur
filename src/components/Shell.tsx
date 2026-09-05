@@ -472,6 +472,14 @@ export function FileList(props: {
   onSelect: (path: string, modifiers: { shift?: boolean; toggle?: boolean }) => void;
   /** Descend into a folder. */
   onOpen: (entry: Entry) => void;
+  /**
+   * Go to the enclosing folder (E8-S10).
+   *
+   * Absent at the share root, and that absence is what withholds the `..`
+   * row: there is no state here saying whether ascending is possible, so the
+   * row cannot come to disagree with the toolbar's `↑` about it.
+   */
+  onAscend?: () => void;
   /** A listing has been in flight past the indicator delay. */
   slow?: boolean;
   sort: Sort;
@@ -497,6 +505,15 @@ export function FileList(props: {
   // window be arithmetic rather than measurement — but the height differs
   // between layouts, so it is read per render rather than baked in.
   const rowHeight = () => ROW_HEIGHTS[props.layout];
+  /**
+   * Rows drawn above the listing: the `..` row, or nothing at the root.
+   *
+   * The virtual window's arithmetic is all in rows, so the parent row is one
+   * row of offset rather than a special case in five places — the spacer is a
+   * row taller, the drawn window starts a row lower, and an index into
+   * `entries` is one row further down the content than it used to be.
+   */
+  const leadRows = () => (props.onAscend ? 1 : 0);
   // Scroll position and viewport height are the only two things the virtual
   // window needs; every row is the same height, so which rows to draw is
   // arithmetic rather than measurement.
@@ -542,7 +559,7 @@ export function FileList(props: {
   createEffect(() => {
     const index = props.reveal;
     if (index === null || index === undefined) return;
-    const top = index * rowHeight();
+    const top = (index + leadRows()) * rowHeight();
     const bottom = top + rowHeight();
     if (top < rows.scrollTop) rows.scrollTop = top;
     else if (bottom > rows.scrollTop + rows.clientHeight) {
@@ -572,12 +589,16 @@ export function FileList(props: {
     if (target.closest(`.${styles.nameCell}`)) return;
 
     const box = rows.getBoundingClientRect();
-    const origin = event.clientY - box.top + rows.scrollTop;
+    // Measured from the first *entry*, not from the top of the content: the
+    // parent row sits above them and is not one of them. `rowsInBand` clamps,
+    // so a band started on the `..` row begins at the first entry.
+    const lead = leadRows() * rowHeight();
+    const origin = event.clientY - box.top + rows.scrollTop - lead;
     const additive = event.metaKey || event.ctrlKey;
     let moved = false;
 
     const move = (at: PointerEvent) => {
-      const current = at.clientY - box.top + rows.scrollTop;
+      const current = at.clientY - box.top + rows.scrollTop - lead;
       // A few pixels of slop, so a click with a shaky hand stays a click.
       if (!moved && Math.abs(current - origin) < 4) return;
       moved = true;
@@ -672,7 +693,7 @@ export function FileList(props: {
     <div
       class={styles.grid}
       role="grid"
-      aria-rowcount={props.entries.length}
+      aria-rowcount={props.entries.length + leadRows()}
       aria-colcount={columnCount()}
     >
       <Show when={props.layout === "columns"}>
@@ -720,19 +741,57 @@ export function FileList(props: {
       >
         {/* One spacer of the full height carries the scrollbar, and the drawn
             rows are offset into it. */}
-        <div class={styles.virtualSpacer} style={{ height: `${props.entries.length * rowHeight()}px` }}>
+        <div
+          class={styles.virtualSpacer}
+          style={{ height: `${(props.entries.length + leadRows()) * rowHeight()}px` }}
+        >
+          {/* `..`, the way every file browser spells the enclosing folder.
+              Drawn here rather than pushed into `entries`, because it is not
+              one: nothing selects it, sorts it, counts it, filters it,
+              downloads it or deletes it, and a synthetic row in that array
+              would have to be excluded from each of those in turn — one
+              forgotten exclusion is a download of a folder nobody picked.
+              It opens on a double-click like every other row; a single click
+              does nothing, exactly as clicking past the last row does
+              (E8-S10). */}
+          <Show when={props.onAscend !== undefined}>
+            <div
+              class={`${styles.rowParent} ${
+                props.layout === "mono" ? styles.rowParentMono : ""
+              }`}
+              style={{ height: `${rowHeight()}px` }}
+              role="row"
+              aria-rowindex={1}
+              title="Enclosing folder"
+              onDblClick={() => props.onAscend?.()}
+            >
+              <div
+                class={styles.rowParentCell}
+                role="gridcell"
+                aria-colspan={columnCount()}
+                aria-label="Enclosing folder"
+              >
+                <div class={styles.folderGlyph} />
+                <span class={styles.rowParentName}>..</span>
+              </div>
+            </div>
+          </Show>
           <Show when={bandBox()}>
             {(box) => (
               <div
                 class={styles.band}
                 style={{
-                  top: `${Math.min(box().from, box().to)}px`,
+                  top: `${Math.min(box().from, box().to) + leadRows() * rowHeight()}px`,
                   height: `${Math.abs(box().to - box().from)}px`,
                 }}
               />
             )}
           </Show>
-          <div style={{ transform: `translateY(${range().start * rowHeight()}px)` }}>
+          <div
+            style={{
+              transform: `translateY(${(range().start + leadRows()) * rowHeight()}px)`,
+            }}
+          >
             <For each={window_()}>
               {(entry, index) => {
                 const selected = () => props.selected().has(entry.path);
@@ -753,7 +812,7 @@ export function FileList(props: {
                         : { height: `${rowHeight()}px` }
                     }
                     role="row"
-                    aria-rowindex={range().start + index() + 1}
+                    aria-rowindex={range().start + index() + 1 + leadRows()}
                     aria-selected={selected()}
                     onClick={(event) =>
                       props.onSelect(entry.path, {
