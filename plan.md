@@ -185,6 +185,8 @@ reconstruct it from git history.
 | **M4.5** | E18-S1 — macOS build (local, unsigned) | **Partly done** 2026-09-05 (icon set and `.app`/`.dmg`; signing deferred) |
 | **M4.5** | E18-S4 — Staging `xs` on a server | **Done** 2026-09-05 (verified on `root@orion.local`) |
 | **M4.5** | E18-S5 — macOS local network permission | **Done** 2026-09-05 (found in the bundled app) |
+| **M4.5** | E21-S1 — Local filesystem backend | Not started (asked for directly 2026-09-06) |
+| **M4.5** | E21-S2 — "Local" in the dialog and the window | Not started (asked for directly 2026-09-06) |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -3782,6 +3784,71 @@ placeholder story that only records the request:
   Look panel).
 
 ---
+
+### E21 — Local filesystem *(asked for directly 2026-09-06: "browsing the local mac filesystem")*
+
+The handoff draws four network protocols and nothing else. A directory on this machine
+goes in behind the same `ShareBackend` seam rather than as a special mode of the window:
+the listing, the verbs, the transfer worker and the writability rule are all already
+written against that trait, and a local backend is the smallest possible implementation
+of it. It is also what makes a local↔share transfer a *copy between two backends* later
+(E13) rather than a third code path. Recorded in `docs/design-gaps.md`, since the
+dialog gains a tab the mock does not draw.
+
+#### E21-S1 — Local filesystem backend
+**AC**
+- `crates/engine/src/backend/local.rs`: `LocalBackend::open(root: &Path, read_only:
+  bool) -> Result<LocalBackend>` implementing every `ShareBackend` method over the
+  standard library: `list_dir`, `stat`, `read_range`, `open_read` (one `File`, positional
+  reads, concurrent — the E13-S7 handle), `write_range`, `mkdir`, `rename`,
+  `remove`, `capacity`, `ping`, `mount_info`, `caps` (`random_access`,
+  `resume_write`, `atomic_rename` true; `symlinks` true; `watch` false).
+- **Confinement:** share-relative paths are resolved under `root` and anything that
+  would escape it — `..`, an absolute path, a NUL — is refused as `NotFound`, never
+  served. A symlink *inside* the root that points outside is listed as a symlink with
+  its target and may be followed on open: this is the user's own machine, and Finder
+  follows them; the confinement is about the path *model*, not a privilege boundary.
+- **Writability is probed, not assumed:** `writable` is true only when a temp file can
+  be created and removed in `root` (removed on every exit path); `read_only` mounts
+  refuse every write at the backend with `ReadOnly` and a reason, exactly as the
+  network backends do. The reason names the cause (`mounted read-only` vs `no write
+  permission on <root>`).
+- **Kinds and hiddenness use the shared rules:** `classify_entry` from `kind.rs`; an
+  entry is `hidden` when its name starts with `.` **or**, on macOS, when the
+  `UF_HIDDEN` flag is set (`~/Library` is flagged, not dotted) — read through
+  `std::os::macos::fs::MetadataExt`, no unsafe.
+- **`remove` moves to the Trash** on platforms that have one (the `trash` crate),
+  and falls back to a real delete only where there is none, saying which in the mount's
+  `options`. Deleting a file on your own Mac must not be more permanent than Finder
+  makes it. The dependency is recorded in `docs/supply-chain.md` and passes `cargo deny`.
+- `capacity` from `statvfs` via a safe crate already in the tree if there is one, else
+  `fs4` (record it). `security_label` is `local`; `protocol_label` is `local`.
+- `xcal --local PATH` drives it headlessly.
+- Tests in `crates/engine/tests/local.rs` against a `tempdir`: listing, stat, range
+  read, the read handle's concurrent reads, write, mkdir/rename/remove (asserting the
+  file left the root — and, on macOS, that it is in the Trash rather than gone),
+  capacity, the read-only refusal, the write-probe on an unwritable root, every
+  confinement case, hidden-by-flag on macOS, and a symlink pointing outside the root.
+
+#### E21-S2 — "Local" in the dialog and the window
+**AC**
+- The New Connection dialog gains a **Local** tab: one field, *Folder*, with a
+  `Choose…` button that opens the OS folder picker (`tauri-plugin-dialog` `open`
+  with `directory: true` — already granted `dialog:allow-open`), plus the Mount-as
+  radio. No host, port, username or password; the URI preview reads `file:///…`.
+  The field set is decided in `state/connection.ts` beside the other protocols'.
+- `ProtocolConnector` routes `Protocol::Local` to `LocalBackend::open`; `test_connection`
+  reports the folder's real writability; `supported_protocols` lists `local`.
+- A local bookmark is never *probed*: reachability is not a question a folder answers,
+  so the row is never dimmed and no TCP connect is attempted for it.
+- Chrome: the title reads `<folder name> — This Mac` (or the machine's hostname on
+  Linux), the breadcrumb root is the chosen folder, the status bar shows `local`
+  where a network protocol would show `xsync v3 · ssh`. The bookmark id derives from
+  the path, not a host.
+- Download from a local share to the download folder is an ordinary transfer; upload
+  into it is an ordinary upload. Neither is special-cased.
+- Tests: the field set, the URI, validation (a relative path is refused, a missing
+  `Folder` is refused), the id, that the probe is skipped, and the chrome naming.
 
 ## Milestones
 

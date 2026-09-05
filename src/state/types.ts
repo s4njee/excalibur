@@ -2,7 +2,7 @@
 // generated: the set is small, and the Tauri DTO layer is where a mismatch
 // would surface loudly anyway.
 
-export type Protocol = "smb" | "nfs" | "sftp" | "xsync";
+export type Protocol = "smb" | "nfs" | "sftp" | "xsync" | "local";
 export type Access = "rw" | "ro";
 export type MountStatus = "mounting" | "ready" | "error" | "reconnecting";
 export type EntryKind = "file" | "dir" | "symlink" | "other";

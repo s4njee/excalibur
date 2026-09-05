@@ -94,6 +94,10 @@ impl Connector for ProtocolConnector {
                 let backend = XsyncBackend::connect_ssh(&target, &spec.share).await?;
                 Ok(Arc::new(backend))
             }
+            // E21-S1 replaces this with `LocalBackend::open`.
+            Protocol::Local => Err(EngineError::Unsupported(
+                "browsing this machine is not built yet".to_owned(),
+            )),
             Protocol::Sftp => {
                 let port = spec.port.unwrap_or(hostkeys::DEFAULT_SSH_PORT);
                 let username = spec.username.clone().unwrap_or_else(whoami);

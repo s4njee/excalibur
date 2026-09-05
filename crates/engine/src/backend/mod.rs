@@ -29,6 +29,12 @@ pub enum Protocol {
     Sftp,
     /// xsync protocol v3.
     Xsync,
+    /// A directory on this machine, browsed through the same seam (E21).
+    ///
+    /// Not a network protocol, and deliberately not special-cased anywhere
+    /// above the trait: the window sees one more kind of share, with the
+    /// same listing, the same verbs and the same writability rule.
+    Local,
 }
 
 impl Protocol {
@@ -40,6 +46,7 @@ impl Protocol {
             Self::Nfs => "nfs",
             Self::Sftp => "sftp",
             Self::Xsync => "xsync",
+            Self::Local => "file",
         }
     }
 }
