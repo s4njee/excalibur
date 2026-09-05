@@ -1,0 +1,84 @@
+/*
+ * The Properties sheet (E14-S4).
+ *
+ * The scrim, the window, the title bar and the footer button all come from
+ * `dialog.module.css` — this sheet is a second instance of that dialog, not a
+ * second kind of dialog. What is here is only the definition list inside it,
+ * whose two columns line up with the `.form` grid the other dialogs use so a
+ * user moving between them does not see the label column jump.
+ *
+ * Nothing here transitions. The sheet appears whole, and there is no state in
+ * it that changes while it is open.
+ */
+
+.header {
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--hairline-chrome);
+}
+
+/* File names are long, arbitrary, and frequently have no spaces in them, so
+   this wraps mid-word rather than pushing the sheet wider than its window. */
+.name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.rows {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 9px 12px;
+  align-items: baseline;
+  margin: 0;
+}
+
+.term {
+  margin: 0;
+  text-align: right;
+  font-size: var(--text-control);
+  color: var(--text-secondary);
+}
+
+.value {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-control);
+  color: var(--text-primary);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* A path and a symlink target are compared character by character, the same
+   reason `.inputMono` exists in the connection dialog. `user-select: all`
+   makes one click select the whole thing to copy. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  user-select: all;
+}
+
+/* The unrounded byte count, beside the rounded size it restates. Secondary,
+   because it is the figure you go looking for rather than the one you read. */
+.exact {
+  color: var(--text-tertiary);
+}
+
+/* What is shown where a folder's size would be. Tertiary rather than primary:
+   it is the absence of a number, and it should not read like one. */
+.unknown {
+  color: var(--text-tertiary);
+}
+
+/* A sentence under one row, in the value column — `grid-column: 2` for the
+   same reason `.fieldHint` needs it: in the label column it would push every
+   row below it out of alignment. */
+.note {
+  grid-column: 2;
+  margin: -4px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-tertiary);
+}

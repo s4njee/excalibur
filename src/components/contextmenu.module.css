@@ -1,0 +1,53 @@
+/* The context menu (E14-S2).
+
+   Its own module rather than a section of `shell.module.css`: CSS-module class
+   collisions in this project are silent — two `.divider` rules in one file
+   once turned the status bar's separators into 9px column handles and no test
+   noticed — and a menu has generic names (`.item`, `.separator`) that would be
+   the next collision waiting to happen.
+
+   Positioned by the component in viewport coordinates, so `position: fixed`
+   rather than absolute: the list scrolls and the sheet layers, and a menu
+   anchored to either would move with it. */
+
+.menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--control-bg);
+  border: 1px solid var(--hairline-chrome);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow-window);
+  font-size: var(--text-row);
+  color: var(--text-primary);
+  /* It is focused on open so the keyboard reaches it; the ring would be
+     drawn around the whole menu, which says nothing — the active *item* is
+     what carries the highlight. */
+  outline: none;
+}
+
+.item {
+  padding: 4px 10px;
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* One highlight for both the pointer and the keyboard: hovering sets the
+   active item, so there is no second state that could disagree with the
+   arrow keys about which row Enter would choose. */
+.itemActive {
+  background: var(--selection-bg);
+  color: var(--selection-text);
+}
+
+.itemDisabled {
+  color: var(--text-tertiary);
+}
+
+.separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--hairline-chrome);
+}

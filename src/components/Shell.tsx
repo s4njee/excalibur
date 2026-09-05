@@ -473,6 +473,13 @@ export function FileList(props: {
   /** Descend into a folder. */
   onOpen: (entry: Entry) => void;
   /**
+   * Right-click, with the row under the pointer — `null` for the list
+   * background, which is a menu about the folder rather than about a file
+   * (E14-S2). The coordinates are the viewport's, which is where the menu is
+   * positioned.
+   */
+  onContextMenu?: (entry: Entry | null, at: { x: number; y: number }) => void;
+  /**
    * Go to the enclosing folder (E8-S10).
    *
    * Absent at the share root, and that absence is what withholds the `..`
@@ -738,6 +745,11 @@ export function FileList(props: {
         ref={rows}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         onPointerDown={startBand}
+        onContextMenu={(event) => {
+          if (!props.onContextMenu) return;
+          event.preventDefault();
+          props.onContextMenu(null, { x: event.clientX, y: event.clientY });
+        }}
       >
         {/* One spacer of the full height carries the scrollbar, and the drawn
             rows are offset into it. */}
@@ -821,6 +833,14 @@ export function FileList(props: {
                       })
                     }
                     onDblClick={() => props.onOpen(entry)}
+                    onContextMenu={(event) => {
+                      if (!props.onContextMenu) return;
+                      event.preventDefault();
+                      // Stopped, or the rowgroup below would immediately
+                      // replace this menu with the background's one.
+                      event.stopPropagation();
+                      props.onContextMenu(entry, { x: event.clientX, y: event.clientY });
+                    }}
                   >
                     <Switch>
                       {/* `1f` — the dense four-column grid. */}

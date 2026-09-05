@@ -17,13 +17,15 @@ export type Affordance =
   | "edit"
   | "upload"
   | "rename"
+  | "move"
   | "delete"
   | "newFolder"
   | "dropTarget"
-  | "remountRw";
+  | "remountRw"
+  | "properties";
 
 /** Affordances that only read. A read-only mount does not touch these. */
-export const READ_AFFORDANCES: readonly Affordance[] = ["quickLook", "download"];
+export const READ_AFFORDANCES: readonly Affordance[] = ["quickLook", "download", "properties"];
 
 /**
  * Affordances that write. Every one is disabled when `writable` is false.
@@ -36,6 +38,11 @@ export const WRITE_AFFORDANCES: readonly Affordance[] = [
   "edit",
   "upload",
   "rename",
+  // A move is a rename across directories — the same verb at the seam, and
+  // the same permission. It is listed separately because a menu that offers
+  // "Move to…" on a read-only mount is offering a write, whatever it is
+  // implemented with.
+  "move",
   "delete",
   "newFolder",
   "dropTarget",
@@ -56,7 +63,15 @@ export const AFFORDANCES: readonly Affordance[] = [
 ];
 
 /** Affordances that need something selected to act on. */
-const NEEDS_SELECTION: readonly Affordance[] = ["quickLook", "download", "edit", "rename", "delete"];
+const NEEDS_SELECTION: readonly Affordance[] = [
+  "quickLook",
+  "download",
+  "edit",
+  "rename",
+  "move",
+  "delete",
+  "properties",
+];
 
 /**
  * Why every verb is refused when nothing is mounted at all (E1-S6).
@@ -74,6 +89,19 @@ export interface Context {
   /** The server's explanation, shown verbatim when it refuses. */
   reason: string;
   hasSelection: boolean;
+  /**
+   * Whether the selection is one file this app can edit in place (E14-S2).
+   *
+   * A fact about what is selected rather than about the mount, like
+   * `hasSelection` beside it — but the same kind of fact, and it belongs here
+   * for the same reason: `edit` is one affordance, and a second rule about it
+   * living in whichever component happened to need it is how a toolbar button
+   * and a menu item come to disagree about the same file.
+   *
+   * `undefined` means the caller has no opinion, and nothing is gated on it.
+   * Editing a 48 GB video by opening it in `$EDITOR` is not a thing to offer.
+   */
+  editable?: boolean;
 }
 
 /** Whether an affordance is available, and why not. */
@@ -101,6 +129,12 @@ export function gate(affordance: Affordance, context: Context): Gate {
 
   if (NEEDS_SELECTION.includes(affordance) && !context.hasSelection) {
     return { disabled: true, reason: "Nothing selected" };
+  }
+
+  // After the selection check, so an empty selection says the thing the user
+  // can act on rather than complaining about the type of nothing.
+  if (affordance === "edit" && context.editable === false) {
+    return { disabled: true, reason: "Only text files can be edited here" };
   }
 
   return { disabled: false, reason: null };

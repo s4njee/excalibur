@@ -151,6 +151,9 @@ reconstruct it from git history.
 | **M2** | E13-S5 — Drag and drop | **Partly done** (inbound only) |
 | **M2** | E13-S6 — Conflicts and resume | **Partly done** |
 | **M2** | E14-S1 — New folder, rename, delete | **Done** 2026-09-03 |
+| **M4.5** | E14-S2 — Context menu | **Done** 2026-09-05 |
+| **M4.5** | E14-S3 — Move to… | **Done** 2026-09-05 |
+| **M4.5** | E14-S4 — Properties | **Done** 2026-09-05 (POSIX mode still parked) |
 | **M2** | E15-S1 — Banner | **Done** 2026-09-03 |
 | **M2** | E15-S2 — Auth failure loop guard | **Done** 2026-09-03 |
 | **M3** | E6-S1 — SFTP backend | **Done** 2026-09-03 |
@@ -2990,6 +2993,245 @@ media seeking; it is the wrong shape for a transfer.
   **E15-S1**'s banner is where that belongs.
 - Deleting a large tree runs one `remove` per selected path with no progress. **E13**'s
   transfer queue is the right home for anything long enough to watch.
+
+#### E14-S2 — Context menu — **Done**
+
+*2026-09-05.*
+*Asked for directly 2026-09-05: "a context menu that has common operations such as
+edit if its a text file, rename, move to, delete, and properties that work for a
+selection of files/folders as well". The handoff draws no context menu — this and
+the two stories below go in `docs/design-gaps.md`.*
+
+**AC**
+- [x] Right-click on a row opens a menu at the pointer. Right-clicking a row that is
+  **not** in the current selection selects it first; right-clicking one that **is**
+  keeps the selection, so the menu acts on all of it. Right-clicking the list
+  background acts on the folder being shown.
+- [x] Items, in this order, with separators: `Quick Look`, `Edit`, `Download`, —,
+  `Rename`, `Move to…`, `Delete`, —, `Properties`.
+- [ ] …and `Properties` on the background menu, for the folder being shown.
+  **Not built:** Properties describes entries, and the folder on screen is not
+  in its own listing — the window knows its name and nothing else about it, and
+  the seam has no `stat` reaching the frontend. Inventing an entry for it would
+  mean showing a size and a date that were never asked for. The background menu
+  is `New Folder` and `Upload…`.
+- [x] **`Edit` appears only for a single entry the engine calls editable** — the kind
+  table's category, never the extension or the label — and `Rename` only for a
+  single entry. Everything else works over a selection of any size.
+- [x] **Every item is gated through `gate()`**, the same call the toolbar's verbs
+  make. A refused item is disabled and carries the server's reason as its
+  tooltip. `move` and `properties` join the `Affordance` union — `move` as a
+  write, `properties` as a read — so the test that each affordance is in exactly
+  one group covers them.
+- [x] Escape closes it, a click anywhere else closes it, scrolling the list closes it,
+  and it never opens off the edge of the window.
+- [x] `role="menu"` with `role="menuitem"` children; ↑/↓ move, Enter/Space activate,
+  Escape closes. Shift+F10 and the Menu key open it on the selection. *(Focus
+  does not "return to the list": no row is focusable — the list is driven by a
+  window-level key handler and a selection, not by DOM focus. Closing the menu
+  hands the keyboard straight back to it.)*
+- [x] Tests: the item list is built by a pure function from (entry under the pointer,
+  selection, mount) and is tested as one — including that a read-only mount
+  disables exactly the write items and no others.
+
+**Results**
+
+- **The menu is a third way to reach verbs that already had two, so it asks the
+  same question they do.** Every item goes through `gate()`; nothing in the menu
+  decides for itself whether a verb is allowed. The test that matters is a
+  *partition* rather than a list — on a read-only mount, exactly the write
+  affordances come back disabled and exactly the read ones do not — because the
+  failure this design fears is not a wrong item today, it is a verb added later
+  and sorted into the wrong half.
+- **What the menu acts on is settled before it opens, and it is the selection.**
+  Right-clicking a row outside the selection selects it first; right-clicking one
+  inside it changes nothing. So `menuFor` never learns there was a pointer: it
+  takes the selection and the mount, which is why the interesting cases are a
+  pure-function test rather than a browser one.
+- **The labels carry the count** — `Delete 3 items`, `Move 3 items to…` — because
+  the one question a user has when they right-click with several rows highlighted
+  is whether the verb means all of them or the one under the cursor. Verbs that
+  cannot mean all of them say `Select one item` instead of silently doing
+  nothing, which is what Enter-to-rename did before this.
+- **A found bug, and the reason `editable` now exists.** `Edit` was offered for
+  any single selection and `editFile` would happily have handed a 48 GB video to
+  `$EDITOR`. Editability is now the engine's category — the same table
+  `previewFor` reads, so "shows as text" and "edits as text" cannot drift — and
+  it is in the permission `Context`, so the toolbar's Edit button is gated by the
+  same value rather than by a second rule of its own.
+- **With several selected the menu deliberately has no opinion about type.**
+  Telling someone who selected three text files that "only text files can be
+  edited" is both unhelpful and untrue; the reason is the count, and the count is
+  what they can act on. A test pins that exact wording, because the first version
+  got it wrong.
+- **A real stacking bug, found by clicking rather than by reading.** The sheets
+  the menu opens rendered *behind* the file list, buttons and all, showing
+  through only in the gaps between columns. `dialog.module.css`'s `.scrim` had no
+  `z-index`, and the list's rows sit inside a `transform`, which puts them in the
+  same painting layer — so which won came down to tree order. The New Connection
+  dialog happened to be mounted after the list and looked fine; anything mounted
+  before it did not. `overlays.test.ts` now reads every component stylesheet and
+  fails on a full-window overlay with no `z-index`; removing the fix makes it
+  fail by name.
+- Escape, a click anywhere else, a scroll, a resize and a window blur all close
+  it. The scroll listener is in the capture phase, because the list scrolls in
+  its own container and that event does not bubble — a menu still pointing at a
+  row that has scrolled away is pointing at a different file.
+
+**Next steps**
+
+- **The toolbar still offers Edit and Quick Look for a multiple selection**,
+  where they do nothing. The type half of that is fixed; the count half is the
+  same `ONE_ONLY` rule the menu applies, and moving it into `gate()` would mean
+  `Context` learning how many things are selected rather than merely whether any
+  are. Worth doing, not done.
+- No submenus, no icons, no "Open With". The design has no opinion on any of
+  them, and this menu is already past the mocks.
+- The Menu key and Shift+F10 open the menu beside the first selected row by
+  reading that row's rectangle from the DOM — the one place the window measures
+  its own list from outside the list. If a second caller ever needs it, it wants
+  to be a callback out of `FileList` instead.
+
+#### E14-S3 — Move to… — **Done**
+
+*2026-09-05.*
+**AC**
+- [x] A destination picker over the same share: it lists **only directories**, starts
+  in the folder the items are in, has a breadcrumb and a `..` row, and its primary
+  button is `Move here`.
+- [x] Refuses, with the reason on screen and the button disabled: the folder the items
+  are already in (nothing to do), a folder being moved (into itself), and anything
+  inside a folder being moved (into its own descendant).
+- [x] Moves with `rename(from, to, replace: false)` per item, so a name that is taken
+  is the **server's** refusal at the moment of the move rather than a check here
+  that could race.
+- [x] A partial failure is reported as one: how many moved, which one failed, and why.
+  The listing is re-read afterwards either way.
+- [x] Gated on `writable`, and refused at the seam by `writeGuarded` as every other
+  write is.
+- [x] The rules — which destinations are illegal and why — are a pure module with its
+  own tests, not conditions inside the component.
+
+**Results**
+
+- **The rules are a module because the interesting case is three clicks deep.**
+  `src/state/move.ts` is two functions: `illegalDestination` returns the sentence
+  to put on screen or `null`, and `destinationOf` says where one item lands. A
+  component test can only ask whether the button was disabled; it cannot ask
+  *why*, and the case that actually damages a share — a folder moved inside
+  itself — is reachable only by building a tree and walking down it.
+- **The containment check is by segment, not by prefix, and a test proves it.**
+  `"docs-old".startsWith("docs")` is true, so the obvious spelling refuses a
+  perfectly ordinary move while claiming the folder is inside itself. Swapping
+  the body for `startsWith` was tried on purpose: exactly one test fails, the one
+  that names the trap.
+- **Entries are checked whatever their `kind`.** Only a directory can really
+  contain the destination, so the loop could have skipped files — but a rule that
+  first decides what counts as a directory is a rule with a second way to be
+  wrong.
+- **The picker walks; it does not select.** The destination is always the folder
+  the breadcrumb ends on — the one `Move here` names — so a row is a place to go
+  and one click goes there. A selected row *and* a current folder would be two
+  destinations on screen at once with the button naming only one of them. The
+  list keeps a fixed height, because a sheet that resizes as you walk the tree
+  moves `Move here` out from under the pointer between clicks.
+- **A folder being moved is still listed, and refused by name** — `You cannot
+  move “docs” into itself.` Hiding it would leave a hole where the user can see a
+  folder ought to be. The refusal sits beside the button it disabled, with
+  `aria-describedby` joining them: a disabled control and its reason a paragraph
+  apart are two facts the user is left to connect.
+- **The move is one `rename` per item with `replace: false`**, so a name already
+  taken over there is the *server's* refusal at the moment of the move rather
+  than a check here that a second writer could invalidate. It stops at the first
+  failure instead of trying the rest: the failures that matter are properties of
+  the destination, so the remaining items would fail identically, and a dozen
+  identical errors are worse than one and a count of what did move.
+- **The picker's rows carry `data-destination`, never `data-path`.** The sheet
+  renders inside the window, and everything that hit-tests the listing — the
+  selection, the drop target, the status bar's count, the `..` row's own tests —
+  keys on `data-path`. A picker row with one would have joined the listing.
+- Escape is taken in the capture phase and stopped there, so dismissing the sheet
+  does not also clear the filter behind it.
+
+**Next steps**
+
+- **No keyboard navigation inside the picker.** Rows are buttons, so Tab and
+  Enter work, but ↑/↓ do not walk the list and there is no type-to-select. In a
+  folder of two hundred directories that is a lot of tabbing; it belongs with
+  E16-S1's key table rather than as a second, private one.
+- **No New Folder from inside the picker.** Moving into a folder that does not
+  exist yet means cancelling, creating it, and starting again.
+- **It lists folders the user may not be able to write to.** Per-directory
+  permission is not in a listing, so a destination the server will refuse looks
+  identical to one it will take. That is the same bargain the story makes for
+  name collisions, and it is honest until `Attrs` carries an access hint.
+- A mount that goes read-only *while* the picker is open still offers `Move
+  here`; the refusal then comes from `writeGuarded` at the seam rather than from
+  the button. True of every dialog in the window today.
+
+#### E14-S4 — Properties — **Done (bar POSIX mode)**
+
+*2026-09-05.*
+*This takes "Get Info / POSIX mode inspector" out of E20's parking lot. It was
+asked for directly, which is the sign-off that story was waiting for; the shape
+is still ours to invent, so it is written up in `docs/design-gaps.md`.*
+
+**AC**
+- [x] One entry: name, kind label, size in bytes *and* in the list's own units,
+  modified time in full, the share-relative path, and the symlink target where
+  there is one.
+- [x] Several: how many files and how many folders, the total size of the files, and
+  the folder they are in. A folder's own contents are **not** walked to size it —
+  that is a transfer's worth of work, and a number that appears after a pause is
+  worse than one that is not offered.
+- [x] Read-only: it opens on a read-only mount and offers no write.
+- [x] The summary is a pure function over the entries, tested as one.
+
+**Results**
+
+- **The sheet asks the engine nothing.** Every field it shows arrived with the
+  listing, so opening Properties on two hundred selected files costs one pure
+  function and no round trips. That is not an optimisation — it is what makes the
+  AC's "do not walk a folder" rule cheap to keep, because there was never a call
+  site to be tempted by.
+- **A folder's size is an absence, and the sheet says so in words.** The list
+  shows `—` in the Size column and this shows the same `—`, followed by a
+  sentence explaining that the contents were not measured. The failure avoided is
+  not a crash, it is a plausible number: `0 B` on a folder reads as *empty*, and
+  a user deciding whether to delete something would be reading a claim the app
+  never checked.
+- **The surprise was in the input, not the output.** Several backends report a
+  non-zero `size` for a directory — the inode's own size, 4096 on most Linux
+  exports — so summing `entry.size` gives a total that is wrong by an arbitrary
+  amount and looks entirely believable. `summarise` skips directories rather than
+  trusting the zero, and its test uses a folder of `size: 4096` precisely because
+  the naive version passes every test written against the fixture, where folders
+  happen to be zero.
+- **A symlink counts as a file**, not because it is one, but because the list
+  already treats it that way — it shows a size for every row that is not a
+  directory. A third count would be a taxonomy the design nowhere draws.
+- **`newestModified` skips entries with no mtime rather than coercing them to
+  `0`.** The coercion is invisible in a "newest" answer and catastrophic in an
+  "oldest" one, and it is how a file comes to claim it was modified in 1970.
+- Read-only fell out rather than being built: the sheet has no `writable` prop
+  because it contains no control but `Done`. Its test enumerates the buttons and
+  asserts there are no inputs at all — aimed squarely at the plausible future
+  edit of adding a rename field here, which would be a write verb with no gate in
+  front of it.
+
+**Next steps**
+
+- **POSIX mode is still not shown**, which is the half of E20's "Get Info /
+  POSIX mode inspector" that stays parked. `Entry.mode` is in the DTO, but a mode
+  is only meaningful beside an owner and a group and the engine sends neither —
+  `xsyncv3` deferred owner *names* rather than deciding anything about them.
+  `0644` beside no owner is an inspector that cannot answer the question anyone
+  opens it to ask.
+- **No live refresh.** The sheet renders the entries it was handed; if the folder
+  is re-listed underneath it, the numbers are the ones from the moment it opened.
+- **Folder sizing has a natural home if it is ever wanted** — an explicit
+  *Calculate* button that queues the walk in **E13**'s transfer queue, where a
+  long job is already something you can watch and cancel.
 
 ### E15 — Connection health and errors *(handoff §Errors — "not mocked yet")*
 

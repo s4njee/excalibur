@@ -31,7 +31,8 @@ export type ShortcutId =
   | "transfers"
   | "layoutColumns"
   | "layoutNameLed"
-  | "layoutMono";
+  | "layoutMono"
+  | "contextMenu";
 
 export interface Shortcut {
   id: ShortcutId;
@@ -55,6 +56,14 @@ export interface Shortcut {
  */
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: "quickLook", label: "Quick Look", key: " " },
+  // The two keys every desktop gives for "show me what I can do with this":
+  // the dedicated Menu key, and Shift+F10 for the keyboards without one. They
+  // are separate rows because they differ in a modifier, and `match` compares
+  // modifiers exactly — an `alias` would have to share Shift, which the Menu
+  // key does not have. `hint()` reports the second, which is the one a user
+  // without a Menu key needs told (E14-S2).
+  { id: "contextMenu", label: "Show actions", key: "contextmenu" },
+  { id: "contextMenu", label: "Show actions", key: "f10", shift: true },
   { id: "rename", label: "Rename", key: "enter" },
   { id: "delete", label: "Delete", key: "delete", alias: "backspace" },
   { id: "descend", label: "Open", key: "arrowdown", mod: true },

@@ -119,6 +119,23 @@ describe("writable is the only input", () => {
     }
   });
 
+  it("refuses to edit something that is not text, and says so after the selection", () => {
+    // Editing means handing the file to the user's `$EDITOR`. A 48 GB video
+    // is not something to hand it (E14-S2).
+    const writable = { writable: true, reason: "", hasSelection: true };
+    expect(gate("edit", { ...writable, editable: false }).disabled).toBe(true);
+    expect(gate("edit", { ...writable, editable: false }).reason).toMatch(/text/i);
+    expect(gate("edit", { ...writable, editable: true }).disabled).toBe(false);
+    // No opinion is not a refusal: a caller that does not know the type — a
+    // test of the mount rule, say — is not gated on it.
+    expect(gate("edit", writable).disabled).toBe(false);
+
+    // And with nothing selected it is the selection that is missing, not the
+    // type: complaining about the type of nothing helps nobody.
+    const empty = { writable: true, reason: "", hasSelection: false, editable: false };
+    expect(gate("edit", empty).reason).toBe("Nothing selected");
+  });
+
   it("covers every affordance the type allows", () => {
     // A compile-time exhaustiveness check: if `Affordance` grows a member that
     // AFFORDANCES omits, this stops type-checking.
@@ -129,9 +146,11 @@ describe("writable is the only input", () => {
       upload: true,
       rename: true,
       delete: true,
+      move: true,
       newFolder: true,
       dropTarget: true,
       remountRw: true,
+      properties: true,
     };
     expect(Object.keys(seen).sort()).toEqual([...AFFORDANCES].sort());
   });

@@ -279,3 +279,67 @@ something quieter (a thinner strip, no glyph); whether it should respond to a
 single click, given nothing else in the list does; and whether it belongs in
 the `1h` mono layout, where `ls -a` would print `..` as an ordinary entry with
 a mode and a date rather than as a control.
+
+## A context menu *(E14-S2, 2026-09-05)*
+
+**What the handoff shows.** Nothing. The design gives a toolbar and a keyboard
+table, and no right-click behaviour anywhere.
+
+**What was built.** A menu at the pointer with `Quick Look`, `Edit`, `Download`,
+then `Rename`, `Move to…`, `Delete`, then `Properties`; on the list background,
+`New Folder` and `Upload…`. It reuses nothing visual from the mocks because
+there is nothing to reuse: 4px padding, the control background, the window
+radius and shadow, and the selection fill for the active row. Refused items are
+`--text-tertiary` and carry the server's reason as their tooltip, matching how a
+disabled toolbar verb behaves.
+
+**Why.** Asked for directly by the user, including that it "work for a selection
+of files/folders as well".
+
+**What a designer still owns.** Whether the item order is right; whether the
+verbs that act on several rows should say so in the label (`Delete 3 items`) or
+stay bare; whether `Properties` belongs at the bottom or the top; and whether a
+refused item should be shown greyed at all rather than omitted — greying keeps
+the menu's shape stable between mounts, which is why it is greyed here, but the
+design has no precedent either way.
+
+## Move to… *(E14-S3, 2026-09-05)*
+
+**What the handoff shows.** No destination picker.
+
+**What was built.** The New Connection dialog's chrome wholesale — same scrim,
+same 460px sheet, same title bar and footer buttons — plus two things with no
+counterpart there: a breadcrumb whose root crumb is the share name, and a
+fixed-height list of folders with a `..` row. The model is "walk to the folder,
+then Move here", not "select a row and confirm", so a single click enters a
+folder and the destination is always the one the breadcrumb ends on. Folders
+being moved are listed and refused by name rather than hidden, and the refusal
+is a sentence beside the disabled button in `--error`.
+
+**What a designer still owns.** Whether walking is the right model or a tree
+with disclosure triangles would be; whether the picker should offer New Folder;
+and how a destination the user cannot write to should look, given that a listing
+does not say.
+
+## Properties sheet *(E14-S4, 2026-09-05)*
+
+**What the handoff shows.** Nothing — "Get Info / POSIX mode inspector" is
+listed under §Not yet designed. It was asked for directly as the last item of
+the context menu, so the shape is ours.
+
+**What was built.** A modal on the same dialog chrome, with the entry's name as
+a heading and a two-column definition list whose label column is the 96px the
+other dialogs use, so labels do not jump between sheets. One entry shows Kind,
+Size, Modified, Path and — when there is one — Links to; a selection shows
+Items, Size, Last modified and Where. Size appears twice, rounded as the list
+shows it and exact: `48.2 GB (48,234,496,000 bytes)`.
+
+**The judgement call worth a designer's eye** is what a folder's size looks
+like. Walking a folder to size it is forbidden by the story, so the sheet shows
+the same `—` the Size column shows plus a sentence saying the contents were not
+measured. The alternative, `0 B`, is a number that reads as "empty".
+
+**What a designer still owns.** Whether Properties should be a modal at all or
+an inspector alongside the list that stays open as the selection changes;
+whether the exact byte count deserves its own row; and whether POSIX mode and
+owner belong here once the engine sends them.

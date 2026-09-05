@@ -2,9 +2,21 @@
  * The New Connection dialog. Metrics from the design handoff §Screens/3.
  */
 
+/* Above everything the window draws under it.
+
+   Stated rather than left to `auto`, which is what it was until 2026-09-05 —
+   and `auto` made a modal sheet's stacking depend on where in the tree it
+   happened to be mounted, because the virtualised list's rows sit inside a
+   `transform` and so paint in the positioned layer too. The New Connection
+   dialog happened to be rendered after the list and looked fine; Properties
+   and Move to… were mounted before it and rendered *behind* the rows, with
+   their buttons unclickable. A z-index is the only thing that makes this a
+   property of the sheet rather than of its call site. */
 .scrim {
   position: fixed;
   inset: 0;
+  z-index: 40;
+
   display: flex;
   align-items: center;
   justify-content: center;

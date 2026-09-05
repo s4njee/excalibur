@@ -65,6 +65,22 @@ export function previewFor(entry: Entry, caps: Caps): Preview {
 }
 
 /**
+ * Whether this app can hand the file to an editor (E12, E14-S2).
+ *
+ * The engine's category, never the extension and never the label — the same
+ * table `previewFor` above routes on, so "what can be shown as text" and "what
+ * can be edited as text" cannot drift apart.
+ *
+ * Editing means writing the file back afterwards, so a folder, a symlink or a
+ * video is not a candidate: `editFile` would put 48 GB of container in front
+ * of `$EDITOR` and then try to save it.
+ */
+export function editable(entry: Entry): boolean {
+  if (entry.kind !== "file") return false;
+  return entry.kindCategory === "text" || entry.kindCategory === "code";
+}
+
+/**
  * Decode bytes as text, sniffing the encoding.
  *
  * UTF-16 is detected by its byte-order mark, because a UTF-16 file decoded as

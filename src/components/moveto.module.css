@@ -1,0 +1,121 @@
+/*
+ * The Move to… picker (E14-S3). The sheet, its title bar and its footer
+ * buttons come from `dialog.module.css`; only the folder list and the
+ * breadcrumb are new, because only they have no counterpart there.
+ *
+ * Nothing here animates geometry, and every duration is a token: the rules
+ * `transitions.test.ts` states for the shell hold in a list of rows wherever
+ * that list is drawn.
+ */
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: var(--text-control);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.crumb {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-control);
+  transition: color var(--transition-state);
+}
+
+.crumb:hover {
+  color: var(--text-primary);
+}
+
+.crumbSeparator {
+  padding: 0 1px;
+  color: var(--text-tertiary);
+}
+
+.crumbCurrent {
+  padding: 0 2px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* A fixed height rather than one that follows the contents: a picker that
+   resizes as the user walks the tree moves `Move here` out from under the
+   pointer between clicks. Nine rows, so a typical folder needs no scrolling. */
+.list {
+  height: calc(var(--height-row) * 9);
+  overflow-y: auto;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--list-bg);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--height-row);
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-row);
+  text-align: left;
+  transition: background var(--transition-state);
+}
+
+.row:hover {
+  background: var(--chip-neutral-bg);
+}
+
+/* The same folder glyph the list uses, at the same size: a row here means the
+   same thing as a row there. */
+.glyph {
+  flex: none;
+  width: 11px;
+  height: 9px;
+  border-radius: var(--radius-glyph);
+  background: var(--glyph-folder);
+}
+
+.up .glyph {
+  background: var(--glyph-file);
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note {
+  margin: 6px 10px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.noteError {
+  color: var(--error);
+}
+
+.summary {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* The refusal sits beside the button it disabled, not above the list: a
+   disabled control and its reason a paragraph apart are two facts the user has
+   to connect for themselves. */
+.reason {
+  flex: 1;
+  min-width: 0;
+  color: var(--error);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

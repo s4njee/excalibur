@@ -48,6 +48,12 @@ import {
 } from "./state/permissions";
 import { engineFailure } from "./state/errors";
 import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
+import { ContextMenu } from "./components/ContextMenu";
+import { Properties } from "./components/Properties";
+import { MoveTo } from "./components/MoveTo";
+import { destinationOf } from "./state/move";
+import { menuFor, type MenuAction, type MenuItem } from "./state/menu";
+import { editable } from "./state/preview";
 import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
 import * as shortcuts from "./state/shortcuts";
@@ -306,6 +312,11 @@ export default function App(props: {
 
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
+      // A menu owns the keyboard while it is open. It stops its own keys from
+      // reaching here, but a key pressed while focus is elsewhere would
+      // otherwise reach the list *through* the menu — Delete deleting the
+      // selection behind an open menu that also offers Delete (E14-S2).
+      if (contextMenu()) return;
       // Anything typed into the filter box or a dialog field belongs to that
       // field, not to the list.
       const target = event.target as HTMLElement | null;
@@ -335,6 +346,27 @@ export default function App(props: {
           else if (filter() !== "") setFilter("");
           else setSelection(EMPTY_SELECTION);
           return;
+
+        case "contextMenu": {
+          // The keyboard's way to the same menu. It opens on the selection —
+          // there is no pointer to have been over a row — anchored to the
+          // first selected row so the menu appears beside what it acts on
+          // rather than in a corner.
+          event.preventDefault();
+          const chosen = selectedVisible();
+          const first = chosen[0];
+          const row = first
+            ? document.querySelector(`[data-path="${CSS.escape(first.path)}"]`)
+            : null;
+          const at = row
+            ? (() => {
+                const rect = row.getBoundingClientRect();
+                return { x: rect.left + 24, y: rect.bottom };
+              })()
+            : { x: 120, y: 120 };
+          openContextMenu(first ?? null, at);
+          return;
+        }
 
         case "quickLook":
           if (renaming() !== null) return;
@@ -683,7 +715,136 @@ export default function App(props: {
     // act on: there is a share to connect (E1-S6).
     reason: listing()?.mount.reason ?? NO_SHARE_REASON,
     hasSelection: selectedVisible().length > 0,
+    // Only where there is exactly one thing selected is there a type to have
+    // an opinion about. With several, the reason Edit is unavailable is the
+    // count, and `undefined` leaves that to whoever is asking (E14-S2).
+    editable: (() => {
+      const chosen = selectedVisible();
+      return chosen.length === 1 && chosen[0] ? editable(chosen[0]) : undefined;
+    })(),
   });
+
+  /**
+   * The context menu, if one is open (E14-S2).
+   *
+   * The items are computed when it opens rather than while it is open: a menu
+   * whose entries changed under the pointer — a listing arriving, a mount
+   * going read-only — would move the item beneath the cursor between press and
+   * release. Anything that invalidates it closes it instead.
+   */
+  const [contextMenu, setContextMenu] =
+    createSignal<{ at: { x: number; y: number }; items: MenuItem[] } | null>(null);
+  /** The selection a Properties sheet is describing, while it is open. */
+  const [inspecting, setInspecting] = createSignal<Entry[] | null>(null);
+  /** The selection a Move to… picker is choosing a destination for. */
+  const [moving, setMoving] = createSignal<Entry[] | null>(null);
+
+  /**
+   * Move a selection into `destination` (E14-S3).
+   *
+   * One `rename` per item, with `replace: false`, so a name already taken over
+   * there is the **server's** refusal at the moment of the move rather than a
+   * check here that a second writer could invalidate between the looking and
+   * the moving — the same reasoning E14-S1's inline rename gives.
+   *
+   * It stops at the first failure instead of trying the rest. The failures
+   * that matter here are properties of the destination — no permission, no
+   * space, gone — so the remaining items would fail identically, and a dozen
+   * identical errors are worse than one plus a count of what did move.
+   */
+  const runMove = async (entries: Entry[], destination: string) => {
+    setMoving(null);
+    if (refusedBy("move")) return;
+    let moved = 0;
+    let failure: { name: string; message: string } | null = null;
+    for (const entry of entries) {
+      try {
+        await backend.rename(entry.path, destinationOf(entry, destination), false);
+        moved += 1;
+      } catch (error) {
+        failure = { name: entry.name, message: engineFailure(error).message };
+        break;
+      }
+    }
+    // Either way: some of them may have moved, and the rows on screen are
+    // stale the moment the first one does.
+    refresh.request();
+    setSelection(EMPTY_SELECTION);
+    const where = destination === "" ? (share() ?? "the share root") : destination;
+    if (!failure) {
+      setNotice(
+        entries.length === 1 && entries[0]
+          ? `Moved ${entries[0].name} to ${where}`
+          : `Moved ${entries.length} items to ${where}`,
+      );
+      return;
+    }
+    // The count first, because "did any of them move?" is the question a
+    // half-finished move leaves the user with.
+    const progress = moved > 0 ? `Moved ${moved} of ${entries.length}. ` : "";
+    setProblem(`${progress}${failure.name} could not be moved: ${failure.message}`);
+  };
+
+  /**
+   * Open the menu, having first settled what it acts on.
+   *
+   * Right-clicking a row **outside** the selection selects it, the way every
+   * file browser does — the alternative is a menu that acts on rows the user
+   * cannot see are chosen. Right-clicking one that is already in the selection
+   * leaves it alone, which is the whole point of the gesture on a multiple
+   * selection.
+   */
+  const openContextMenu = (entry: Entry | null, at: { x: number; y: number }) => {
+    if (entry && !selected().has(entry.path)) {
+      setSelection(clickSelect(EMPTY_SELECTION, order(), entry.path));
+    }
+    // Read after the selection has settled: `menuFor` is told what the menu
+    // acts on, and that must be what is highlighted by the time it is drawn.
+    const subject = entry ? selectedVisible() : [];
+    const context = entry
+      ? permissions()
+      : { ...permissions(), hasSelection: false, editable: undefined };
+    setContextMenu({ at, items: menuFor(subject, context) });
+  };
+
+  const runMenuAction = (action: MenuAction) => {
+    setContextMenu(null);
+    const chosen = selectedVisible();
+    switch (action) {
+      case "quickLook":
+        if (chosen.length === 1) setQuickLook(true);
+        return;
+      case "edit":
+        void editSelected();
+        return;
+      case "download":
+        void downloadSelected();
+        return;
+      case "rename":
+        // The same guard the Enter shortcut applies, for the same reason: a
+        // refusal has to be shown before the field opens, not after the user
+        // has typed a new name into it.
+        if (chosen.length === 1 && chosen[0] && !refusedBy("rename")) {
+          setRenaming(chosen[0].path);
+        }
+        return;
+      case "move":
+        if (chosen.length > 0 && !refusedBy("move")) setMoving(chosen);
+        return;
+      case "delete":
+        deleteSelected();
+        return;
+      case "properties":
+        if (chosen.length > 0) setInspecting(chosen);
+        return;
+      case "newFolder":
+        void newFolder();
+        return;
+      case "upload":
+        void uploadHere();
+        return;
+    }
+  };
 
   /**
    * Refuse a write affordance the mount does not allow, and say why.
@@ -1216,6 +1377,42 @@ export default function App(props: {
           </Show>
         )}
       </Show>
+      {/* Above the list and below the sheets: a menu is transient, and the
+          dialogs it opens are the thing it hands over to. */}
+      <Show when={contextMenu()}>
+        {(menu) => (
+          <ContextMenu
+            items={menu().items}
+            at={menu().at}
+            onChoose={runMenuAction}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
+      </Show>
+      <Show when={moving()}>
+        {(entries) => (
+          <MoveTo
+            entries={entries()}
+            from={path()}
+            shareName={share() ?? ""}
+            listDir={(at) => backend.listDir(at)}
+            onMove={(destination) => void runMove(entries(), destination)}
+            onCancel={() => setMoving(null)}
+          />
+        )}
+      </Show>
+      <Show when={inspecting()}>
+        {(entries) => (
+          <Properties
+            entries={entries()}
+            location={path()}
+            // Never actually null here: the menu that opens this needs rows,
+            // and rows need a listing, and a listing names its share.
+            shareName={share() ?? ""}
+            onClose={() => setInspecting(null)}
+          />
+        )}
+      </Show>
       <Show when={problem()}>
         {(message) => (
           <Banner
@@ -1256,6 +1453,7 @@ export default function App(props: {
               onBand={selectBand}
               reveal={reveal()}
               onOpen={open}
+              onContextMenu={openContextMenu}
               // Undefined at the share root, which is what withholds the `..`
               // row — read from the same `canAscend` as the toolbar's arrow.
               onAscend={nav.canAscend(path()) ? ascend : undefined}
