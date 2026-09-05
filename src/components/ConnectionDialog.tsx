@@ -6,8 +6,12 @@ import {
   isImplemented,
   previewUri,
   shareLabel,
+  sharePlaceholder,
+  switchProtocol,
   toSpec,
   usesDomain,
+  usesHost,
+  usesIdentity,
   usernameHint,
   usernameLabel,
   usesPassword,
@@ -24,6 +28,11 @@ const PROTOCOLS: { id: Protocol; label: string }[] = [
   { id: "nfs", label: "NFS" },
   { id: "sftp", label: "SFTP" },
   { id: "xsync", label: "xsync" },
+  // Last, after the four the handoff draws: it is the only tab with no server
+  // behind it, and putting it first would make the dialog open on the one
+  // protocol that is not what "New Connection" usually means. Recorded in
+  // `docs/design-gaps.md` — the mock draws four tabs.
+  { id: "local", label: "Local" },
 ];
 
 type TestResult = { ok: true; mount: MountInfo } | { ok: false; message: string };
@@ -67,6 +76,13 @@ export function ConnectionDialog(props: {
   backend: Backend;
   /** Prefill, when reopening the dialog on an existing bookmark. */
   initial?: Draft;
+  /**
+   * Opens the OS folder picker for the Local tab, resolving to the chosen
+   * path. Absent in the browser preview, which has no picker — the Folder
+   * field stays typeable there, and the button is not offered rather than
+   * offered and inert.
+   */
+  pickFolder?: () => Promise<string | null>;
   onCancel: () => void;
   onConnected: (draft: Draft) => void;
 }) {
@@ -129,6 +145,22 @@ export function ConnectionDialog(props: {
       return;
     }
     setResult({ ok: false, message: failure.message });
+  };
+
+  /**
+   * Take the folder the OS picker returned, if the user chose one.
+   *
+   * A cancelled picker resolves to `null` and must leave the field alone —
+   * clearing a path the user had already typed is the one thing Cancel must
+   * not do.
+   */
+  const choose = async (picking: Promise<string | null>) => {
+    try {
+      const folder = await picking;
+      if (folder) set("share", folder);
+    } catch (error) {
+      report(error);
+    }
   };
 
   const test = async () => {
@@ -202,12 +234,7 @@ export function ConnectionDialog(props: {
                     draft().protocol === protocol.id ? styles.segmentTabActive : ""
                   }`}
                   onClick={() => {
-                    setDraft((current) => ({
-                      ...emptyDraft(protocol.id),
-                      host: current.host,
-                      username: current.username,
-                      mountPreference: current.mountPreference,
-                    }));
+                    setDraft((current) => switchProtocol(current, protocol.id));
                     setResult(null);
                   }}
                 >
@@ -218,29 +245,44 @@ export function ConnectionDialog(props: {
           </div>
 
           <div class={styles.form}>
-            <label class={styles.label} for="host">
-              Server
-            </label>
-            <input
-              id="host"
-              {...PLAIN_FIELD}
-              class={`${styles.input} ${styles.inputMono}`}
-              value={draft().host}
-              placeholder="nas.local"
-              onInput={(event) => set("host", event.currentTarget.value)}
-            />
+            <Show when={usesHost(draft().protocol)}>
+              <label class={styles.label} for="host">
+                Server
+              </label>
+              <input
+                id="host"
+                {...PLAIN_FIELD}
+                class={`${styles.input} ${styles.inputMono}`}
+                value={draft().host}
+                placeholder="nas.local"
+                onInput={(event) => set("host", event.currentTarget.value)}
+              />
+            </Show>
 
             <label class={styles.label} for="share">
               {shareLabel(draft().protocol)}
             </label>
-            <input
-              id="share"
-              {...PLAIN_FIELD}
-              class={`${styles.input} ${styles.inputMono}`}
-              value={draft().share}
-              placeholder={draft().protocol === "smb" ? "media" : "/srv/media"}
-              onInput={(event) => set("share", event.currentTarget.value)}
-            />
+            {/* The picker sits beside the field rather than replacing it: a
+                typed path has to keep working, both because the browser
+                preview has no picker and because pasting one is faster than
+                clicking down to it. */}
+            <div class={styles.folderRow}>
+              <input
+                id="share"
+                {...PLAIN_FIELD}
+                class={`${styles.input} ${styles.inputMono}`}
+                value={draft().share}
+                placeholder={sharePlaceholder(draft().protocol)}
+                onInput={(event) => set("share", event.currentTarget.value)}
+              />
+              <Show when={draft().protocol === "local" && props.pickFolder}>
+                {(pick) => (
+                  <button class={styles.action} onClick={() => void choose(pick()())}>
+                    Choose…
+                  </button>
+                )}
+              </Show>
+            </div>
 
             <Show when={defaultPort(draft().protocol) !== null}>
               <label class={styles.label} for="port">
@@ -256,25 +298,30 @@ export function ConnectionDialog(props: {
               />
             </Show>
 
-            {/* Every protocol has this field; only its name differs. NFS
-                calls it Identity, because AUTH_SYS sends a uid the server
-                chooses to believe rather than a name it authenticates. */}
-            <label class={styles.label} for="username">
-              {usernameLabel(draft().protocol)}
-            </label>
-            <input
-              id="username"
-              {...PLAIN_FIELD}
-              // The one field a password manager should recognise: it is the
-              // account half of the credential it stores for this host.
-              autocomplete="username"
-              class={styles.input}
-              value={draft().username}
-              placeholder={draft().protocol === "nfs" ? "uid:gid" : ""}
-              onInput={(event) => set("username", event.currentTarget.value)}
-            />
-            <Show when={usernameHint(draft().protocol)}>
-              <p class={styles.fieldHint}>{usernameHint(draft().protocol)}</p>
+            {/* Every protocol that reaches a server has this field; only its
+                name differs. NFS calls it Identity, because AUTH_SYS sends a
+                uid the server chooses to believe rather than a name it
+                authenticates. Local has none at all: it is read and written as
+                whoever is running the app, and there is no second account to
+                offer. */}
+            <Show when={usesIdentity(draft().protocol)}>
+              <label class={styles.label} for="username">
+                {usernameLabel(draft().protocol)}
+              </label>
+              <input
+                id="username"
+                {...PLAIN_FIELD}
+                // The one field a password manager should recognise: it is the
+                // account half of the credential it stores for this host.
+                autocomplete="username"
+                class={styles.input}
+                value={draft().username}
+                placeholder={draft().protocol === "nfs" ? "uid:gid" : ""}
+                onInput={(event) => set("username", event.currentTarget.value)}
+              />
+              <Show when={usernameHint(draft().protocol)}>
+                <p class={styles.fieldHint}>{usernameHint(draft().protocol)}</p>
+              </Show>
             </Show>
 
             <Show when={usesPassword(draft().protocol)}>

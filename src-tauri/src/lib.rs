@@ -10,9 +10,11 @@
 
 #![forbid(unsafe_code)]
 
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use excalibur_engine::backend::local::LocalBackend;
 use excalibur_engine::backend::nfs::{self, Identity, NfsBackend, NfsTarget};
 use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 #[cfg(feature = "smb")]
@@ -46,6 +48,12 @@ struct ProtocolConnector {
 
 #[async_trait]
 impl Connector for ProtocolConnector {
+    // One arm per protocol, each of them the credential handling and the
+    // target struct that protocol needs, read top to bottom. It went over the
+    // lint's hundred lines when SMB landed and E21's local arm is not what
+    // would pay for splitting it: the arms share nothing, so factoring them
+    // out buys five one-line functions and a longer path to the code.
+    #[allow(clippy::too_many_lines)]
     async fn connect(&self, spec: &ConnectionSpec) -> Result<Arc<dyn ShareBackend>> {
         match spec.protocol {
             Protocol::Xsync => {
@@ -94,9 +102,12 @@ impl Connector for ProtocolConnector {
                 let backend = XsyncBackend::connect_ssh(&target, &spec.share).await?;
                 Ok(Arc::new(backend))
             }
-            // E21-S1 replaces this with `LocalBackend::open`.
-            Protocol::Local => Err(EngineError::Unsupported(
-                "browsing this machine is not built yet".to_owned(),
+            // `share` is the folder and `host` is empty: a folder on this
+            // machine has no host to name, and inventing one would put a
+            // reachability question on a bookmark that cannot fail (E21-S2).
+            Protocol::Local => Ok(Arc::new(
+                LocalBackend::open(Path::new(&spec.share), spec.mount_preference == Access::Ro)
+                    .await?,
             )),
             Protocol::Sftp => {
                 let port = spec.port.unwrap_or(hostkeys::DEFAULT_SSH_PORT);
@@ -390,7 +401,10 @@ async fn keychain_available(state: tauri::State<'_, AppState>) -> std::result::R
 /// form that cannot connect is worse than telling them up front.
 #[tauri::command]
 async fn supported_protocols() -> std::result::Result<Vec<&'static str>, ()> {
-    let mut protocols = vec!["xsync", "sftp", "nfs"];
+    // `local` is unconditional: it is the standard library, so there is no
+    // build of this binary that cannot open a folder on the machine it is
+    // running on (E21-S2).
+    let mut protocols = vec!["xsync", "sftp", "nfs", "local"];
     if cfg!(feature = "smb") {
         protocols.push("smb");
     }

@@ -360,7 +360,7 @@ export function fixtureBackend(
     },
     // The preview speaks to the mock, which answers for everything.
     async supportedProtocols(): Promise<Protocol[]> {
-      return ["xsync", "sftp", "nfs", "smb"];
+      return ["xsync", "sftp", "nfs", "smb", "local"];
     },
     // The preview's transfers are simulated, so there is no worker to tell.
     async setTransferConcurrency(): Promise<void> {},

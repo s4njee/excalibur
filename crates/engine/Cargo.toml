@@ -24,6 +24,8 @@ base64 = { workspace = true }
 # tree via xsync-client.
 blake3 = "1"
 dirs = { workspace = true }
+# The local backend's capacity (E21-S1): `statvfs` without hand-written FFI.
+fs4 = { workspace = true }
 russh = { workspace = true }
 russh-sftp = { workspace = true }
 nfs3_client = { workspace = true }
@@ -44,6 +46,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+# The Trash `remove` moves things to (E21-S1). Gated because `trash` has no
+# platform module for iOS or Android; on a target without one the backend
+# falls back to a real delete and says so in the mount's options.
+[target.'cfg(any(windows, all(unix, not(target_os = "ios"), not(target_os = "android"))))'.dependencies]
+trash = { workspace = true }
 
 [features]
 default = []

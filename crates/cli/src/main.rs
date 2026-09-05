@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use excalibur_engine::backend::local::LocalBackend;
 use excalibur_engine::backend::mock::MockBackend;
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::transfer::queue::TransferQueue;
@@ -45,9 +46,10 @@ USAGE:
     xcal reachable HOST PORT
                           the sidebar's TCP probe, for a host that dims
 
-By default these run against the in-memory mock. To drive a real xsync
-export instead:
+By default these run against the in-memory mock. To drive a real share
+instead:
 
+    --local PATH          browse a folder on this machine (E21)
     --xsync-local PATH    run `xs --server PATH` and speak v3 over its pipes
     --xs BINARY           which xs to run (default: xs on PATH)
     --xsync-ssh HOST:PATH connect over ssh
@@ -73,6 +75,7 @@ async fn main() -> ExitCode {
     // A flag's value is not a positional argument, so skip whatever follows
     // the flags that take one.
     let takes_value = [
+        "--local",
         "--xsync-local",
         "--xsync-ssh",
         "--xs",
@@ -99,7 +102,18 @@ async fn main() -> ExitCode {
         arguments.get(index + 1).cloned()
     };
 
-    let backend: Arc<dyn ShareBackend> = if let Some(root) = value_of("--xsync-local") {
+    let backend: Arc<dyn ShareBackend> = if let Some(root) = value_of("--local") {
+        // No connection, no credential, no host: a folder either opens or it
+        // does not. That is the whole reason E21 is a backend rather than a
+        // mode — everything below this line is the same for all five.
+        match LocalBackend::open(std::path::Path::new(&root), read_only).await {
+            Ok(backend) => Arc::new(backend),
+            Err(error) => {
+                eprintln!("xcal: could not open {root}: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if let Some(root) = value_of("--xsync-local") {
         let program = value_of("--xs").unwrap_or_else(|| "xs".to_owned());
         match XsyncBackend::connect_local(&program, &root, read_only).await {
             Ok(backend) => Arc::new(backend),

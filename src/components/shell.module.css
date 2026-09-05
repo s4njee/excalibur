@@ -265,6 +265,13 @@
   font-family: var(--font-mono);
   font-size: var(--text-mono-small);
   color: var(--text-tertiary);
+  /* Truncated like the name above it. The design's own subtitles are short
+     enough that nothing ever wrapped; a local bookmark's folder path is the
+     first one that does, and a wrapped subtitle makes the row taller than the
+     handoff's fixed row height (E21-S2). */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebarSubtitleActive {

@@ -13,7 +13,8 @@ import {
   withMounted,
   type BookmarkStore,
 } from "./state/bookmarks";
-import { toSpec, type Draft } from "./state/connection";
+import { toSpec, uriScheme, type Draft } from "./state/connection";
+import { thisMachine } from "./state/platform";
 import {
   Banner,
   EmptyState,
@@ -166,6 +167,19 @@ export default function App(props: {
     }
   };
 
+  /**
+   * The Local tab's `Choose…`, which returns a path rather than applying one.
+   *
+   * The dialog owns the draft, so the picker hands the folder back instead of
+   * writing it; `null` is a cancelled picker, which must leave the field as
+   * the user left it.
+   */
+  const pickShareFolder = async (): Promise<string | null> => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false });
+    return typeof picked === "string" ? picked : null;
+  };
+
   const sort = () => settings().sort;
   const showHidden = () => settings().showHidden;
   const foldersFirst = () => settings().foldersFirst;
@@ -243,8 +257,13 @@ export default function App(props: {
     // good — nothing would ever ask again.
     const toProbe = inTauri() ? saved : saved.filter((candidate) => candidate.reachable);
     for (const bookmark of toProbe) {
+      const port = probePort(bookmark);
+      // A folder on this machine is never probed and never dimmed:
+      // reachability is not a question a directory answers, and a TCP connect
+      // to an empty host would fail and dim a row that is perfectly fine.
+      if (port === null) continue;
       void backend
-        .reachable(bookmark.host, probePort(bookmark))
+        .reachable(bookmark.host, port)
         .then((reachable) =>
           setBookmarks((current) =>
             current.map((candidate) =>
@@ -1192,19 +1211,41 @@ export default function App(props: {
     const bookmark = activeBookmark();
     if (bookmark) {
       const root = bookmark.share.split("/").filter(Boolean);
+      // Two different hosts, because the two places that show one are asking
+      // different questions. The title bar asks *which machine is this* and,
+      // for a local folder, the honest answer is the machine you are sitting
+      // at. The path field asks for the URI's authority, and `file:` has none
+      // — so it is empty there and the crumbs read `file:///Users/you/Docs`,
+      // which is the path a user would type anywhere else.
+      const local = bookmark.protocol === "local";
       return {
-        host: bookmark.host,
+        host: local ? thisMachine() : bookmark.host,
+        uriHost: local ? "" : bookmark.host,
         share: root[root.length - 1] ?? bookmark.share,
-        scheme: bookmark.protocol as string,
+        scheme: uriScheme(bookmark.protocol),
         root,
       };
     }
     return props.readOnly
-      ? { host: "10.0.0.4", share: "scratch", scheme: "nfs", root: ["export", "scratch"] }
-      : { host: "nas.local", share: "media", scheme: "smb", root: ["media"] };
+      ? {
+          host: "10.0.0.4",
+          uriHost: "10.0.0.4",
+          share: "scratch",
+          scheme: "nfs",
+          root: ["export", "scratch"],
+        }
+      : {
+          host: "nas.local",
+          uriHost: "nas.local",
+          share: "media",
+          scheme: "smb",
+          root: ["media"],
+        };
   };
 
   const host = () => named()?.host ?? null;
+  /** The URI's authority, which is empty for a `file:` mount. */
+  const uriHost = () => named()?.uriHost ?? null;
   const share = () => named()?.share ?? null;
   const scheme = () => named()?.scheme ?? null;
   const rootSegments = () => named()?.root ?? [];
@@ -1246,7 +1287,7 @@ export default function App(props: {
       <Toolbar
         mount={listing()?.mount}
         scheme={scheme()}
-        host={host()}
+        host={uriHost()}
         segments={segments()}
         hasSelection={selectedVisible().length > 0}
         filter={filter()}
@@ -1554,6 +1595,9 @@ export default function App(props: {
           <ConnectionDialog
             backend={backend}
             initial={pending() === true ? undefined : (pending() as Draft)}
+            // No picker in the browser preview, so the Folder field stays
+            // typeable there and the button is not offered at all.
+            pickFolder={inTauri() ? pickShareFolder : undefined}
             onCancel={() => setConnecting(null)}
             onConnected={(draft) => {
               setConnecting(null);

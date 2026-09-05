@@ -127,6 +127,19 @@ export function formatCounts(
   return parts.join(" · ");
 }
 
+/**
+ * The status bar's right-hand pair: `xsync v3 · ssh`, `NFSv3 · sys`.
+ *
+ * Two labels because the design asks the bar to say both what it is speaking
+ * and how the connection is secured, and for four network protocols those are
+ * always different facts. A local folder is the case where they are the same
+ * word — the engine returns `local` for both — and `local · local` reads like
+ * a rendering bug rather than an answer, so the pair collapses to one.
+ */
+export function formatMountLabels(protocolLabel: string, securityLabel: string): string {
+  return protocolLabel === securityLabel ? protocolLabel : `${protocolLabel} · ${securityLabel}`;
+}
+
 /** The capacity phrase: `2.4 TB free of 16 TB`. */
 export function formatCapacity(free: number, total: number): string {
   return `${formatSize(free)} free of ${formatSize(total)}`;

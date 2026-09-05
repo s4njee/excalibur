@@ -53,6 +53,12 @@ pavao = "0.3.1"
 # wrong on one of the two. Already in the tree via pavao.
 libc = "0.2"
 thiserror = "2"
+# `statvfs` for the local backend's capacity (E21-S1). Already in the tree via
+# xsync-core, and a thin wrapper over `rustix` rather than a new FFI surface.
+fs4 = { version = "1", default-features = false }
+# The Trash, for the local backend's `remove` (E21-S1). Target-gated in the
+# engine's manifest: it has no platform module for iOS or Android.
+trash = "5"
 zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 

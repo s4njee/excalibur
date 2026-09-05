@@ -8,7 +8,7 @@
 
 import type { Bookmark } from "./types";
 import type { Draft } from "./connection";
-import { emptyDraft } from "./connection";
+import { connectionName, emptyDraft, usesHost } from "./connection";
 
 /** Where bookmarks live, and how they get there. */
 export interface BookmarkStore {
@@ -117,7 +117,24 @@ export function defaultBookmarkStore(): BookmarkStore {
   return inTauri ? tauriStore() : browserStore();
 }
 
-/** A stable id for a connection, so reconnecting the same share reuses its row. */
+/**
+ * A stable id for a connection, so reconnecting the same share reuses its row.
+ *
+ * Local folds into the same shape rather than getting a scheme of its own: its
+ * `host` is empty and its `share` is the absolute path, so the id reads
+ * `local::/users/dorian/documents`. The protocol prefix is what keeps that
+ * apart from everything else — no network bookmark can produce a `local:`
+ * prefix — and an empty host cannot collide with a real one because the host
+ * of a network bookmark is required (`validate`).
+ *
+ * The lower-casing is wrong for a case-sensitive path, and is kept anyway: an
+ * *id* only has to be stable and to make "the same share" one row. The cost is
+ * that `/data/Foo` and `/data/foo` on a case-sensitive filesystem would share
+ * a row; the bookmark still carries the path exactly as typed, so the folder
+ * that opens is never the wrong one. Casing the id per protocol would mean a
+ * bookmark's identity depending on a filesystem property the window cannot
+ * see, which is the worse trade.
+ */
 export function bookmarkId(draft: Draft): string {
   return `${draft.protocol}:${draft.host}:${draft.share}`.toLowerCase();
 }
@@ -126,9 +143,10 @@ export function bookmarkId(draft: Draft): string {
 export function fromDraft(draft: Draft): Bookmark {
   return {
     id: bookmarkId(draft),
-    name: draft.share.split("/").filter(Boolean).pop() ?? draft.host,
+    name: connectionName(draft),
     protocol: draft.protocol,
-    host: draft.host.trim(),
+    // Empty for a local folder, whose `share` is the whole address.
+    host: usesHost(draft.protocol) ? draft.host.trim() : "",
     share: draft.share.trim(),
     username: draft.username || undefined,
     mountPreference: draft.mountPreference,
@@ -180,8 +198,16 @@ export function withMounted(bookmarks: Bookmark[], mountedIds: Set<string>): Boo
   return bookmarks.map((bookmark) => ({ ...bookmark, mounted: mountedIds.has(bookmark.id) }));
 }
 
-/** The port a reachability probe should try for a bookmark. */
-export function probePort(bookmark: Bookmark): number {
+/**
+ * The port a reachability probe should try for a bookmark, or `null` when the
+ * bookmark is not a thing that can be probed.
+ *
+ * A folder on this machine answers no TCP connect, and "unreachable" is not a
+ * state it has: the disk is either there or the mount fails with a real error
+ * that says so. Probing it would dim the row for a question it was never
+ * asked, so `null` means *do not probe*, not "probe port zero".
+ */
+export function probePort(bookmark: Bookmark): number | null {
   switch (bookmark.protocol) {
     case "smb":
       return 445;
@@ -192,5 +218,25 @@ export function probePort(bookmark: Bookmark): number {
     case "sftp":
     case "xsync":
       return 22;
+    case "local":
+      return null;
   }
+}
+
+/**
+ * The second line of a sidebar row: what this bookmark is and where.
+ *
+ * `LOCAL · ` — the protocol and an empty host — is what the network shape
+ * produces for a folder, and it reads like a row that failed to load. A local
+ * bookmark names the folder instead, which is the only part of it a user needs
+ * to tell two of them apart.
+ *
+ * Reachability is deliberately not in here: only the BOOKMARKS section
+ * replaces the subtitle with `unreachable`, and a row under MOUNTED is
+ * connected whatever a stale probe last said.
+ */
+export function bookmarkSubtitle(bookmark: Bookmark): string {
+  return bookmark.protocol === "local"
+    ? `LOCAL · ${bookmark.share}`
+    : `${bookmark.protocol.toUpperCase()} · ${bookmark.host}`;
 }

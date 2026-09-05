@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bookmarkId,
+  bookmarkSubtitle,
   fromDraft,
   probePort,
   remove,
@@ -81,5 +82,57 @@ describe("the bookmark store", () => {
     expect(at("sftp")).toBe(22);
     // xsync runs `xs --server` over SSH, so SSH's port is the one that answers.
     expect(at("xsync")).toBe(22);
+  });
+});
+
+describe("a local bookmark (E21-S2)", () => {
+  const local = (over: Partial<Draft> = {}): Draft => ({
+    ...emptyDraft("local"),
+    share: "/Users/dorian/Documents",
+    ...over,
+  });
+
+  it("derives its id from the path, not a host", () => {
+    expect(bookmarkId(local())).toBe("local::/users/dorian/documents");
+    // Two folders are two bookmarks; the same folder twice is one row.
+    expect(bookmarkId(local())).toBe(bookmarkId(local()));
+    expect(bookmarkId(local())).not.toBe(bookmarkId(local({ share: "/Users/dorian/Music" })));
+  });
+
+  it("cannot collide with a network bookmark through its empty host", () => {
+    // The protocol prefix is what namespaces it: nothing that reaches a server
+    // can produce a `local:` id, and `validate` requires those to have a host.
+    const sameShape = { ...emptyDraft("sftp"), host: "", share: "/Users/dorian/Documents" };
+    expect(bookmarkId(local())).not.toBe(bookmarkId(sameShape));
+  });
+
+  it("lower-cases the path, which is wrong for a path and right for an id", () => {
+    // Accepted cost: on a case-sensitive filesystem `/data/Foo` and
+    // `/data/foo` would share a row. The bookmark still carries the path
+    // exactly as typed, so the folder that opens is never the wrong one.
+    expect(bookmarkId(local({ share: "/Data/FOO" }))).toBe(bookmarkId(local({ share: "/data/foo" })));
+    expect(fromDraft(local({ share: "/Data/FOO" })).share).toBe("/Data/FOO");
+  });
+
+  it("is never probed, so its row is never dimmed", () => {
+    // Reachability is not a question a folder answers. `null` means do not
+    // probe — a TCP connect to an empty host would fail and dim a row that is
+    // perfectly fine.
+    expect(probePort(fromDraft(local()))).toBeNull();
+    expect(fromDraft(local()).reachable).toBe(true);
+  });
+
+  it("says where the folder is instead of naming a host it has not got", () => {
+    // `LOCAL · ` — the network shape with an empty host — reads like a row
+    // that failed to load.
+    expect(bookmarkSubtitle(fromDraft(local()))).toBe("LOCAL · /Users/dorian/Documents");
+    expect(bookmarkSubtitle(fromDraft(draft({ protocol: "nfs" })))).toBe("NFS · nas.local");
+  });
+
+  it("round-trips through the dialog with no host to lose", () => {
+    const reopened = toDraft(fromDraft(local()));
+    expect(reopened.protocol).toBe("local");
+    expect(reopened.share).toBe("/Users/dorian/Documents");
+    expect(reopened.host).toBe("");
   });
 });

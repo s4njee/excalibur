@@ -60,7 +60,7 @@ describe("the connection dialog's fields", () => {
   // Every protocol, because the dialog swaps the field set rather than
   // disabling what does not apply: Password and Domain exist only on some
   // tabs, and a tab this loop skipped would be a tab nothing covers.
-  for (const protocol of ["SMB", "NFS", "SFTP", "xsync"]) {
+  for (const protocol of ["SMB", "NFS", "SFTP", "xsync", "Local"]) {
     it(`asks the webview to leave them alone on ${protocol}`, async () => {
       await chooseProtocol(protocol);
       const fields = typedFields();

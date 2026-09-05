@@ -31,9 +31,11 @@ import {
   formatModified,
   formatModifiedGrid,
   formatModifiedShort,
+  formatMountLabels,
   formatSizeTerse,
 } from "../state/format";
 import { formatSize } from "../state/format";
+import { bookmarkSubtitle } from "../state/bookmarks";
 
 /**
  * `<share> — <host>`, centred, as the design specifies.
@@ -68,7 +70,8 @@ export function EmptyState(props: { onNewConnection: () => void }) {
     <div class={styles.emptyState}>
       <div class={styles.emptyTitle}>No share connected</div>
       <p class={styles.emptyBody}>
-        Connect to an SMB, NFS, SFTP or xsync share, or open one of your bookmarks.
+        Connect to an SMB, NFS, SFTP or xsync share, open a folder on this machine, or
+        open one of your bookmarks.
       </p>
       <button
         class={`${styles.button} ${styles.primary}`}
@@ -89,6 +92,7 @@ export function EmptyState(props: { onNewConnection: () => void }) {
  */
 function PathField(props: {
   scheme: string;
+  /** Empty for a `file:` mount, which has no authority. */
   host: string;
   segments: string[];
   onCrumb: (depth: number) => void;
@@ -96,10 +100,16 @@ function PathField(props: {
   return (
     <div class={styles.pathField}>
       <span class={styles.crumbScheme}>{props.scheme}://</span>
-      {/* The host is the share root: depth 0. */}
-      <button class={styles.crumb} onClick={() => props.onCrumb(0)}>
-        {props.host}
-      </button>
+      {/* The host is the share root: depth 0. A local mount has none — the
+          field reads `file:///Users/you/Documents` — and an empty crumb button
+          would be a zero-width click target sitting between `//` and the first
+          segment. The segments that name the mount are still clickable and
+          still go to the share root (`onCrumb`), so nothing is lost with it. */}
+      <Show when={props.host !== ""}>
+        <button class={styles.crumb} onClick={() => props.onCrumb(0)}>
+          {props.host}
+        </button>
+      </Show>
       <For each={props.segments}>
         {(segment, index) => {
           const last = () => index() === props.segments.length - 1;
@@ -402,8 +412,11 @@ export function Sidebar(props: {
                   class={`${styles.sidebarSubtitle} ${
                     active() ? styles.sidebarSubtitleActive : ""
                   }`}
+                  // The line truncates, and a folder path is the case where
+                  // what gets cut off is the part that identifies it.
+                  title={bookmarkSubtitle(bookmark)}
                 >
-                  {bookmark.protocol.toUpperCase()} · {bookmark.host}
+                  {bookmarkSubtitle(bookmark)}
                 </div>
               </div>
             </div>
@@ -426,10 +439,8 @@ export function Sidebar(props: {
             <div class={styles.fileGlyph} />
             <div class={styles.sidebarText}>
               <div class={styles.sidebarName}>{bookmark.name}</div>
-              <div class={styles.sidebarSubtitle}>
-                {bookmark.reachable
-                  ? `${bookmark.protocol.toUpperCase()} · ${bookmark.host}`
-                  : "unreachable"}
+              <div class={styles.sidebarSubtitle} title={bookmarkSubtitle(bookmark)}>
+                {bookmark.reachable ? bookmarkSubtitle(bookmark) : "unreachable"}
               </div>
             </div>
           </div>
@@ -1102,7 +1113,7 @@ export function StatusBar(props: {
             </Show>
             <span class={styles.statusRight}>
               <span class={styles.protocol}>
-                {mount().protocolLabel} · {mount().securityLabel}
+                {formatMountLabels(mount().protocolLabel, mount().securityLabel)}
               </span>
               <span
                 class={`${styles.healthDot} ${

@@ -343,3 +343,32 @@ measured. The alternative, `0 B`, is a number that reads as "empty".
 an inspector alongside the list that stays open as the selection changes;
 whether the exact byte count deserves its own row; and whether POSIX mode and
 owner belong here once the engine sends them.
+
+## A fifth protocol tab: Local *(E21-S2, 2026-09-05)*
+
+**The mock** draws four protocol tabs in the New Connection dialog — SMB, NFS, SFTP
+and xsync — and a window whose chrome always names a server: `<share> — <host>` in the
+title bar, `<scheme>://<host>/<path>` in the path field, and a protocol and a security
+mode in the status bar's right-hand corner.
+
+**The problem** is that a folder on this machine has none of those. It has no server,
+no account and no password; `file:` has no authority to put between the slashes; and
+the engine returns `local` for both of the status bar's two labels, which would have
+rendered as `local · local`.
+
+**What was built:** a fifth tab, last in the row, with a single **Folder** field and a
+`Choose…` button beside it, plus the Mount-as radio the other tabs have. The field set
+swaps as it does everywhere else — the Server, Port, Username and Password fields are
+absent rather than disabled. The URI preview reads `file:///Users/you/Documents`. In
+the window the title bar says `Documents — This Mac`, the path field drops the host
+crumb so the breadcrumb reads as a path, and the status bar shows a single `local`.
+The sidebar row names the folder's path where a network bookmark names its host, and
+is never dimmed: reachability is not a question a directory answers.
+
+**For the designer:** three judgement calls. Whether Local belongs in this dialog at
+all, or in a separate "Open Folder…" command — it is here because the window's whole
+model is one mount at a time, and a folder is a mount. Whether it belongs last in the
+tab row; it is last because the dialog opens on xsync and leading with the one tab that
+reaches nothing would misread. And whether `This Mac` is the right thing in the title
+bar — the alternative is the folder's parent path, which is more informative and less
+readable.

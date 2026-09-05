@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extensionOf, formatCapacity, formatCounts, formatDuration, formatModified, formatModifiedGrid, formatSize, formatSizeTerse, formatTransferStatus } from "./format";
+import { extensionOf, formatCapacity, formatCounts, formatDuration, formatModified, formatModifiedGrid, formatMountLabels, formatSize, formatSizeTerse, formatTransferStatus } from "./format";
 
 describe("the strings the design specifies", () => {
   it("renders the mock's own figures", () => {
@@ -158,5 +158,19 @@ describe("extensionOf", () => {
   it("has no answer for a name without one", () => {
     expect(extensionOf("Documentaries")).toBe("—");
     expect(extensionOf("archive.")).toBe("—");
+  });
+});
+
+describe("the status bar's protocol pair", () => {
+  it("keeps two labels where they are two different facts", () => {
+    expect(formatMountLabels("xsync v3", "ssh")).toBe("xsync v3 · ssh");
+    expect(formatMountLabels("NFSv3", "sys")).toBe("NFSv3 · sys");
+  });
+
+  it("collapses them where they are the same word", () => {
+    // A local folder is the case the design never had to consider: the engine
+    // returns `local` for both, and `local · local` reads like a rendering bug
+    // rather than an answer (E21-S2).
+    expect(formatMountLabels("local", "local")).toBe("local");
   });
 });

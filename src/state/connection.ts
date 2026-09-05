@@ -45,6 +45,56 @@ export function shareLabel(protocol: Protocol): string {
       return "Path";
     case "xsync":
       return "Export";
+    case "local":
+      return "Folder";
+  }
+}
+
+/**
+ * Whether the connection is to a server at all.
+ *
+ * Local is the first protocol with no other end. `file:` has no authority
+ * component, the spec's `host` is `""`, and a Server field on that tab would
+ * be a box that cannot be filled in usefully — so the dialog does not draw
+ * one, the same way it does not draw NFS a password.
+ */
+export function usesHost(protocol: Protocol): boolean {
+  return protocol !== "local";
+}
+
+/**
+ * Whether there is an identity to choose.
+ *
+ * A folder on this machine is read and written as whoever is running the app.
+ * There is no second account to offer, and a Username field would suggest the
+ * mount could be made as somebody else.
+ */
+export function usesIdentity(protocol: Protocol): boolean {
+  return protocol !== "local";
+}
+
+/**
+ * The URI scheme, which is not always the protocol's name.
+ *
+ * Local's is `file`: it is the scheme every OS and every user already reads as
+ * "a path on this machine", and inventing `local://` would be a URI nobody
+ * else in the world writes.
+ */
+export function uriScheme(protocol: Protocol): string {
+  return protocol === "local" ? "file" : protocol;
+}
+
+/** The example in the second field, which is a different shape per protocol. */
+export function sharePlaceholder(protocol: Protocol): string {
+  switch (protocol) {
+    case "smb":
+      return "media";
+    case "local":
+      // An absolute path, because that is the only thing `validate` accepts,
+      // and `~` is not one: nothing here expands it.
+      return "/Users/you/Documents";
+    default:
+      return "/srv/media";
   }
 }
 
@@ -112,7 +162,14 @@ export function defaultPort(protocol: Protocol): number | null {
  * rather than only once the form is valid. Empty fields simply do not appear.
  */
 export function previewUri(draft: Draft): string {
-  const scheme = draft.protocol;
+  const scheme = uriScheme(draft.protocol);
+  if (draft.protocol === "local") {
+    // `file://` plus the path, verbatim. Nothing is percent-encoded: this is a
+    // preview of the folder that will be opened, not a URL anything
+    // dereferences, and a user checking that they picked the right directory
+    // is better served by the path they typed than by `%20`.
+    return `${scheme}://${draft.share || "…"}`;
+  }
   const user = identityInUri(draft.protocol) && draft.username ? `${draft.username}@` : "";
   const host = draft.host || "…";
   const fallback = defaultPort(draft.protocol);
@@ -123,6 +180,20 @@ export function previewUri(draft: Draft): string {
 
 /** Why the draft cannot be connected yet, or `null` when it can. */
 export function validate(draft: Draft): string | null {
+  if (draft.protocol === "local") {
+    const folder = draft.share.trim();
+    if (!folder) return "Folder is required.";
+    // Absolute, because a relative path has no meaning here: there is no
+    // working directory the user can see, and resolving one against wherever
+    // the app happened to be launched from would open a folder nobody chose.
+    //
+    // POSIX only, deliberately. plan.md's "Platforms (v1)" row packages macOS
+    // and Linux; Windows is kept buildable but not shipped, so `C:\…` is not a
+    // shape this has to accept yet — and accepting it untested would be worse
+    // than refusing it.
+    if (!folder.startsWith("/")) return "Folder must be an absolute path.";
+    return null;
+  }
   if (!draft.host.trim()) return "A server is required.";
   if (!draft.share.trim()) return `${shareLabel(draft.protocol)} is required.`;
   if (draft.port) {
@@ -138,10 +209,41 @@ export function validate(draft: Draft): string | null {
 
 /** Whether the protocol has a backend behind it yet. */
 export function isImplemented(protocol: Protocol): boolean {
-  // SMB and NFS are answered with `Unsupported` by the engine (E4, E5).
+  // SMB is answered with `Unsupported` by a build without its cargo feature.
   // Saying so in the dialog is better than letting a user fill in a form that
   // cannot connect.
-  return protocol === "xsync" || protocol === "sftp" || protocol === "nfs";
+  return protocol !== "smb";
+}
+
+/**
+ * What the sidebar row and the window title call this connection.
+ *
+ * Shared by the spec and the bookmark so the two cannot drift. The last path
+ * segment, because that is the name a person gave the thing; the host is the
+ * fallback for a share with no path, and the raw share for a local root — `/`
+ * has no last segment, and calling the whole disk "" would name nothing.
+ */
+export function connectionName(draft: Draft): string {
+  return draft.share.split("/").filter(Boolean).pop() ?? (draft.host || draft.share || "/");
+}
+
+/**
+ * The draft that a protocol tab produces from the one before it.
+ *
+ * The dialog swaps the field set rather than greying fields out (E3-S1), so
+ * this is where "keep what still applies" is decided: a server and an account
+ * name mean the same thing on every network protocol and survive the switch;
+ * neither exists on Local, and carrying a hostname into a form with no Server
+ * field would put it into the spec where nobody could see it. The share does
+ * not survive: an SMB share name is not an NFS export and neither is a folder.
+ */
+export function switchProtocol(draft: Draft, protocol: Protocol): Draft {
+  return {
+    ...emptyDraft(protocol),
+    host: usesHost(protocol) ? draft.host : "",
+    username: usesIdentity(protocol) ? draft.username : "",
+    mountPreference: draft.mountPreference,
+  };
 }
 
 /**
@@ -153,14 +255,17 @@ export function isImplemented(protocol: Protocol): boolean {
 export function toSpec(draft: Draft, id: string): Record<string, unknown> {
   return {
     id,
-    name: draft.share.split("/").filter(Boolean).pop() ?? draft.host,
+    name: connectionName(draft),
     protocol: draft.protocol,
-    host: draft.host.trim(),
+    // Local's is `""`, and its `share` carries the absolute folder path: the
+    // engine's `ConnectionSpec` keeps one shape for every protocol, and the
+    // folder is the thing being opened, so it goes where the share goes.
+    host: usesHost(draft.protocol) ? draft.host.trim() : "",
     port: draft.port ? Number(draft.port) : null,
     share: draft.share.trim(),
     // Kept for every protocol, NFS included: its identity is what the mount
     // will claim, so a bookmark that dropped it would reconnect as someone else.
-    username: draft.username ? draft.username : null,
+    username: usesIdentity(draft.protocol) && draft.username ? draft.username : null,
     // Only SMB has one, and the dialog only shows the field there — but it was
     // being collected and then dropped, which is why an SMB share on a domain
     // could not be reached at all.

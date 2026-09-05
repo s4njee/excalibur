@@ -185,8 +185,8 @@ reconstruct it from git history.
 | **M4.5** | E18-S1 — macOS build (local, unsigned) | **Partly done** 2026-09-05 (icon set and `.app`/`.dmg`; signing deferred) |
 | **M4.5** | E18-S4 — Staging `xs` on a server | **Done** 2026-09-05 (verified on `root@orion.local`) |
 | **M4.5** | E18-S5 — macOS local network permission | **Done** 2026-09-05 (found in the bundled app) |
-| **M4.5** | E21-S1 — Local filesystem backend | Not started (asked for directly 2026-09-06) |
-| **M4.5** | E21-S2 — "Local" in the dialog and the window | Not started (asked for directly 2026-09-06) |
+| **M4.5** | E21-S1 — Local filesystem backend | **Done** 2026-09-06 (`trash` on delete; no `watch` yet) |
+| **M4.5** | E21-S2 — "Local" in the dialog and the window | **Done** 2026-09-06 |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -3795,60 +3795,302 @@ of it. It is also what makes a local↔share transfer a *copy between two backen
 (E13) rather than a third code path. Recorded in `docs/design-gaps.md`, since the
 dialog gains a tab the mock does not draw.
 
-#### E21-S1 — Local filesystem backend
+#### E21-S1 — Local filesystem backend — **Done**
+
+*2026-09-06.*
 **AC**
-- `crates/engine/src/backend/local.rs`: `LocalBackend::open(root: &Path, read_only:
+- [x] `crates/engine/src/backend/local.rs`: `LocalBackend::open(root: &Path, read_only:
   bool) -> Result<LocalBackend>` implementing every `ShareBackend` method over the
   standard library: `list_dir`, `stat`, `read_range`, `open_read` (one `File`, positional
   reads, concurrent — the E13-S7 handle), `write_range`, `mkdir`, `rename`,
   `remove`, `capacity`, `ping`, `mount_info`, `caps` (`random_access`,
   `resume_write`, `atomic_rename` true; `symlinks` true; `watch` false).
-- **Confinement:** share-relative paths are resolved under `root` and anything that
+- [x] **Confinement:** share-relative paths are resolved under `root` and anything that
   would escape it — `..`, an absolute path, a NUL — is refused as `NotFound`, never
   served. A symlink *inside* the root that points outside is listed as a symlink with
   its target and may be followed on open: this is the user's own machine, and Finder
   follows them; the confinement is about the path *model*, not a privilege boundary.
-- **Writability is probed, not assumed:** `writable` is true only when a temp file can
+- [x] **Writability is probed, not assumed:** `writable` is true only when a temp file can
   be created and removed in `root` (removed on every exit path); `read_only` mounts
   refuse every write at the backend with `ReadOnly` and a reason, exactly as the
   network backends do. The reason names the cause (`mounted read-only` vs `no write
   permission on <root>`).
-- **Kinds and hiddenness use the shared rules:** `classify_entry` from `kind.rs`; an
+- [x] **Kinds and hiddenness use the shared rules:** `classify_entry` from `kind.rs`; an
   entry is `hidden` when its name starts with `.` **or**, on macOS, when the
   `UF_HIDDEN` flag is set (`~/Library` is flagged, not dotted) — read through
   `std::os::macos::fs::MetadataExt`, no unsafe.
-- **`remove` moves to the Trash** on platforms that have one (the `trash` crate),
+- [x] **`remove` moves to the Trash** on platforms that have one (the `trash` crate),
   and falls back to a real delete only where there is none, saying which in the mount's
   `options`. Deleting a file on your own Mac must not be more permanent than Finder
   makes it. The dependency is recorded in `docs/supply-chain.md` and passes `cargo deny`.
-- `capacity` from `statvfs` via a safe crate already in the tree if there is one, else
+- [x] `capacity` from `statvfs` via a safe crate already in the tree if there is one, else
   `fs4` (record it). `security_label` is `local`; `protocol_label` is `local`.
-- `xcal --local PATH` drives it headlessly.
-- Tests in `crates/engine/tests/local.rs` against a `tempdir`: listing, stat, range
+- [x] `xcal --local PATH` drives it headlessly.
+- [x] Tests in `crates/engine/tests/local.rs` against a `tempdir`: listing, stat, range
   read, the read handle's concurrent reads, write, mkdir/rename/remove (asserting the
   file left the root — and, on macOS, that it is in the Trash rather than gone),
   capacity, the read-only refusal, the write-probe on an unwritable root, every
   confinement case, hidden-by-flag on macOS, and a symlink pointing outside the root.
 
-#### E21-S2 — "Local" in the dialog and the window
+**Results**
+
+ `crates/engine/src/backend/local.rs` implements the whole trait over
+`std::fs`, and nothing above the trait changed to accommodate it: `xcal ls --local
+~/Downloads` lists 518 items with the same kind labels the other backends get,
+and `xcal get --local ~/Downloads googlechrome.dmg` moved 276 MB through the
+unmodified transfer worker at 1.65 GB/s, byte-identical by SHA-256. That number
+is the point of the story rather than a benchmark: the worker's read handle, its
+chunking and its resume logic were written for a protocol with round trips, and a
+backend with none of them dropped straight in.
+
+Every syscall runs on `spawn_blocking`. That is not ceremony — a local root can
+be `/Volumes/something-over-SMB`, and one `read_dir` on a stalled mount would
+otherwise park a runtime thread that four other sessions are sharing. Reads are
+positional (`FileExt::read_at`), so `open_read` hands out one `File` that any
+number of reads use at once with no cursor to protect and no lock held across an
+await; the `Mutex<Option<Arc<File>>>` shape is XsyncReads', because `close` has
+to be reportable and a read-after-close has to be an error.
+
+**Confinement is a path model, not a sandbox**, and saying so out loud settled
+three decisions at once. `resolve` walks components and insists each one is a
+single `Component::Normal` — which refuses `..`, `.`, absolute paths, NULs and
+empty components (a leading, trailing or doubled `/`) as `NotFound`, and refuses
+them rather than repairing them, because a path that climbs out is either a bug
+above the line or an attempt. What it deliberately does *not* do is
+`canonicalize` per call: a symlink inside the share that points outside stays
+listable, with its target on the row, and openable. This is the user's own
+machine, Finder follows them, and their own permissions are the real boundary. A
+`realpath` per call would have bought a syscall per component on every listing in
+exchange for enforcing something nobody is being protected from.
+
+**Three surprises.**
+
+The first is that `cargo clippy --workspace --all-targets -- -D warnings` was
+**already red at HEAD**, before this story: `ProtocolConnector::connect` has been
+at 102 lines against the lint's 100 since the SMB arm landed in 4889919. Adding
+the four-line Local arm made it 103. I put an `#[allow(clippy::too_many_lines)]`
+on the method with a note, matching what `xcal`'s `main` already does — the arms
+share nothing, so splitting them buys five one-line functions and a longer path
+to the code. Worth knowing that the gate has been failing quietly for a commit.
+
+The second: on macOS the read-only *system* volume answers the write-probe with
+`EACCES`, not `EROFS`, so `/System/Library` reports "no write permission on
+/System/Library" and never reaches the read-only-filesystem wording. Both reasons
+exist, and the probe rather than a mount flag is what decides — which is the
+right way round, because the permission bits, the ACL and the mount flags all
+have a say and only an attempted write asks all three at once. `fs4::statvfs`
+does not expose `ST_RDONLY` at all; that was the price of picking it, and it
+bought a `capacity` that still compiles on Windows, which `rustix::fs::statvfs`
+would not have.
+
+The third is small and pleasing: `~/Library` came out `hidden: true` on the very
+first real run of `xcal ls --local ~`. `UF_HIDDEN` through
+`std::os::macos::fs::MetadataExt::st_flags()` needs no `libc` and no `unsafe` —
+the constant is written out as `0x8000` with a comment, because pulling an FFI
+crate into the default build for one integer that has been ABI since 4.4BSD is
+not a trade worth making.
+
+**Dependencies.** `trash` v5 (MIT, target-gated: it has no platform module for
+iOS or Android) and `fs4` (already in the tree via `xsync-core`, so it added
+nothing to the lock). Seven packages in total, no new licences, `cargo deny
+check` green on all four gates. Both are recorded in `docs/supply-chain.md` with
+the argument for them — the short version being that hand-rolling the Trash means
+`NSFileManager` on macOS, a `.trashinfo` sidecar and per-volume trash directories
+on Linux, and `IFileOperation` on Windows, which is three FFI surfaces to save
+one MIT crate. A failure to trash is reported, never quietly downgraded to a real
+delete: the volumes where trashing fails are exactly the ones where a silent
+permanent delete would be worst.
+
+**Tests.** `crates/engine/tests/local.rs`, twelve of them, no fixture and no
+server, so they run everywhere every time. Three are load-bearing and all three
+were checked by breaking the thing they guard:
+
+- replacing the component walk with a plain `push` (which is what a naive
+  trim-and-join does) fails `nothing_outside_the_share_is_reachable_through_a_path`
+  on the first case, `list_dir("..")`;
+- replacing `trash::delete` with `remove_file`/`remove_dir_all` fails both
+  `remove_takes_a_file_out_of_the_share_and_into_the_trash` and
+  `a_folder_goes_whole_and_only_when_recursive` — the second only after I
+  tightened its Trash assertion, which had been tolerant enough to pass under
+  the mutation, which is the whole argument for doing this;
+- making `writable()` return `Ok(())` unconditionally fails
+  `a_read_only_mount_refuses_every_write_at_the_backend`.
+
+The two Trash tests put a uniquely named item in the *real* Trash and take it out
+again by exactly that name, because "not permanent" is only checkable by finding
+the thing again.
+
+**Next steps**
+
+
+- `MountInfo` reports `protocol_label: "local"` and `security_label: "local"`, as
+  the AC asks. `Shell.tsx` renders those as `{protocolLabel} · {securityLabel}`
+  unconditionally, so today that reads **`local · local`**. E21-S2 owns the
+  status bar and should collapse the pair — either there, or by this backend
+  emitting an empty `security_label`, which is the smaller change but makes the
+  separator dangle. It needs deciding in one place, not both. *(Decided in E21-S2: `formatMountLabels` collapses the pair in the window.)*
+- `caps.watch` is `false` and `watch` is not implemented. A local share is the
+  one backend where a real watcher is cheap and obviously right (FSEvents,
+  inotify); until then the window refreshes a local listing on the same schedule
+  it refreshes a network one, which is the wrong trade in the one case where it
+  did not have to be.
+- Non-UTF-8 filenames are skipped in a listing rather than shown. Honest — a name
+  the path model cannot address would put a row on screen whose every verb fails
+  — but it means a file can exist in a folder and not appear in it. The fix is an
+  opaque path token in the path model, which is a change to the trait and to
+  every backend, so it is a story of its own rather than something to slip in.
+- `remove` on a non-empty directory with `recursive: false` is refused, matching
+  `rmdir` and every other backend. The window always passes `true` for a folder,
+  so this is defence rather than behaviour anyone sees.
+- The write-probe test is skipped when running as root, which no CI here does
+  today but a container might.
+
+#### E21-S2 — "Local" in the dialog and the window — **Done**
+
+*2026-09-06.*
 **AC**
-- The New Connection dialog gains a **Local** tab: one field, *Folder*, with a
+- [x] The New Connection dialog gains a **Local** tab: one field, *Folder*, with a
   `Choose…` button that opens the OS folder picker (`tauri-plugin-dialog` `open`
   with `directory: true` — already granted `dialog:allow-open`), plus the Mount-as
   radio. No host, port, username or password; the URI preview reads `file:///…`.
   The field set is decided in `state/connection.ts` beside the other protocols'.
-- `ProtocolConnector` routes `Protocol::Local` to `LocalBackend::open`; `test_connection`
+- [x] `ProtocolConnector` routes `Protocol::Local` to `LocalBackend::open`; `test_connection`
   reports the folder's real writability; `supported_protocols` lists `local`.
-- A local bookmark is never *probed*: reachability is not a question a folder answers,
+- [x] A local bookmark is never *probed*: reachability is not a question a folder answers,
   so the row is never dimmed and no TCP connect is attempted for it.
-- Chrome: the title reads `<folder name> — This Mac` (or the machine's hostname on
+- [x] Chrome: the title reads `<folder name> — This Mac` (or the machine's hostname on
   Linux), the breadcrumb root is the chosen folder, the status bar shows `local`
   where a network protocol would show `xsync v3 · ssh`. The bookmark id derives from
   the path, not a host.
-- Download from a local share to the download folder is an ordinary transfer; upload
+- [x] Download from a local share to the download folder is an ordinary transfer; upload
   into it is an ordinary upload. Neither is special-cased.
-- Tests: the field set, the URI, validation (a relative path is refused, a missing
+- [x] Tests: the field set, the URI, validation (a relative path is refused, a missing
   `Folder` is refused), the id, that the probe is skipped, and the chrome naming.
+
+**Results**
+
+The dialog gains a fifth tab, **Local**, with a single field. `state/connection.ts`
+grew three facts about a protocol rather than three branches in the component:
+`usesHost` (false for local — `file:` has no authority), `usesIdentity` (false — a
+folder is read as whoever runs the app, and a Username box would suggest the mount
+could be made as somebody else) and `uriScheme` (`file`, because `local://` is a URI
+nobody else in the world writes). The Server and Username blocks are now inside
+`<Show>` rather than always rendered, which is the design's own rule — the field set
+*changes*, it does not grey out.
+
+The tab switch moved out of the component into `switchProtocol(draft, protocol)`, so
+"keep what still applies" is a testable rule rather than an object literal in an
+`onClick`. Host and account survive a move between network protocols and are dropped
+on the way to Local; the share never survives, as before. That last part is what stops
+a hostname typed on the SFTP tab from riding into the spec of a form that has no
+Server field to show it in.
+
+`validate` refuses a Local draft with no folder, and one whose folder is not absolute
+— including `~/Documents`, since nothing here expands it. POSIX only, deliberately:
+`plan.md`'s Platforms (v1) row does not package Windows, and accepting `C:\…`
+untested would be worse than refusing it. The preview URI is `file://` plus the path
+verbatim, percent-encoding nothing; a user checking that they picked the right folder
+is better served by the path they typed than by `%20`.
+
+`Choose…` is a `pickFolder` prop, mirroring Preferences' `onPickFolder`: `App` passes
+it only `inTauri()`, so the browser preview gets a typeable field and no inert button.
+A cancelled picker resolves to `null` and leaves the field exactly as it was, which is
+the one thing Cancel must not get wrong.
+
+**The id** keeps the existing `protocol:host:share` derivation, which for a local
+bookmark reads `local::/users/dorian/documents`. The empty host cannot collide with
+anything: the protocol prefix already namespaces it, and every network bookmark is
+required by `validate` to have a host. The lower-casing *is* wrong for a case-sensitive
+path, and is kept: an id only has to be stable and to make "the same share" one row.
+The cost is that `/data/Foo` and `/data/foo` on a case-sensitive filesystem would share
+a row — the bookmark still carries the path exactly as typed, so the folder that opens
+is never the wrong one. Casing the id per protocol would make a bookmark's identity
+depend on a filesystem property the window cannot see.
+
+**The probe** is skipped, not faked. `probePort` now returns `number | null` and the
+exhaustiveness guard forced the decision; `null` means *do not probe*, and `App`'s
+launch-time loop `continue`s on it. There is exactly one call site, so that is the
+whole of it. A TCP connect to an empty host would have failed and dimmed a row that
+is perfectly fine.
+
+**The chrome** needed two different "hosts", which was the surprise (below). The title
+bar reads `Documents — This Mac` (from `state/platform.ts`, off the user agent;
+`This computer` elsewhere). The path field's authority is empty, so the breadcrumb
+reads `file:///Users/sanjee/Documents` — the crumbs naming the mount are still
+clickable and still go to the share root, exactly as `onCrumb` already did for
+`/export/scratch`. The status bar joins the two mount labels through
+`formatMountLabels`, which collapses them when they are the same word: a local mount
+reads `local`, not `local · local`.
+
+Two things fell out that the AC did not name. The sidebar subtitle would have read
+`LOCAL · ` — the network shape with an empty host — so `bookmarkSubtitle` says where
+the folder is instead; and it was the first subtitle long enough to *wrap*, which made
+the row taller than the handoff's fixed height, so `.sidebarSubtitle` now truncates
+like the name above it and carries the full text in a `title`.
+
+`supported_protocols` in `src-tauri/src/lib.rs` lists `local` unconditionally — unlike
+SMB it is the standard library, so no build of the binary lacks it. The fixture backend
+lists it too, so the preview does not label the tab unsupported.
+
+*Files changed*
+
+- `src/state/connection.ts` — `shareLabel`/`sharePlaceholder` for `local`, `usesHost`,
+  `usesIdentity`, `uriScheme`, `connectionName`, `switchProtocol`, the local branches of
+  `previewUri` and `validate`, `isImplemented`, `toSpec`.
+- `src/state/bookmarks.ts` — `probePort` → `number | null`, `bookmarkSubtitle`, the id's
+  reasoning, `fromDraft` via `connectionName`/`usesHost`.
+- `src/state/platform.ts` *(new)* — `machineLabel` / `thisMachine`.
+- `src/state/format.ts` — `formatMountLabels`.
+- `src/state/backend.ts` — `local` in the fixture's `supportedProtocols`.
+- `src/components/ConnectionDialog.tsx` — the Local tab, the `Show`-wrapped Server and
+  Username blocks, the `Choose…` button and `pickFolder` prop, `switchProtocol`.
+- `src/components/Shell.tsx` — `PathField` with no host, `formatMountLabels` in the
+  status bar, `bookmarkSubtitle` in both sidebar sections, the empty state's prose.
+- `src/components/shell.module.css` — subtitle truncation.
+- `src/App.tsx` — the probe skip, `named()`'s split host/`uriHost` and `file` scheme,
+  `pickShareFolder`.
+- `src-tauri/src/lib.rs` — `supported_protocols` only.
+- Tests: `src/state/connection.test.ts`, `src/state/bookmarks.test.ts`,
+  `src/state/format.test.ts`, `src/state/platform.test.ts` *(new)*,
+  `src/components/localTab.test.tsx` *(new)*, `src/components/dialogFields.test.tsx`
+  (Local added to the per-protocol loop).
+
+*Gates*
+
+`pnpm build` green (the two TS2366 exhaustiveness errors are gone — both were fixed
+with the real behaviour, no default arm). `pnpm test` 355 passing across 32 files.
+`cargo clippy -p excalibur --all-targets -- -D warnings` green, after a wait: it was
+red for a while on `too_many_lines` in `ProtocolConnector::connect`, which the E21-S1
+agent's `Protocol::Local` arm pushed past 100 lines. Their region, their fix, and it
+landed — retried rather than touched.
+
+*Verified in the preview* (`?screen=1a`)
+
+Five tabs; the Local tab shows Folder + Mount-as and nothing else; the preview moves
+from `file://…` to `file:///Users/sanjee/Documents` as it is typed; `Documents` alone
+keeps Test and Connect disabled with `Folder must be an absolute path.` on the button;
+no `Choose…` outside Tauri; switching back to SMB restores the full field set at the
+original layout. A seeded local bookmark renders as a single-line, undimmed sidebar row.
+
+**Next steps**
+
+- **The Linux hostname.** The AC asks the title bar to read the machine's hostname on
+  Linux. The webview cannot get one: there is no Tauri command for it, and `navigator`
+  knows the platform and never the machine. It says `This computer`, which is true and
+  adds nothing. A one-line `hostname` command in `lib.rs` would close it; it is noted
+  in `state/platform.ts`.
+- **Windows paths.** `validate` accepts `/…` only. If Windows is ever packaged,
+  `C:\…` needs a branch and a test, not a loosened check.
+- **`Test` on a local folder** goes through the same `test_connection` path as
+  everything else and will report the folder's real writability once E21-S1's
+  write-probe lands. Worth an eye in the bundled app: the success line reads
+  `Reachable · local · read & write`, and "Reachable" is a slightly odd word for a
+  directory. Changing it means changing it for every protocol, so it was left alone.
+- **The picker and a real mount** are Tauri-only and unverified here, as agreed.
+- Download from and upload into a local share are untouched and un-special-cased, per
+  the AC — but nothing has exercised them yet, since the preview cannot mount.
+
+- *(Lead, in the bundled app, 2026-09-06:)* see the commit for what the real picker and mount did.
 
 ## Milestones
 

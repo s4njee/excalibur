@@ -24,6 +24,10 @@ the same discipline, and this file follows its format.
 
 ## Audit, 2026-09-03
 
+*(Updated 2026-09-05 for E21-S1: 652 packages. `trash` adds seven of them and
+`fs4` none — it was already in the tree. All four gates still pass and the
+licence allow list is unchanged; see the `trash` note below.)*
+
 642 packages in `Cargo.lock`. `cargo deny check` passes all four gates:
 advisories, bans, licences, sources. One vulnerability is accepted with a
 written argument rather than fixed; it is the first, and it is described below.
@@ -123,6 +127,8 @@ as a transitive dependency of these.
 | `pavao` *(optional)* | engine | E4. libsmbclient bindings, behind the off-by-default `smb` feature. **Enabling it makes the binary GPL-3.0-or-later** — see the note below. |
 | `notify` | `src-tauri` | E12-S1. Watches an edit-in-place working copy so a save in the user's own editor reaches the share. The alternative is polling every open file. |
 | `blake3` | engine | E12-S1. The whole-file digest a staged xsync commit verifies. Already in the tree via `xsync-client`. |
+| `fs4` | engine | E21-S1. `statvfs` for the local backend's capacity. Already in the tree via `xsync-core`, and thin: it is a `FsStats` struct over `rustix::fs::statvfs`, with no `libc` and no code of its own on the platform paths. |
+| `trash` | engine *(target-gated)* | E21-S1. Moves a deleted file or folder to the platform's Trash. See the note below. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync and SFTP integration tests. |
 
 ### On `sha2`, `base64` and `dirs`
@@ -134,6 +140,35 @@ fingerprint that does not match `ssh-keygen -lf` byte for byte is worse than
 useless: the whole point is that a user compares it against what the server
 operator told them. There is a test pinning ours to a real key's published
 fingerprint.
+
+### On `trash`
+
+`remove` on a local share moves things to the Trash rather than unlinking them.
+That is a correctness requirement, not a nicety: deleting a file on your own Mac
+through this window must not be more permanent than deleting it in Finder, and
+there is no way to be less permanent afterwards.
+
+Doing it by hand is not the small job it looks like. macOS wants
+`NSFileManager -trashItemAtURL:`, which is Objective-C and therefore FFI; the
+freedesktop specification wants a `.trashinfo` sidecar, the right trash
+directory for the *volume* the file is on, and a de-duplicating rename; Windows
+wants `IFileOperation`. `trash` v5 is MIT, is the crate the ecosystem uses for
+this, and on macOS reaches AppKit through `objc2`/`objc2-foundation` — vetted
+bindings — rather than through hand-written `extern` blocks, which is what keeps
+this side of `unsafe_code = "deny"`. It added seven packages to the lock —
+`trash` itself, `urlencoding` (the freedesktop sidecar's encoding) and the five
+`windows` 0.56 crates — all permissive, and none new to the allow list. The
+`objc2` crates it uses on macOS were already in the tree via Tauri.
+
+It is declared under a `[target.'cfg(...)']` table rather than plainly, because
+it has no platform module for iOS or Android and would not compile there. On a
+target without one the backend deletes for real and says `permanent delete` in
+the mount's options instead of `trash`, so the difference is visible in the
+status bar rather than only in the source.
+
+A failure to trash is reported, never downgraded to a real delete. The volumes
+where trashing fails — a read-only image, some network mounts — are exactly the
+ones where silently making a delete permanent would be worst.
 
 ### On `keyring`
 
