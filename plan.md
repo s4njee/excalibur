@@ -190,6 +190,8 @@ reconstruct it from git history.
 | **M4.5** | E18-S5 — macOS local network permission | **Done** 2026-09-05 (found in the bundled app) |
 | **M4.5** | E21-S1 — Local filesystem backend | **Done** 2026-09-06 (`trash` on delete; no `watch` yet) |
 | **M4.5** | E21-S2 — "Local" in the dialog and the window | **Done** 2026-09-06 |
+| **M7** | E23-S1 — More than one browser window | **Done** 2026-09-06 |
+| **M7** | E26-S2 — Keyboard navigation | **Done** 2026-09-06 |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -4229,23 +4231,218 @@ the stories there are the spec. Written against `xsync` `v3` @ `599d9d4529`.
 
 ### E23 — Windows
 
-#### E23-S1 — More than one browser window
+#### E23-S1 — More than one browser window — **Done**
+
+*2026-09-06.*
+
 **AC**
-- Design spike: what two windows of this app look like side by side (title, sidebar
+- [x] Design spike: what two windows of this app look like side by side (title, sidebar
   duplication or not, which chrome is per-window). One page in `docs/design-gaps.md`
   before the code.
-- ⌘N opens a new window on the same mount and path; a window has its own mount, path,
+- [x] ⌘N opens a new window on the same mount and path; a window has its own mount, path,
   history, selection, filter and row layout; sidebar, bookmarks, preferences and the
   transfer queue are shared and stay in step across windows.
-- Engine: `SessionManager` keys the active mount by window label; every command that
+- [x] Engine: `SessionManager` keys the active mount by window label; every command that
   meant "the active mount" takes the label (`tauri::Window` argument); listing and
   mount-changed events `emitTo` the window that asked, transfer and bookmark events
   broadcast. A mount used by two windows is one session, closed when the last window
   leaves it.
-- Closing the last window keeps the app running (menu bar, Dock); ⌘Q quits and asks if
+- [x] Closing the last window keeps the app running (menu bar, Dock); ⌘Q quits and asks if
   transfers are active.
-- Tests: two windows on one mount see the same listing after a mutation from either; a
+- [x] Tests: two windows on one mount see the same listing after a mutation from either; a
   window closing does not disconnect a share another window is showing.
+
+**Results**
+
+*The per-window model*
+
+**One engine, many windows.** `SessionManager`'s single `active: Option<String>`*
+became `active: HashMap<window label, mount id>`, plus a `recent: Option<String>`
+for the two callers that have no window to ask. The label is an opaque `String`,
+so the engine still has no Tauri dependency.
+
+Engine API (`crates/engine/src/session/mod.rs`):
+
+| before | after |
+|---|---|
+| `mount(spec)` | `mount(window, spec)` |
+| `set_active(id)` | `set_active(window, id)` — also how a second window *joins* a mount |
+| `active()` | `active(window)` |
+| `active_backend()` | `active_backend(window)` |
+| — | `windows_on(id) -> Vec<String>` (sorted) |
+| — | `close_window(window) -> Option<String>` — disconnects only if it was the last window on that mount |
+| — | `recent()` / `recent_backend()` — the app-wide mount |
+| `unmount(id)` | unchanged; now also clears every window pointing at it |
+
+`SessionEvent` gained `#[serde(skip)] audience: Vec<String>` — the windows on the
+mount **at the moment the event happened**, plus the window that asked for a
+mount that is still connecting. Routing is computed in the engine rather than by
+the shell at delivery time so a mount that fails and gives the window its old
+share back cannot deliver its failure to whoever is on it a moment later.
+
+Reaping is on **window close**, not on switching. A window that changes share
+keeps the one it left connected (the existing "switching back should not pay for
+a reconnect" rule, and its test).
+
+*Command signatures*
+
+Every command that meant "the active mount" now takes `window: tauri::Window`
+(Tauri injects it, so no caller can pass the wrong label):
+`list_dir`, `mount_info`, `mkdir`, `rename`, `remove`, `enqueue_downloads`,
+`check_conflicts`, `edit_file`, `save_edit`, `mount`, `set_active`.
+`AppState::backend(&window)` is the one place that resolves it.
+
+New: `new_window(window, path) -> String` (the new label).
+
+Unchanged (app-wide by nature): the transfer commands, the keychain commands,
+`reachable`, `supported_protocols`, `download_folder`, `unmount`,
+`remount_read_write`.
+
+*Event routing*
+
+| event | routing |
+|---|---|
+| `mount://changed` | `emit_to` each label in `event.audience`; broadcast only when the audience is empty (a mount nobody holds yet) |
+| `listing://changed` *(new)* | `emit_to` every window on the mount, after a successful `mkdir` / `rename` / `remove` / write-back. Payload is the mount id |
+| `edit://saved` | `emit_to` the window that checked the file out |
+| `transfer://progress` | broadcast, as before |
+
+`listing://changed` is what makes two windows on one share agree: the frontend
+feeds it into the 250 ms coalescer it already had (`state/refresh.ts`), so
+twenty deletions in one window are one relist in the other.
+
+*The stream URL*
+
+`excalibur-stream://<label>/<path>`. A protocol handler is handed a request and
+not a caller, so the label cannot be injected — it travels as the authority.
+`window_from_host` treats `localhost`, an empty host and anything ending in
+`.localhost` as "no window" and falls back to `recent_backend()`, which covers
+the platforms that rewrite a custom scheme to
+`http://<scheme>.localhost/…`. **The CSP needed no change** — it already allows
+the scheme without a host restriction.
+
+`streamUrl(path, label = windowLabel())` in `src/state/preview.ts`; the label
+comes from the window's own query string (`src/state/window.ts`), so it is
+synchronous and needs no IPC round trip.
+
+*⌘N, closing, quitting*
+
+- `new_window` is a Rust command, not `WebviewWindow` from the frontend, so the
+  label, the size, the macOS `titleBarStyle: Overlay` / `hiddenTitle` and the
+  capability that grants the window its commands are decided in one place.
+  It sets the new window's mount **before** the webview loads, and passes
+  `?label=&mount=&path=` so the window knows which bookmark to draw as mounted
+  without reading a stale `mounted` flag off disk (E1-S6 preserved).
+- `capabilities/default.json`: `"windows": ["main", "browser-*"]` — a label
+  pattern, not a widening of permissions. Labels are `browser-2`, `browser-3`, …
+  found by checking the windows that exist, capped at 64.
+- `RunEvent::WindowEvent { Destroyed }` → `close_window(label)`.
+- `RunEvent::ExitRequested`: `code: None` is "the last window closed" →
+  `prevent_exit()` on macOS only (a Linux app with no window and no tray is a
+  process the user cannot see or stop). `code: Some(_)` is a real quit, and is
+  held only if transfers are queued or running.
+- `RunEvent::Reopen { has_visible_windows: false }` opens a fresh window, so the
+  Dock icon is a way back into an app that is running with nothing on screen.
+  (`Reopen` is `#[cfg(macos)]` in Tauri, so the arm is too.)
+- **The macOS menu bar is now built here**, item for item the same as Tauri's
+  default, with one change: `Quit` is an ordinary item calling `app.exit(0)`
+  rather than the predefined one. Checked in the crate sources: muda's
+  predefined quit sends `terminate:` to `NSApplication`, and tao only implements
+  `applicationWillTerminate` — so the predefined item never reaches
+  `ExitRequested`, and ⌘Q would have killed a running transfer without asking.
+  The Edit submenu had to be copied along with it: `Cut`/`Copy`/`Paste` are menu
+  items on macOS, and a webview with no Edit menu is one where ⌘C does nothing.
+  No `File ▸ New Window` item: a menu accelerator is handled before the webview
+  sees the key, and the path ⌘N opens on lives in the webview.
+
+**The quit confirmation is raised from Rust through the dialog plugin's own API,*
+and `dialog:allow-ask` was deliberately *not* added.** A capability grants a
+permission to the webview, and `dialog:allow-ask` would let any page in it put a
+system modal on screen — to buy nothing, since the webview cannot ask this
+question anyway: the quit does not come from it, and with two windows open
+"which window asks" has no answer. Recorded in the capability file's own
+`description`.
+
+*Files changed*
+
+- `docs/design-gaps.md` — the design spike, appended (written before the code).
+- `crates/engine/src/session/mod.rs` — the per-window map, `audience`,
+  `close_window`, `recent`.
+- `crates/engine/tests/session.rs` — updated for the new signatures; eight new
+  tests for the window map.
+- `src-tauri/src/lib.rs` — window-scoped commands, `new_window`, `open_window`,
+  `next_label`, `encode`, `window_from_host`, `announce_listing`, addressed
+  events, the run loop (`Destroyed`, `ExitRequested`, `Reopen`), `confirm_exit`.
+- `src-tauri/capabilities/default.json` — label pattern + the reasoning.
+- `src-tauri/tauri.conf.json` — the first window's `label` said out loud.
+- `src/state/window.ts` *(new)* + `window.test.ts` *(new)*.
+- `src/state/preview.ts`, `preview.test.ts` — the label in the stream URL.
+- `src/state/backend.ts` — `newWindow`, `onListingChanged`.
+- `src/state/shortcuts.ts`, `shortcuts.test.ts` — the ⌘N row (one row only; the
+  arrow-key rows are another agent's).
+- `src/App.tsx` — `window` prop, per-window initial mount/path, the
+  `listing://changed` subscription, the ⌘N case.
+- `src/components/multiWindow.test.tsx` *(new)*.
+
+`src/main.tsx` and `src/components/Shell.tsx` needed no change: a window reads
+its own parameters, and every piece of chrome was already per-window.
+
+*Gates*
+
+`cargo fmt … --check`, `cargo clippy --workspace --all-targets -D warnings`,
+`cargo test --workspace` (all green), `pnpm build`, `pnpm test` (410 passing).
+Browser preview checked in a fresh tab: `?screen=1a`, `?screen=1b` and
+`?screen=empty` render unchanged with no console errors.
+
+*What surprised me*
+
+1. **The frontend was already per-window.** Every window is its own webview
+   running its own `App`, so path, history, selection, filter and layout needed
+   nothing. The only two facts a new window could not work out for itself were
+   *which window am I* and *what was I opened on* — both now in its URL.
+2. **`dialog:allow-ask` is not needed to ask from Rust.** Capabilities gate what
+   the *webview* may invoke; the plugin's Rust API is not gated. The story
+   assumed otherwise, and the narrower answer was also the simpler one.
+3. **The audience has to be computed when the event happens, not when it is
+   delivered.** Routing at emit time raced with a failed mount rolling a window
+   back to its previous share.
+4. **macOS's predefined Quit cannot be intercepted at all.** It bypasses the
+   whole Tauri event loop, so "⌘Q asks" turned out to require building the menu
+   bar rather than handling an event — the one part of this story that changed
+   something the design page had an opinion about.
+5. **`mounted` is a per-window fact living in a shared file.** `mountBookmark`
+   still persists it; it is harmless because E1-S6 clears it on load, and the
+   new-window path deliberately uses `setBookmarks` rather than `persist`. E23-S2
+   (Restore) will have to decide where this actually lives.
+
+*For the lead to verify in the bundle*
+
+1. **⌘Q with a transfer running** should ask, and `Keep going` should leave the
+   app alone. The path is: custom Quit item → `app.exit(0)` →
+   `ExitRequested { code: Some(0) }` → `confirm_exit`. Worth checking the menu
+   bar as a whole while it is open — the app menu, Edit's Cut/Copy/Paste in the
+   filter box, View's fullscreen, Window's minimize.
+2. **Closing the last window** leaves the app in the Dock (macOS only), and the
+   Dock icon reopens an empty window through `RunEvent::Reopen`.
+3. **The second window's chrome** — `titleBarStyle: Overlay` and `hiddenTitle`
+   are set in code to match `tauri.conf.json`; worth an eye on whether the two
+   windows actually look identical.
+4. **A preview in the second window**, which is the whole point of the label in
+   the stream URL: two windows on two shares, Quick Look in each, and each must
+   show its own file.
+5. **A rename in one window appearing in the other** within a quarter second.
+
+**Next steps**
+
+- E23-S2 (Restore) needs a per-window record of mount + path on disk, which is
+  the natural home for the `mounted` flag problem above.
+- The transfer worker still asks for the app's most recent mount
+  (`recent_backend`). E22-S0's endpoint abstraction is what actually fixes it;
+  until then a transfer queued in one window and continued after that window
+  switched shares would follow the switch.
+- The transfers sheet is still per-window over one app-wide queue. The handoff
+  draws it as a separate window, which is now clearly right — flagged for the
+  designer in `docs/design-gaps.md`.
 
 #### E23-S2 — Restore
 **AC**
@@ -4342,12 +4539,124 @@ to a window). Only if S1's design spike says windows alone are not enough.
   Local defaults are present on first run so the empty state is never the first thing
   a user of "this machine" sees.
 
-#### E26-S2 — Keyboard navigation
+#### E26-S2 — Keyboard navigation — **Done**
+
+*2026-09-06.*
+
 **AC**
-- ↑/↓ move the selection, ⇧↑/↓ extend it, ⌘↑ ascends (exists), ⌘↓/Enter... *(Enter is
+- [x] ↑/↓ move the selection, ⇧↑/↓ extend it, ⌘↑ ascends (exists), ⌘↓/Enter... *(Enter is
   rename per the handoff; ⌘O opens; ⌘↓ descends, exists)*, Home/End, Page Up/Down,
   ⌘⇧G Go to Folder with path completion, ⌘⇧. toggles hidden files. All in
   `state/shortcuts.ts`'s one table.
+
+**Results**
+
+- **Eleven new rows in one table, and the four arrows are eight verbs, not
+  four.** `match` compares modifiers exactly (E16-S1), so ↓ and ⇧↓ cannot be one
+  row with a flag; they are `moveDown` and `extendDown`, and ⌘↓ stays `descend`.
+  A bare ↓ that fell through to the modified row would have descended into a
+  folder instead of moving one row, which is the failure the exact-match rule
+  exists to prevent — and the test now pins all six ↓/↑ combinations.
+
+- **⌘⇧. arrives as two different characters.** Shift changes the reported key,
+  so a US layout sends `>` where the keycap says `.`. Both spellings are bound
+  (`key: "."`, `alias: ">"`), `hint` reports the keycap, and both were pressed
+  in the browser: 13 items → 12 → 13. Binding only the character the keyboard in
+  front of me produced would have shipped a shortcut that works on some layouts
+  and not others.
+
+- **The moves are pure functions returning a selection *and* a row to reveal.**
+  `step`, `extendBy`, `moveTo` and `extendTo` in `state/selection.ts` return
+  `{ selection, reveal }`, because the row to scroll to is not derivable from
+  the selection: a plain move reveals where it landed, an extend reveals the far
+  end it just moved, and neither is the anchor. `App` sets two signals and
+  decides nothing.
+
+- **Extending needed a *far end*, and the anchor could not supply it.** E8-S8's
+  rule is that the anchor does not follow the far end, so ⇧↓⇧↓⇧↑ has to shrink
+  the range it grew. `farIndex` derives that end — the selected row furthest
+  from the anchor — rather than adding a `lead` field that `click`, `band` and
+  every future caller would have to maintain in step. For a range built by
+  extending it is exactly the end last moved; a tie (only a click or a band can
+  produce one) takes the later row, which is stated in the comment rather than
+  left to the loop.
+
+- **With nothing selected, ↓ enters at the top and ↑ at the bottom** — and the
+  same rule holds for a page and for ⇧↓, because "there is nowhere to move from,
+  so enter the list at the near end" is one idea however far the step was. A
+  Shift-arrow that did nothing on an empty selection would make the first
+  keystroke into a list a dead one.
+
+- **The list counts the page, the window does not measure it.** `FileList` gains
+  one prop, `onViewportRows`, reported from the viewport it already measures for
+  the virtual window divided by the row height of the layout it chose. `App`
+  reaching into the DOM would be reading state that lives in the list — and it
+  would have to know that `1h`'s shorter rows put more of them on screen.
+  Verified against `?screen=huge`: a 592px list at 24px rows pages by 24 and
+  `End` scrolls to row 100 000.
+
+- **⌘O is honest about what it cannot do.** A folder is descended into; a file
+  gets Quick Look, with a comment saying that handing a file to the OS is E25's
+  and that inventing a launcher now would be a promise this build cannot keep.
+  Confirmed in the browser: ⌘O on `Solaris.1972.mkv` opens `Preview of
+  Solaris.1972.mkv`, and Escape closes it — Escape's layering is untouched.
+
+- **Go to Folder completes from the folder being typed into, not the one on
+  screen.** `docs/rep` lists `docs` and offers its names; the sheet fetches that
+  parent itself rather than reusing the window's entries, which is what makes
+  completion work at any depth. The rule is a shell's: one candidate completes
+  the component and adds the separator, several extend only as far as they
+  agree. Picking the first of several would make Tab a gamble rather than a
+  shortcut, and the matches are drawn as chips underneath so a completion that
+  stopped short is distinguishable from one that did nothing.
+
+- **`resolve` is the funnel between a typed path and a share-relative one**, and
+  it is the only place that knows the difference: a leading `/` means the share
+  root rather than the machine's, a trailing one is someone still typing, and
+  `..` above the root stays at the root. There is no way to name anything
+  outside the mount, so producing `../etc` for the engine to refuse would be a
+  worse answer than clamping.
+
+- **The sheet asks the engine rather than deciding.** Enter lists the resolved
+  path — the same listing the window would do on arriving — so a missing folder,
+  a file and a permission refusal all answer in the engine's own words. Tab's
+  own failed listing is deliberately silent: an unlistable parent means only
+  that there is nothing to complete, and the message belongs to the moment the
+  user claims the path is real.
+
+- **Two guards, and the window's is the one that matters.** The sheet stops
+  Escape in the capture phase the way Move to… does, and `App` returns early
+  while `goingTo()` is set — otherwise ↑/↓ typed into the path field would walk
+  the selection in the list behind it. Verified: with the sheet open, an
+  ArrowDown dispatched at the window leaves the selection where it was.
+
+- **Solid's HMR left a stale window listener, and it cost twenty minutes.** After
+  the file was edited, `keydown` was still being answered by the *previous*
+  `onKey` closure: ⌘⇧G opened nothing and Home selected the last row, against
+  code on disk that was correct and tests that passed. A hard reload fixed it.
+  Worth knowing before believing a preview that disagrees with a green suite.
+
+**Next steps**
+
+- **The unknown-path error could not be exercised in the preview**, because
+  `fixtureBackend` answers *every* path with a listing — `/nope` navigated to
+  `nope` and drew two invented rows. The inline refusal is covered by
+  `goToFolder.test.tsx` against a `listDir` that throws, and by the real engine;
+  the fixture is what cannot show it.
+- **Shift+Home / Shift+End are unbound.** `extendTo` exists and is tested, so it
+  is a two-row change in the table if the design wants "extend to the end".
+- **Type-to-select and the arrows do not share a focus.** Both move the anchor,
+  which is the only "current row" the model has; a real focus ring on the row —
+  distinct from the selection, as Finder has — is E16-S2 territory and would
+  make ⌘-click-then-arrow behave the way a keyboard user expects.
+- **Arrows do nothing while the filter field has focus.** The existing `typing`
+  guard sends every non-Escape key to the field, so filtering and then arrowing
+  into the results needs a click first. Finder passes the arrows through to the
+  list from its search box; doing the same here means deciding which keys a
+  focused text field does *not* own, which is a shortcut-table question rather
+  than a local fix.
+- **⌘O on a file is Quick Look until E25.** When files can be opened for real,
+  that case in `App` is the one line to change, and the comment says so.
 
 #### E26-S3 — Undo
 **AC**

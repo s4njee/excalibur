@@ -27,12 +27,27 @@ export type ShortcutId =
   | "upload"
   | "edit"
   | "newFolder"
+  | "newWindow"
   | "preferences"
   | "transfers"
   | "layoutColumns"
   | "layoutNameLed"
   | "layoutMono"
-  | "contextMenu";
+  | "contextMenu"
+  // Moving through the list without a pointer (E26-S2). The four arrows are
+  // two verbs each — move, and extend from the anchor — because they differ in
+  // Shift and `match` compares modifiers exactly.
+  | "moveDown"
+  | "moveUp"
+  | "extendDown"
+  | "extendUp"
+  | "first"
+  | "last"
+  | "pageDown"
+  | "pageUp"
+  | "open"
+  | "goToFolder"
+  | "toggleHidden";
 
 export interface Shortcut {
   id: ShortcutId;
@@ -68,6 +83,28 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "delete", label: "Delete", key: "delete", alias: "backspace" },
   { id: "descend", label: "Open", key: "arrowdown", mod: true },
   { id: "ascend", label: "Enclosing folder", key: "arrowup", mod: true },
+  // Moving through the list (E26-S2). A bare arrow moves the selection and
+  // takes the anchor with it; Shift extends the range *from* the anchor, which
+  // stays where it is (E8-S8) — so ⇧↓ then ⇧↑ shrinks the range it just grew
+  // rather than walking down the list. Two rows rather than one with a
+  // modifier flag, because `match` compares modifiers exactly.
+  { id: "moveDown", label: "Next row", key: "arrowdown" },
+  { id: "moveUp", label: "Previous row", key: "arrowup" },
+  { id: "extendDown", label: "Extend down", key: "arrowdown", shift: true },
+  { id: "extendUp", label: "Extend up", key: "arrowup", shift: true },
+  { id: "first", label: "First row", key: "home" },
+  { id: "last", label: "Last row", key: "end" },
+  { id: "pageDown", label: "Down a page", key: "pagedown" },
+  { id: "pageUp", label: "Up a page", key: "pageup" },
+  // The same verb ⌘↓ is, under the name every file manager gives it. A folder
+  // is descended into; a file has no "open" in this window yet, so it gets
+  // Quick Look — see the `open` case in `App`.
+  { id: "open", label: "Open", key: "o", mod: true },
+  { id: "goToFolder", label: "Go to Folder", key: "g", mod: true, shift: true },
+  // Shift changes the reported key, so ⌘⇧. arrives as `>` on a US layout and
+  // as `.` on the layouts where it does not. Both spellings are the same
+  // keystroke; `hint` reports the first, which is what the key is labelled.
+  { id: "toggleHidden", label: "Show hidden files", key: ".", mod: true, shift: true, alias: ">" },
   { id: "back", label: "Back", key: "[", mod: true },
   { id: "forward", label: "Forward", key: "]", mod: true },
   { id: "refresh", label: "Refresh", key: "r", mod: true },
@@ -77,6 +114,10 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "upload", label: "Upload", key: "u", mod: true },
   { id: "edit", label: "Edit", key: "e", mod: true },
   { id: "newFolder", label: "New Folder", key: "n", mod: true, shift: true },
+  // ⌘N, and ⌘⇧N is New Folder. `match` compares modifiers exactly for this
+  // reason: the two differ only in Shift, and "at least these modifiers" would
+  // make ⌘⇧N open a window as well as create a folder (E23-S1).
+  { id: "newWindow", label: "New Window", key: "n", mod: true },
   { id: "preferences", label: "Preferences", key: ",", mod: true },
   { id: "transfers", label: "Transfers", key: "t", mod: true, shift: true },
   // The three row treatments (E8-S3/S4). Bound only now that `1g` and `1h`
@@ -122,6 +163,10 @@ const NAMES: Record<string, string> = {
   delete: "Del",
   arrowdown: "↓",
   arrowup: "↑",
+  home: "Home",
+  end: "End",
+  pagedown: "Page Down",
+  pageup: "Page Up",
 };
 
 /** How a shortcut is written, e.g. `⌘D` or `Ctrl+Shift+T`. */

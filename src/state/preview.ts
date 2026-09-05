@@ -6,6 +6,7 @@
 // video formats end up handled differently by accident.
 
 import type { Caps, Entry } from "./types";
+import { windowLabel } from "./window";
 
 /** How a file is previewed, or why it is not. */
 export type Preview =
@@ -24,10 +25,17 @@ export type Preview =
  * command's return value would mean holding the whole file in memory to show a
  * frame of it. Each path segment is encoded separately so a `/` in a name
  * cannot become a directory separator.
+ *
+ * **The authority is the window's label, not `localhost` (E23-S1).** A protocol
+ * handler is handed a request rather than a caller, so Tauri cannot inject the
+ * window the way it does for a command — the only place the label can travel is
+ * the URL. Without it, a second window's preview would be served from whichever
+ * mount the app most recently activated, which is to say: usually the *other*
+ * window's share.
  */
-export function streamUrl(path: string): string {
+export function streamUrl(path: string, label = windowLabel()): string {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
-  return `excalibur-stream://localhost/${encoded}`;
+  return `excalibur-stream://${encodeURIComponent(label)}/${encoded}`;
 }
 
 /** Bytes of a text file read for the preview before scrolling continues it. */

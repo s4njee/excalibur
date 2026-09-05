@@ -506,6 +506,15 @@ export function FileList(props: {
   onBand: (start: number, end: number, additive: boolean) => void;
   /** Scroll this row into view. Set by type-to-select; cleared by the parent. */
   reveal?: number | null;
+  /**
+   * How many whole rows fit on screen, for Page Up/Down (E26-S2).
+   *
+   * The list reports it rather than the window measuring: the row height is a
+   * property of the layout this component chose, and the viewport is the
+   * element it owns. A parent asking the DOM for both would be reading state
+   * that lives here.
+   */
+  onViewportRows?: (rows: number) => void;
   widths: Widths;
   onResize: (divider: Divider, delta: number) => void;
   /** Called when a drag finishes, so the result is persisted once. */
@@ -560,6 +569,14 @@ export function FileList(props: {
     const observer = new ResizeObserver(measure);
     observer.observe(rows);
     onCleanup(() => observer.disconnect());
+  });
+
+  // A page is what is on screen, so it follows both the window's height and the
+  // row treatment — `1h`'s shorter rows put more of them in the same viewport.
+  // At least one, so a list measured before layout still moves when the key is
+  // pressed rather than sitting still.
+  createEffect(() => {
+    props.onViewportRows?.(Math.max(1, Math.floor(viewport() / rowHeight())));
   });
 
   // A listing shorter than the last one can leave the container scrolled past

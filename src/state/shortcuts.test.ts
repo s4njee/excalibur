@@ -30,6 +30,37 @@ describe("shortcuts", () => {
     expect(match(press("t", { mod: true, shift: true }))).toBe("transfers");
   });
 
+  it("separates a bare arrow from a modified one", () => {
+    // Four keys, four verbs (E26-S2). ⌘↓ was already Open, so a bare ↓ that
+    // fell through to it would descend instead of moving one row.
+    expect(match(press("ArrowDown"))).toBe("moveDown");
+    expect(match(press("ArrowUp"))).toBe("moveUp");
+    expect(match(press("ArrowDown", { shift: true }))).toBe("extendDown");
+    expect(match(press("ArrowUp", { shift: true }))).toBe("extendUp");
+    expect(match(press("ArrowDown", { mod: true }))).toBe("descend");
+    expect(match(press("ArrowUp", { mod: true }))).toBe("ascend");
+  });
+
+  it("maps the rest of E26-S2's keys", () => {
+    expect(match(press("Home"))).toBe("first");
+    expect(match(press("End"))).toBe("last");
+    expect(match(press("PageDown"))).toBe("pageDown");
+    expect(match(press("PageUp"))).toBe("pageUp");
+    expect(match(press("o", { mod: true }))).toBe("open");
+    expect(match(press("g", { mod: true, shift: true }))).toBe("goToFolder");
+    expect(match(press("G", { mod: true, shift: true }))).toBe("goToFolder");
+  });
+
+  it("takes ⌘⇧. however the layout spells it", () => {
+    // Shift changes the reported key, so a US layout sends `>` where the
+    // keycap says `.`. Both are the same keystroke, and binding only one of
+    // them would make the shortcut work on some keyboards and not others.
+    expect(match(press(".", { mod: true, shift: true }))).toBe("toggleHidden");
+    expect(match(press(">", { mod: true, shift: true }))).toBe("toggleHidden");
+    // The hint names the keycap, not the character the layout produced.
+    expect(hint("toggleHidden", true)).toBe("⌘⇧.");
+  });
+
   it("accepts either case, because Shift changes the reported key", () => {
     // With Shift held the browser reports "N", not "n". Matching the literal
     // would make ⌘⇧N unreachable on every platform.
@@ -38,8 +69,10 @@ describe("shortcuts", () => {
   });
 
   it("matches the modifiers exactly rather than at least", () => {
-    // ⌘N is not New Folder, and must not fall through to it.
-    expect(match(press("n", { mod: true }))).toBeNull();
+    // ⌘N is New Window and ⌘⇧N is New Folder: the pair differs only in Shift,
+    // so "at least these modifiers" would make one keystroke mean both.
+    expect(match(press("n", { mod: true }))).toBe("newWindow");
+    expect(match(press("N", { mod: true, shift: true }))).toBe("newFolder");
     // Nor does a bare letter mean anything — that is type-to-select.
     expect(match(press("d"))).toBeNull();
     // Nor does Shift alone turn a plain key into a verb.

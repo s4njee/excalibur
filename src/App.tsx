@@ -48,7 +48,17 @@ import {
   type Context as PermissionContext,
 } from "./state/permissions";
 import { engineFailure } from "./state/errors";
-import { EMPTY_SELECTION, band, click as clickSelect, typeAhead } from "./state/selection";
+import {
+  EMPTY_SELECTION,
+  band,
+  click as clickSelect,
+  extendBy,
+  moveTo,
+  step,
+  typeAhead,
+  type Move,
+} from "./state/selection";
+import { GoToFolder } from "./components/GoToFolder";
 import { ContextMenu } from "./components/ContextMenu";
 import { Properties } from "./components/Properties";
 import { MoveTo } from "./components/MoveTo";
@@ -59,6 +69,7 @@ import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/colum
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
 import * as shortcuts from "./state/shortcuts";
 import { coalesce } from "./state/refresh";
+import { windowParams, type WindowParams } from "./state/window";
 import { Preferences } from "./components/Preferences";
 import {
   DEFAULTS as DEFAULT_SETTINGS,
@@ -74,6 +85,13 @@ export default function App(props: {
   readOnly?: boolean;
   bookmarks?: BookmarkStore;
   prefs?: Prefs;
+  /**
+   * Which window this is and what it opened on (E23-S1).
+   *
+   * Read from this window's own URL when absent, which is how the real app
+   * supplies it — a test says it out loud instead of writing to `location`.
+   */
+  window?: WindowParams;
 }) {
   // `readOnly` exists so the design's second screen can be rendered from the
   // same component tree rather than a separate mock.
@@ -84,10 +102,19 @@ export default function App(props: {
   // disabling the buttons is not that — a shortcut or a later caller can still
   // reach the method.
   const backend = writeGuarded(raw, () => listing()?.mount.writable ?? false);
+  // Which window this is, and what it was opened on (E23-S1). Everything below
+  // is per-window already — a window is its own webview running its own `App`
+  // — so this only says which window the engine should answer for, and where
+  // ⌘N asked this one to start.
+  const self = props.window ?? windowParams();
   // Where the window is looking. The listing follows this rather than the
   // other way round, so every way of navigating — a double-click, the
   // breadcrumb, Back, the keyboard — goes through one place.
-  const [history, setHistory] = createSignal<nav.History>(nav.initial());
+  //
+  // A window opened by ⌘N starts in the folder the window that opened it was
+  // showing, with no history behind it: Back in a new window has nowhere to go,
+  // and inheriting somebody else's trail would give it somewhere wrong.
+  const [history, setHistory] = createSignal<nav.History>(nav.initial(self.path));
   const path = () => nav.current(history());
   const listingState = createListing((target) => backend.listDir(target));
   const listing = listingState.listing;
@@ -227,6 +254,16 @@ export default function App(props: {
   const [selection, setSelection] = createSignal(clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"));
   // The row type-to-select jumped to, so the list can scroll it into view.
   const [reveal, setReveal] = createSignal<number | null>(null);
+  /**
+   * How many rows Page Up/Down moves (E26-S2).
+   *
+   * Reported by the list, because a page is its viewport measured in its row
+   * height — both of which belong to the component that drew them. Reaching
+   * into the DOM from here would be reading its state behind its back.
+   */
+  const [pageRows, setPageRows] = createSignal(1);
+  /** The Go to Folder sheet's path, or `null` when it is closed. */
+  const [goingTo, setGoingTo] = createSignal<string | null>(null);
   const selected = () => selection().paths as Set<string>;
   const [connecting, setConnecting] = createSignal<Draft | true | null>(null);
   const store = props.bookmarks ?? defaultBookmarkStore();
@@ -246,7 +283,18 @@ export default function App(props: {
     // relaunching with a saved xsync bookmark: the sidebar showed it under
     // MOUNTED and the window titled itself after it, over no listing at all.
     // Double-clicking the row under BOOKMARKS is what mounts it.
-    const saved = withMounted(await store.load(), new Set<string>());
+    //
+    // The one exception is a window opened by ⌘N (E23-S1): the shell put that
+    // window on a mount *before* the webview loaded, and told it which in the
+    // URL. That is a fact about this run, from the process that holds the
+    // session — which is exactly what the flag on disk is not.
+    const saved = withMounted(
+      await store.load(),
+      new Set<string>(self.mount === null ? [] : [self.mount]),
+    );
+    // Set rather than persisted: which share a window is looking at is the
+    // window's, and writing it to the shared store would have two windows
+    // overwriting each other's answer to a question the store cannot hold.
     setBookmarks(saved);
     // Probe once on start. Every 60s while idle is E3-S2's other half and wants
     // a visible-window check first, so it does not wake a sleeping laptop.
@@ -336,6 +384,10 @@ export default function App(props: {
       // otherwise reach the list *through* the menu — Delete deleting the
       // selection behind an open menu that also offers Delete (E14-S2).
       if (contextMenu()) return;
+      // A sheet owns the keyboard the same way (E26-S2). Go to Folder has its
+      // own Tab, Enter and Escape, and the arrows must not walk the selection
+      // in the list behind it while the user is typing a path.
+      if (goingTo() !== null) return;
       // Anything typed into the filter box or a dialog field belongs to that
       // field, not to the list.
       const target = event.target as HTMLElement | null;
@@ -421,6 +473,81 @@ export default function App(props: {
           if (nav.canAscend(path())) ascend();
           return;
 
+        // Moving through the list without a pointer (E26-S2). Eight keys in
+        // one block, because they differ only in how far they go and whether
+        // the anchor comes along; the rules are `selection.ts`'s and are
+        // tested there.
+        case "moveDown":
+        case "moveUp":
+        case "extendDown":
+        case "extendUp":
+        case "pageDown":
+        case "pageUp":
+        case "first":
+        case "last": {
+          if (renaming() !== null) return;
+          // The arrows and Page keys scroll a container by default. A key that
+          // both scrolls and moves the selection moves the eye twice as far as
+          // it looks, so the browser's scroll is refused and `reveal` does it.
+          event.preventDefault();
+          const rows = order();
+          const moved: Move = (() => {
+            switch (verb) {
+              case "first":
+                return moveTo(selection(), rows, 0);
+              case "last":
+                return moveTo(selection(), rows, rows.length - 1);
+              // Shift extends and leaves the anchor where it is (E8-S8), so
+              // ⇧↓⇧↑ shrinks the range it just grew rather than walking down.
+              case "extendDown":
+                return extendBy(selection(), rows, 1);
+              case "extendUp":
+                return extendBy(selection(), rows, -1);
+              case "moveDown":
+                return step(selection(), rows, 1);
+              case "moveUp":
+                return step(selection(), rows, -1);
+              case "pageDown":
+                return step(selection(), rows, pageRows());
+              default:
+                return step(selection(), rows, -pageRows());
+            }
+          })();
+          if (moved.reveal === null) return;
+          setSelection(moved.selection);
+          setReveal(moved.reveal);
+          return;
+        }
+
+        case "open": {
+          if (renaming() !== null) return;
+          event.preventDefault();
+          const chosen = selectedVisible();
+          if (chosen.length !== 1 || !chosen[0]) return;
+          if (chosen[0].kind === "dir") {
+            goTo(chosen[0].path);
+            return;
+          }
+          // A file has no "open" in this window yet: handing it to the OS is
+          // E25's, and inventing a launcher now would be a promise this build
+          // cannot keep. Quick Look is the honest thing it can do with a file
+          // today, and it is what ⌘O does until then.
+          setQuickLook(true);
+          return;
+        }
+
+        case "goToFolder":
+          event.preventDefault();
+          // Seeded with where the window is, so the sheet is a place to edit a
+          // path rather than an empty box to retype one into.
+          setGoingTo(path());
+          return;
+
+        case "toggleHidden":
+          event.preventDefault();
+          changeSetting("showHidden", !showHidden());
+          return;
+
         case "back":
           event.preventDefault();
           if (nav.canBack(history())) setHistory(nav.back);
@@ -463,6 +590,16 @@ export default function App(props: {
         case "newFolder":
           event.preventDefault();
           void newFolder();
+          return;
+
+        case "newWindow":
+          // Prevented before anything else: on a Mac ⌘N is the webview's own
+          // "new window" too, and letting it through opens a second, chromeless
+          // one beside ours.
+          event.preventDefault();
+          void backend
+            .newWindow(path())
+            .catch((error) => setProblem(engineFailure(error).message));
           return;
 
         case "preferences":
@@ -606,6 +743,24 @@ export default function App(props: {
   /** The mount the window is looking at, when there is a real one. */
   const activeMountId = () => bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
   const activeBookmark = () => bookmarks().find((bookmark) => bookmark.mounted) ?? null;
+
+  /**
+   * Another window changed something on this window's share (E23-S1).
+   *
+   * Through the same coalescer a local mutation uses, so a window watching
+   * twenty deletions in another window relists once rather than twenty times —
+   * and so the two windows converge without either of them polling. The shell
+   * only sends this to windows on the mount, and the id is checked anyway:
+   * an event that arrives a moment after this window switched shares would
+   * otherwise relist the new one for a change to the old.
+   */
+  onMount(() => {
+    const stop = backend.onListingChanged((mount) => {
+      if (mount !== activeMountId()) return;
+      refresh.request();
+    });
+    onCleanup(stop);
+  });
 
   onMount(() => {
     const stop = backend.onMountChanged((event) => {
@@ -1493,6 +1648,9 @@ export default function App(props: {
               onSelect={select}
               onBand={selectBand}
               reveal={reveal()}
+              // A page is the list's viewport in the list's row height, so the
+              // list is what counts it (E26-S2).
+              onViewportRows={setPageRows}
               onOpen={open}
               onContextMenu={openContextMenu}
               // Undefined at the share root, which is what withholds the `..`
@@ -1579,6 +1737,18 @@ export default function App(props: {
             </button>
           </div>
         )}
+      </Show>
+      <Show when={goingTo() !== null}>
+        <GoToFolder
+          initial={goingTo() ?? ""}
+          shareName={share() ?? ""}
+          listDir={(target) => backend.listDir(target)}
+          onGo={(target) => {
+            setGoingTo(null);
+            goTo(target);
+          }}
+          onCancel={() => setGoingTo(null)}
+        />
       </Show>
       <Show when={showPreferences()}>
         <Preferences

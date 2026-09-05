@@ -59,7 +59,17 @@ describe("streamUrl", () => {
   it("encodes each segment separately", () => {
     // A `/` inside a name must not become a directory separator, and a space
     // or `#` must survive the trip.
-    expect(streamUrl("a b/c#d.mkv")).toBe("excalibur-stream://localhost/a%20b/c%23d.mkv");
+    expect(streamUrl("a b/c#d.mkv")).toBe("excalibur-stream://main/a%20b/c%23d.mkv");
+  });
+
+  it("names the window it is read from", () => {
+    // The authority is the window's label (E23-S1). A protocol handler is
+    // handed a request and not a caller, so this is the only place the label
+    // can travel — without it a second window's preview would be served from
+    // the first window's share.
+    expect(streamUrl("Arrival.mkv", "browser-2")).toBe(
+      "excalibur-stream://browser-2/Arrival.mkv",
+    );
   });
 });
 

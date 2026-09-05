@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the browser window may ask the Rust side to do. Deliberately narrow: every filesystem and network operation goes through this app's own commands, not through a plugin the webview can call directly. The one exception is the dialog plugin's open picker, which is how Upload learns a path — the webview's own file input yields File objects, and it is granted open only, never save or ask.",
-  "windows": ["main"],
+  "description": "What a browser window may ask the Rust side to do. Deliberately narrow: every filesystem and network operation goes through this app's own commands, not through a plugin the webview can call directly. The one exception is the dialog plugin's open picker, which is how Upload learns a path — the webview's own file input yields File objects, and it is granted open only, never save and never ask. The quit confirmation (E23-S1) is a system modal raised from Rust through the plugin's own API, which needs no permission here; granting `dialog:allow-ask` would hand every page in the webview the ability to put a modal on screen, to save nothing. `windows` names the config's `main` plus the label pattern `new_window` builds — a second window needs the same commands as the first, and widening this to every window would grant them to any window this app ever grows, including ones with a different job.",
+  "windows": ["main", "browser-*"],
   "permissions": [
     "core:default",
     "store:default",

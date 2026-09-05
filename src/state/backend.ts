@@ -36,6 +36,27 @@ export interface Backend {
    * timer asking every mounted server how it is, forever.
    */
   onMountChanged(handler: (event: MountEvent) => void): () => void;
+  /**
+   * Fires when this app changes something in a folder on *this window's*
+   * mount, whichever window did it. Returns an unsubscribe.
+   *
+   * The other half of two windows on one share staying in step (E23-S1): a
+   * rename in one window is a stale row in the other, and nothing is polling.
+   * The payload is the mount id, which is a check rather than a routing
+   * decision — the shell has already addressed the event to the windows on
+   * that mount.
+   */
+  onListingChanged(handler: (mount: string) => void): () => void;
+  /**
+   * Open a second browser window on this window's mount, at `path` (⌘N).
+   *
+   * The label of the new window comes back, which is only of use to a test:
+   * the window that asked has nothing further to do with it. It is a command
+   * rather than `WebviewWindow` from here because the label, the size, the
+   * macOS chrome and the capability that grants the new window its commands
+   * all belong in one place.
+   */
+  newWindow(path: string): Promise<string>;
   /** Whether this machine has a credential store that actually keeps things. */
   keychainAvailable(): Promise<boolean>;
   /**
@@ -330,6 +351,15 @@ export function fixtureBackend(
     async remove(): Promise<void> {
       throw new Error("not connected to the engine — run the desktop app");
     },
+    // Nothing mutates in the preview, so nothing can have changed under it.
+    onListingChanged(): () => void {
+      return () => undefined;
+    },
+    // A browser preview is one window. ⌘N belongs to the browser there — it
+    // opens a browser window, which this cannot and should not intercept.
+    async newWindow(): Promise<string> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
     // Nothing changes state in a browser unless the preview asked for it.
     onMountChanged(handler: (event: MountEvent) => void): () => void {
       if (!options.dropped) return () => undefined;
@@ -426,6 +456,26 @@ function tauriBackend(): Backend {
         cancelled = true;
         stop?.();
       };
+    },
+    onListingChanged(handler: (mount: string) => void): () => void {
+      let stop: (() => void) | null = null;
+      let cancelled = false;
+      void import("@tauri-apps/api/event").then(({ listen }) =>
+        listen<string>("listing://changed", (message) => handler(message.payload)).then(
+          (unlisten) => {
+            if (cancelled) unlisten();
+            else stop = unlisten;
+          },
+        ),
+      );
+      return () => {
+        cancelled = true;
+        stop?.();
+      };
+    },
+    async newWindow(path: string): Promise<string> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string>("new_window", { path });
     },
     async keychainAvailable(): Promise<boolean> {
       const { invoke } = await import("@tauri-apps/api/core");

@@ -176,10 +176,10 @@ async fn a_mount_becomes_ready_and_publishes_its_facts() {
     let sessions = manager(&connector);
     let mut events = sessions.events();
 
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
 
     assert_eq!(sessions.status("media").await, Some(MountStatus::Ready));
-    assert_eq!(sessions.active().await.as_deref(), Some("media"));
+    assert_eq!(sessions.active("main").await.as_deref(), Some("media"));
     assert!(sessions.mount_info("media").await.expect("facts").writable);
 
     // Mounting is two events, not one: a UI shows the row as connecting before
@@ -199,7 +199,10 @@ async fn a_refused_connection_keeps_the_row_and_says_why() {
     connector.refuse.store(true, Ordering::SeqCst);
     let sessions = manager(&connector);
 
-    let error = sessions.mount(spec("media")).await.expect_err("must fail");
+    let error = sessions
+        .mount("main", spec("media"))
+        .await
+        .expect_err("must fail");
     assert!(error.to_string().contains("unreachable"));
     // The row survives, so the UI can show the failure and offer a retry
     // rather than the bookmark vanishing.
@@ -213,12 +216,18 @@ async fn switching_the_active_mount_does_not_disconnect_the_others() {
     let connector = Arc::new(ScriptedConnector::default());
     let sessions = manager(&connector);
 
-    sessions.mount(spec("media")).await.expect("first");
-    sessions.mount(spec("backups")).await.expect("second");
-    assert_eq!(sessions.active().await.as_deref(), Some("backups"));
+    sessions.mount("main", spec("media")).await.expect("first");
+    sessions
+        .mount("main", spec("backups"))
+        .await
+        .expect("second");
+    assert_eq!(sessions.active("main").await.as_deref(), Some("backups"));
 
-    sessions.set_active("media").await.expect("switch back");
-    assert_eq!(sessions.active().await.as_deref(), Some("media"));
+    sessions
+        .set_active("main", "media")
+        .await
+        .expect("switch back");
+    assert_eq!(sessions.active("main").await.as_deref(), Some("media"));
 
     // Both are still connected: a user switching back should not pay for a
     // reconnect, and two connections were made, not three.
@@ -226,23 +235,26 @@ async fn switching_the_active_mount_does_not_disconnect_the_others() {
     assert!(sessions.backend("backups").await.is_some());
     assert_eq!(connector.attempts(), 2);
 
-    assert!(sessions.set_active("nope").await.is_err());
+    assert!(sessions.set_active("main", "nope").await.is_err());
 }
 
 #[tokio::test]
 async fn unmounting_drops_only_that_mount() {
     let connector = Arc::new(ScriptedConnector::default());
     let sessions = manager(&connector);
-    sessions.mount(spec("media")).await.expect("first");
-    sessions.mount(spec("backups")).await.expect("second");
+    sessions.mount("main", spec("media")).await.expect("first");
+    sessions
+        .mount("main", spec("backups"))
+        .await
+        .expect("second");
 
     sessions.unmount("backups").await;
     assert_eq!(sessions.len().await, 1);
     assert!(sessions.backend("media").await.is_some());
     // It was the active one, so nothing is active now rather than something
     // arbitrary being promoted.
-    assert_eq!(sessions.active().await, None);
-    assert!(sessions.active_backend().await.is_err());
+    assert_eq!(sessions.active("main").await, None);
+    assert!(sessions.active_backend("main").await.is_err());
 }
 
 #[tokio::test]
@@ -250,7 +262,7 @@ async fn a_mount_that_stops_answering_reconnects_and_republishes_its_facts() {
     let connector = Arc::new(ScriptedConnector::default());
     let sessions = manager(&connector);
     let mut events = sessions.events();
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
     assert!(sessions.mount_info("media").await.expect("facts").writable);
 
     // The share goes away, and comes back read-only — an export flipped while
@@ -303,7 +315,7 @@ async fn a_mount_that_stops_answering_reconnects_and_republishes_its_facts() {
 async fn a_share_that_stays_down_keeps_retrying_without_hammering() {
     let connector = Arc::new(ScriptedConnector::default());
     let sessions = manager(&connector);
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
 
     // Down, and staying down.
     connector.knock_over();
@@ -324,7 +336,7 @@ async fn a_share_that_stays_down_keeps_retrying_without_hammering() {
     );
     // Nothing can be done with a mount that is down, and asking says so rather
     // than handing back a stale backend.
-    assert!(sessions.active_backend().await.is_err());
+    assert!(sessions.active_backend("main").await.is_err());
 }
 
 #[tokio::test]
@@ -342,7 +354,7 @@ async fn testing_a_connection_reports_the_facts_without_mounting() {
 
     // Testing is not mounting: nothing is held afterwards.
     assert!(sessions.is_empty().await);
-    assert_eq!(sessions.active().await, None);
+    assert_eq!(sessions.active("main").await, None);
 
     connector.refuse.store(true, Ordering::SeqCst);
     let error = sessions.test(&spec("media")).await.expect_err("must fail");
@@ -355,7 +367,7 @@ async fn dropping_the_manager_stops_its_health_tasks() {
     let connector = Arc::new(ScriptedConnector::default());
     {
         let sessions = manager(&connector);
-        sessions.mount(spec("media")).await.expect("mount");
+        sessions.mount("main", spec("media")).await.expect("mount");
         connector.knock_over();
         connector.refuse.store(true, Ordering::SeqCst);
     }
@@ -411,7 +423,7 @@ async fn remounting_read_write_upgrades_a_read_only_share() {
     let connector = Arc::new(ScriptedConnector::default());
     connector.read_only.store(true, Ordering::SeqCst);
     let sessions = SessionManager::new(Arc::clone(&connector) as Arc<dyn Connector>);
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
     assert!(!sessions.mount_info("media").await.expect("info").writable);
 
     // The export is remounted read-write by the server this time.
@@ -434,7 +446,7 @@ async fn a_refused_upgrade_reports_the_reason_rather_than_failing() {
     let connector = Arc::new(ScriptedConnector::default());
     connector.read_only.store(true, Ordering::SeqCst);
     let sessions = SessionManager::new(Arc::clone(&connector) as Arc<dyn Connector>);
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
     let before = connector.attempts();
 
     let info = sessions
@@ -464,7 +476,7 @@ async fn a_remounted_share_keeps_asking_for_read_write_when_it_reconnects() {
 
     let mut ro = spec("media");
     ro.mount_preference = Access::Ro;
-    sessions.mount(ro).await.expect("mount");
+    sessions.mount("main", ro).await.expect("mount");
     assert_eq!(connector.last_preference().await, Some(Access::Ro));
 
     connector.read_only.store(false, Ordering::SeqCst);
@@ -500,7 +512,7 @@ async fn a_rejected_credential_stops_the_reconnect_loop() {
     };
     let sessions =
         SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
 
     let mut events = sessions.events();
     connector.reject_credentials.store(true, Ordering::SeqCst);
@@ -550,7 +562,7 @@ async fn a_dropped_connection_still_retries() {
     };
     let sessions =
         SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
-    sessions.mount(spec("media")).await.expect("mount");
+    sessions.mount("main", spec("media")).await.expect("mount");
 
     connector.refuse.store(true, Ordering::SeqCst);
     connector.knock_over();
@@ -562,4 +574,211 @@ async fn a_dropped_connection_still_retries() {
         connector.attempts() > early,
         "gave up on a host that was merely down"
     );
+}
+
+// ---------------------------------------------------------------------------
+// More than one window (E23-S1).
+//
+// The window label is opaque to the engine — it is whatever the shell calls a
+// window — so these read as two names asking the same manager different
+// questions, which is exactly what two Tauri windows are.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn two_windows_on_one_mount_share_one_session() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+
+    sessions.mount("main", spec("media")).await.expect("mount");
+    // ⌘N: the new window joins the mount the old one has, rather than
+    // connecting to it again. Two logins for one share would be visible to the
+    // server, would ask the keychain twice, and would double the cost of the
+    // most ordinary thing this feature is for.
+    sessions
+        .set_active("browser-2", "media")
+        .await
+        .expect("join");
+
+    assert_eq!(connector.attempts(), 1, "the share was connected twice");
+    assert_eq!(sessions.len().await, 1);
+    assert!(sessions.active_backend("main").await.is_ok());
+    assert!(sessions.active_backend("browser-2").await.is_ok());
+    // Sorted, so the answer is the same twice and a test can assert on it.
+    assert_eq!(sessions.windows_on("media").await, ["browser-2", "main"]);
+}
+
+#[tokio::test]
+async fn closing_a_window_does_not_disconnect_a_share_another_is_showing() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    sessions.mount("main", spec("media")).await.expect("mount");
+    sessions
+        .set_active("browser-2", "media")
+        .await
+        .expect("join");
+
+    assert_eq!(sessions.close_window("browser-2").await, None);
+
+    // The window is gone and the share is not.
+    assert_eq!(sessions.windows_on("media").await, ["main"]);
+    assert!(sessions.active_backend("main").await.is_ok());
+    assert_eq!(sessions.len().await, 1);
+}
+
+#[tokio::test]
+async fn a_mount_goes_when_the_last_window_leaves_it() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    sessions.mount("main", spec("media")).await.expect("mount");
+    sessions
+        .set_active("browser-2", "media")
+        .await
+        .expect("join");
+
+    assert_eq!(sessions.close_window("browser-2").await, None);
+    assert_eq!(
+        sessions.close_window("main").await.as_deref(),
+        Some("media")
+    );
+
+    assert!(
+        sessions.is_empty().await,
+        "the connection outlived its last window"
+    );
+    assert!(sessions.windows_on("media").await.is_empty());
+    // And closing a window nobody opened is not an error, because the shell
+    // will report a window it never told the engine about — the Quick Look
+    // panel, a devtools window — and that must not take a share down.
+    assert_eq!(sessions.close_window("browser-2").await, None);
+}
+
+#[tokio::test]
+async fn each_window_looks_at_its_own_mount() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+
+    sessions.mount("main", spec("media")).await.expect("first");
+    sessions
+        .mount("browser-2", spec("backups"))
+        .await
+        .expect("second");
+
+    // The bug this replaces: one `active` meant the second window's mount
+    // became the first window's too, and both listed the same share.
+    assert_eq!(sessions.active("main").await.as_deref(), Some("media"));
+    assert_eq!(
+        sessions.active("browser-2").await.as_deref(),
+        Some("backups")
+    );
+    assert_eq!(sessions.windows_on("media").await, ["main"]);
+    assert_eq!(sessions.windows_on("backups").await, ["browser-2"]);
+
+    // Closing the second takes its own share and leaves the first alone.
+    assert_eq!(
+        sessions.close_window("browser-2").await.as_deref(),
+        Some("backups")
+    );
+    assert!(sessions.active_backend("main").await.is_ok());
+    assert!(sessions.active_backend("browser-2").await.is_err());
+}
+
+#[tokio::test]
+async fn a_window_switching_mounts_keeps_the_one_it_left_connected() {
+    // "Closed when the last window leaves it" is about windows closing, not
+    // about a window changing share: switching back should cost nothing, which
+    // is the same reason the manager has always kept both.
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    sessions.mount("main", spec("media")).await.expect("first");
+    sessions
+        .mount("main", spec("backups"))
+        .await
+        .expect("second");
+
+    assert_eq!(sessions.len().await, 2);
+    assert!(sessions.backend("media").await.is_some());
+    assert!(sessions.windows_on("media").await.is_empty());
+
+    // And closing that window takes only the share it was on.
+    assert_eq!(
+        sessions.close_window("main").await.as_deref(),
+        Some("backups")
+    );
+    assert!(sessions.backend("media").await.is_some());
+}
+
+#[tokio::test]
+async fn an_event_names_the_windows_that_should_hear_it() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    let mut events = sessions.events();
+
+    sessions.mount("main", spec("media")).await.expect("mount");
+    // The window that asked hears about its own connection attempt, before it
+    // is on the mount at all.
+    assert_eq!(events.recv().await.expect("mounting").audience, ["main"]);
+    assert_eq!(events.recv().await.expect("ready").audience, ["main"]);
+
+    sessions
+        .set_active("browser-2", "media")
+        .await
+        .expect("join");
+    // A second window mounting the same share: both windows are on it, so both
+    // are told when it comes back.
+    sessions
+        .mount("main", spec("media"))
+        .await
+        .expect("remount");
+    let mounting = events.recv().await.expect("mounting");
+    assert_eq!(mounting.audience, ["browser-2", "main"]);
+    let ready = events.recv().await.expect("ready");
+    assert_eq!(ready.audience, ["browser-2", "main"]);
+}
+
+#[tokio::test]
+async fn a_failed_mount_is_reported_only_to_the_window_that_tried() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    sessions.mount("main", spec("media")).await.expect("mount");
+
+    let mut events = sessions.events();
+    connector.refuse.store(true, Ordering::SeqCst);
+    sessions
+        .mount("browser-2", spec("backups"))
+        .await
+        .expect_err("must fail");
+
+    let failure = loop {
+        let event = events.recv().await.expect("events");
+        if event.status == MountStatus::Error {
+            break event;
+        }
+    };
+    assert_eq!(failure.audience, ["browser-2"]);
+    // And the window that tried keeps whatever it had, which here is nothing:
+    // a connection that never came up must not take a share off a screen.
+    assert_eq!(sessions.active("browser-2").await, None);
+    assert_eq!(sessions.active("main").await.as_deref(), Some("media"));
+}
+
+#[tokio::test]
+async fn the_app_wide_mount_is_the_one_a_window_last_made_active() {
+    // The transfer worker and the stream handler have no window to ask. They
+    // get the mount some window most recently chose, which is exactly what
+    // "the active mount" meant when there was only ever one window.
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+    assert!(sessions.recent_backend().await.is_err());
+
+    sessions.mount("main", spec("media")).await.expect("first");
+    assert_eq!(sessions.recent().await.as_deref(), Some("media"));
+    sessions
+        .mount("browser-2", spec("backups"))
+        .await
+        .expect("second");
+    assert_eq!(sessions.recent().await.as_deref(), Some("backups"));
+
+    sessions.unmount("backups").await;
+    assert_eq!(sessions.recent().await, None);
+    assert!(sessions.recent_backend().await.is_err());
 }

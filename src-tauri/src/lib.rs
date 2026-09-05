@@ -215,14 +215,21 @@ fn parse_identity(field: Option<&str>) -> Identity {
 /// the worker should not know how a mount is chosen, only that there is one,
 /// which is what lets a transfer survive a reconnect that swapped the backend
 /// underneath it.
-struct ActiveMount {
+///
+/// It asks for the *app's* mount rather than a window's (E23-S1). The queue is
+/// app-wide and a transfer outlives the window that queued it — closing that
+/// window must not strand the bytes — so there is no window here to ask. The
+/// honest fix is a transfer that names its own endpoint, which is E22-S0's
+/// work; until then this is what "the active mount" always meant, and with one
+/// window it is exactly what it meant before.
+struct AppMount {
     sessions: Arc<SessionManager>,
 }
 
 #[async_trait]
-impl BackendSource for ActiveMount {
+impl BackendSource for AppMount {
     async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
-        self.sessions.active_backend().await
+        self.sessions.recent_backend().await
     }
 }
 
@@ -244,7 +251,14 @@ struct AppState {
 }
 
 impl AppState {
-    /// The backend a command should use: the active mount, or nothing.
+    /// The backend a command should use: the **calling window's** mount, or
+    /// nothing.
+    ///
+    /// The window is not a detail of the call, it is the subject of it
+    /// (E23-S1): with two browser windows open there is no such thing as "the
+    /// active mount", and a command that guessed would list one window's share
+    /// into the other's list. Tauri injects the caller's `Window`, so no
+    /// command has to be trusted to pass the right label.
     ///
     /// There is deliberately no fallback (E1-S6). A mock share stood here so
     /// the window had something to draw on first run, and what it drew was a
@@ -252,10 +266,35 @@ impl AppState {
     /// queued a row for a file nobody has. "Nothing is mounted" is a fact the
     /// window can render as an empty state; a fake listing is not something it
     /// can tell apart from a real one.
-    async fn backend(&self) -> Result<Arc<dyn ShareBackend>> {
-        self.sessions.active_backend().await
+    async fn backend(&self, window: &tauri::Window) -> Result<Arc<dyn ShareBackend>> {
+        self.sessions.active_backend(window.label()).await
     }
 }
+
+/// Tell every window on this window's mount that its listing changed.
+///
+/// The other half of "two windows on one share stay in step": a rename in one
+/// window is a stale row in the other, and neither of them is polling. The
+/// windows feed this into the 250 ms coalescer they already had, so twenty
+/// deletions are one relist rather than twenty (E8-S9).
+///
+/// The window that did the mutation is included rather than excluded. It
+/// refreshes locally too, and the coalescer collapses the pair — leaving it out
+/// would buy nothing and would make the event mean something subtly different
+/// from "this listing changed".
+async fn announce_listing(sessions: &SessionManager, window: &tauri::Window) {
+    let Some(id) = sessions.active(window.label()).await else {
+        return;
+    };
+    for label in sessions.windows_on(&id).await {
+        let _ = window
+            .app_handle()
+            .emit_to(label.as_str(), LISTING_CHANGED, &id);
+    }
+}
+
+/// Fired at every window on a mount whose contents this app just changed.
+const LISTING_CHANGED: &str = "listing://changed";
 
 /// Errors as the frontend sees them: a message and where it belongs on screen.
 ///
@@ -333,11 +372,12 @@ impl From<excalibur_engine::EngineError> for CommandError {
 /// One directory, with the mount facts that must not drift from it.
 #[tauri::command]
 async fn list_dir(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> std::result::Result<Listing, CommandError> {
     state
-        .backend()
+        .backend(&window)
         .await?
         .list_dir(&path)
         .await
@@ -348,9 +388,10 @@ async fn list_dir(
 /// listing.
 #[tauri::command]
 async fn mount_info(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
 ) -> std::result::Result<MountInfo, CommandError> {
-    Ok(state.backend().await?.mount_info())
+    Ok(state.backend(&window).await?.mount_info())
 }
 
 /// Try a connection and report what it found, without keeping it.
@@ -504,46 +545,48 @@ async fn forget_host_key(
 /// Create one directory. Not `mkdir -p`: the parent must exist.
 #[tauri::command]
 async fn mkdir(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> std::result::Result<(), CommandError> {
-    state
-        .backend()
-        .await?
-        .mkdir(&path)
-        .await
-        .map_err(Into::into)
+    state.backend(&window).await?.mkdir(&path).await?;
+    announce_listing(&state.sessions, &window).await;
+    Ok(())
 }
 
 /// Rename, refusing to clobber unless `replace` says otherwise.
 #[tauri::command]
 async fn rename(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     from: String,
     to: String,
     replace: bool,
 ) -> std::result::Result<(), CommandError> {
     state
-        .backend()
+        .backend(&window)
         .await?
         .rename(&from, &to, replace)
-        .await
-        .map_err(Into::into)
+        .await?;
+    announce_listing(&state.sessions, &window).await;
+    Ok(())
 }
 
 /// Remove a file, or a directory and everything under it.
 #[tauri::command]
 async fn remove(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     path: String,
     recursive: bool,
 ) -> std::result::Result<(), CommandError> {
     state
-        .backend()
+        .backend(&window)
         .await?
         .remove(&path, recursive)
-        .await
-        .map_err(Into::into)
+        .await?;
+    announce_listing(&state.sessions, &window).await;
+    Ok(())
 }
 
 /// Everything in the queue, oldest first.
@@ -566,11 +609,12 @@ async fn transfers(state: tauri::State<'_, AppState>) -> std::result::Result<Vec
 /// [`plan::plan_downloads`](excalibur_engine::transfer::plan::plan_downloads).
 #[tauri::command]
 async fn enqueue_downloads(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     destination: String,
 ) -> std::result::Result<Vec<String>, CommandError> {
-    let backend = state.backend().await?;
+    let backend = state.backend(&window).await?;
     let root = std::path::PathBuf::from(destination.trim_end_matches('/'));
     // A directory expands to one row per file (E13-S4). The walk is the
     // engine's, so it can be tested without a window; the sizes it carries
@@ -752,12 +796,13 @@ fn download_folder() -> String {
 /// the kind of thing two implementations would disagree about.
 #[tauri::command]
 async fn check_conflicts(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     destination: String,
     upload: bool,
 ) -> std::result::Result<Vec<Conflict>, CommandError> {
-    let backend = state.backend().await?;
+    let backend = state.backend(&window).await?;
     let mut conflicts = Vec::new();
     for path in paths {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
@@ -804,14 +849,22 @@ async fn check_conflicts(
 /// because a save can arrive at any time and the window may not be looking.
 #[tauri::command]
 async fn edit_file(
-    app: tauri::AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> std::result::Result<EditSession, CommandError> {
-    let backend = state.backend().await?;
+    let backend = state.backend(&window).await?;
     let session = state.edits.checkout(&backend, &path).await?;
     open_in_editor(&session.local_path);
-    watch_for_saves(app, session.clone());
+    // Saves go back to the window that opened the file, not to every window:
+    // the write-back toast, and the conflict prompt behind it, belong to
+    // whoever is editing. A second window on the same share has no editor open
+    // and nothing to say about one.
+    watch_for_saves(
+        window.app_handle().clone(),
+        window.label().to_owned(),
+        session.clone(),
+    );
     Ok(session)
 }
 
@@ -821,16 +874,19 @@ async fn edit_file(
 /// back as `Conflict` rather than being overwritten.
 #[tauri::command]
 async fn save_edit(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     id: String,
     force: bool,
 ) -> std::result::Result<SaveOutcome, CommandError> {
-    let backend = state.backend().await?;
-    state
-        .edits
-        .save(&backend, &id, force)
-        .await
-        .map_err(Into::into)
+    let backend = state.backend(&window).await?;
+    let outcome = state.edits.save(&backend, &id, force).await?;
+    // A write-back is a mutation like any other: the other window on this share
+    // is showing a size and a date that just changed.
+    if matches!(outcome, SaveOutcome::Saved { .. }) {
+        announce_listing(&state.sessions, &window).await;
+    }
+    Ok(outcome)
 }
 
 /// Every file currently checked out.
@@ -866,7 +922,7 @@ fn open_in_editor(path: &str) {
 /// Debounced: an editor's save is often several filesystem events — a truncate,
 /// a write, an mtime touch, sometimes a rename over the top — and one save
 /// should be one write-back rather than four.
-fn watch_for_saves(app: tauri::AppHandle, session: EditSession) {
+fn watch_for_saves(app: tauri::AppHandle, window: String, session: EditSession) {
     use notify::{RecursiveMode, Watcher};
 
     let local = std::path::PathBuf::from(&session.local_path);
@@ -904,7 +960,10 @@ fn watch_for_saves(app: tauri::AppHandle, session: EditSession) {
                 continue;
             }
             last = Some(std::time::Instant::now());
-            if app.emit("edit://saved", &session).is_err() {
+            if app
+                .emit_to(window.as_str(), "edit://saved", &session)
+                .is_err()
+            {
                 return;
             }
         }
@@ -926,10 +985,15 @@ async fn reachable(host: String, port: u16) -> bool {
 /// Connect a share and make it the active one.
 #[tauri::command]
 async fn mount(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     spec: ConnectionSpec,
 ) -> std::result::Result<(), CommandError> {
-    state.sessions.mount(spec).await.map_err(Into::into)
+    state
+        .sessions
+        .mount(window.label(), spec)
+        .await
+        .map_err(Into::into)
 }
 
 /// Disconnect a share.
@@ -961,13 +1025,175 @@ async fn remount_read_write(
         .map_err(Into::into)
 }
 
-/// Switch which mount the window is looking at.
+/// Switch which mount the calling window is looking at.
+///
+/// Also how a second window *joins* a share the first one already has: the
+/// session is not connected again, both windows simply name it.
 #[tauri::command]
 async fn set_active(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> std::result::Result<(), CommandError> {
-    state.sessions.set_active(&id).await.map_err(Into::into)
+    state
+        .sessions
+        .set_active(window.label(), &id)
+        .await
+        .map_err(Into::into)
+}
+
+/// Open a second browser window on this window's mount and folder (⌘N).
+///
+/// Built in Rust rather than with `WebviewWindow` from the frontend, so that
+/// the label, the size, the macOS title-bar treatment and the capability that
+/// grants the new window its commands are all decided in one place. A window
+/// the webview created would be a window nobody had granted anything to, and
+/// the first `list_dir` from it would fail on a permission error rather than on
+/// anything a user could act on.
+///
+/// The new window's mount is set here, **before** the webview loads, so its
+/// first listing has a share to come from rather than a race with a `set_active`
+/// round trip. The mount id travels in the URL as well, because the window has
+/// to know which of its bookmarks to draw as mounted — and the store cannot
+/// tell it, since a `mounted` flag read off disk is from a previous run
+/// (E1-S6).
+#[tauri::command]
+async fn new_window(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> std::result::Result<String, CommandError> {
+    let app = window.app_handle().clone();
+    let label = next_label(&app);
+    let mount = state.sessions.active(window.label()).await;
+    if let Some(id) = &mount {
+        // Joining, not connecting: the share is already up, and a second login
+        // for it would be visible to the server and would ask the keychain
+        // again for something it already answered.
+        state
+            .sessions
+            .set_active(&label, id)
+            .await
+            .map_err(CommandError::from)?;
+    }
+    // Cascaded off the window that opened it. Stacked exactly on top, a new
+    // window looks like the old one changed rather than like a second one
+    // appeared.
+    let at = match (window.outer_position(), window.scale_factor()) {
+        (Ok(position), Ok(scale)) => {
+            let logical = position.to_logical::<f64>(scale);
+            Some((logical.x + 24.0, logical.y + 24.0))
+        }
+        _ => None,
+    };
+    open_window(&app, &label, mount.as_deref(), &path, at).map_err(|error| CommandError {
+        message: format!("could not open a window: {error}"),
+        surface: excalibur_engine::error::Surface::Banner,
+        transient: false,
+        host_key: None,
+    })?;
+    Ok(label)
+}
+
+/// Build one browser window, on a mount and a folder, optionally at a position.
+///
+/// Shared by ⌘N and by the Dock reopening an app that has no windows left, so
+/// the two cannot drift into different sizes or different chrome.
+fn open_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    mount: Option<&str>,
+    path: &str,
+    at: Option<(f64, f64)>,
+) -> tauri::Result<()> {
+    let url = format!(
+        "index.html?label={}&path={}{}",
+        encode(label),
+        encode(path),
+        mount.map_or_else(String::new, |id| format!("&mount={}", encode(id))),
+    );
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(url.into()))
+            .title("Excalibur")
+            .inner_size(1060.0, 640.0)
+            .min_inner_size(820.0, 480.0);
+    if let Some((x, y)) = at {
+        builder = builder.position(x, y);
+    }
+    // The same chrome `tauri.conf.json` gives the first window. Kept in step by
+    // hand because a config window and a built one have no shared source; the
+    // alternative is a second window that grows a native title bar.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+    builder.build().map(|_| ())
+}
+
+/// A label no window currently has.
+///
+/// Checked against the windows that exist rather than trusted from a counter
+/// alone: a label collision silently re-uses the *existing* window, so a ⌘N
+/// after a close-and-reopen would look like the shortcut had stopped working.
+fn next_label(app: &tauri::AppHandle) -> String {
+    let open = app.webview_windows();
+    // `main` is the config's window, so the second window is `browser-2` and
+    // the pattern in `capabilities/default.json` covers every one after it.
+    // Bounded rather than an open range: there is no number of windows worth
+    // searching forever for, and a machine that has run out of labels has run
+    // out of screen a long way back.
+    (2..=MAX_WINDOWS)
+        .map(|index| format!("browser-{index}"))
+        .find(|candidate| !open.contains_key(candidate))
+        .unwrap_or_else(|| "browser".to_owned())
+}
+
+/// How many browser windows can be open before ⌘N stops finding a name.
+///
+/// Not a policy about how many windows are useful — it is the point past which
+/// searching for a free label is less sane than refusing.
+const MAX_WINDOWS: usize = 64;
+
+/// Percent-encode a value going into the new window's query string.
+///
+/// The counterpart of `percent_decode`, and hand-rolled for the same reason:
+/// a mount id is a bookmark's id — `smb:nas.local:media` — and a path is
+/// whatever the share calls its folders. Both reach `URLSearchParams` on the
+/// other side, which decodes them.
+fn encode(raw: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                // `write!` rather than `push_str(&format!(…))`: one allocation
+                // for the whole string instead of one per escaped byte.
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
+}
+
+/// Which window a stream URL names, if it names one.
+///
+/// `excalibur-stream://<label>/<path>`: the label is the authority, because the
+/// protocol handler is given a request and not a window — there is no caller to
+/// inject one. A URL with no label is answered from the app's mount rather than
+/// refused, which covers the platforms that rewrite a custom scheme to
+/// `http://excalibur-stream.localhost/…` and lose the authority on the way.
+fn window_from_host(host: Option<&str>) -> Option<&str> {
+    let host = host?;
+    if host.is_empty() || host == "localhost" || host.ends_with(".localhost") {
+        return None;
+    }
+    Some(host)
 }
 
 /// Percent-decode a URI path segment.
@@ -1193,6 +1419,11 @@ fn queue_path() -> std::path::PathBuf {
 /// a fatal misconfiguration rather than something to degrade around: without
 /// it there is nowhere to record a trust decision, and every SSH connection
 /// would ask about the same host forever.
+// The builder is one expression: a plugin, a protocol handler, the managed
+// state, the event bridges and the command list, each of which reads as a line
+// of setup and none of which is a step that could be named separately. Splitting
+// it would buy a shorter function and a longer path to what the app registers.
+#[allow(clippy::too_many_lines)]
 pub fn run() {
     // A store that cannot be located is a fatal misconfiguration rather than
     // something to degrade around: without it there is nowhere to record a
@@ -1204,17 +1435,21 @@ pub fn run() {
         secrets: Arc::clone(&secrets),
     })));
 
+    // Held for the run loop below, which sees a window vanish and has to tell
+    // the manager — the builder consumes the other clones.
+    let closing = Arc::clone(&sessions);
+
     let queue_path = queue_path();
     let queue = Arc::new(TransferQueue::open(queue_path));
     let worker = Arc::new(Worker::new(
         Arc::clone(&queue),
-        Arc::new(ActiveMount {
+        Arc::new(AppMount {
             sessions: Arc::clone(&sessions),
         }),
         DEFAULT_CONCURRENCY,
     ));
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         // The Upload picker (E13-S4). The webview's own file input yields
         // `File` objects, and the engine needs paths.
@@ -1222,6 +1457,13 @@ pub fn run() {
         // Previews and media read through here, never through a command.
         .register_asynchronous_uri_scheme_protocol(STREAM_SCHEME, |context, request, responder| {
             let sessions = Arc::clone(&context.app_handle().state::<AppState>().sessions);
+            // Which window asked. A protocol handler gets a request, not a
+            // caller, so the label cannot be injected the way a command's is —
+            // it travels in the URL instead, and the webview puts it there
+            // because it knows its own label (E23-S1). Without this, two
+            // windows on two shares would both preview the app's most recent
+            // mount, and the second window would show the first one's files.
+            let label = window_from_host(request.uri().host()).map(str::to_owned);
             // The path is percent-encoded by the webview; a name with a space
             // or a `#` in it is common enough that decoding is not optional.
             let path = percent_decode(request.uri().path().trim_start_matches('/'));
@@ -1234,7 +1476,11 @@ pub fn run() {
                 // Nothing mounted is not something to answer with a stand-in:
                 // a preview of a file that does not exist is worse than a
                 // broken image (E1-S6).
-                let response = match sessions.active_backend().await {
+                let mount = match label.as_deref() {
+                    Some(window) => sessions.active_backend(window).await,
+                    None => sessions.recent_backend().await,
+                };
+                let response = match mount {
                     Ok(backend) => stream_range(backend, &path, range).await,
                     Err(_) => http::Response::builder()
                         .status(http::StatusCode::SERVICE_UNAVAILABLE)
@@ -1261,7 +1507,24 @@ pub fn run() {
             let mut changes = sessions.events();
             tauri::async_runtime::spawn(async move {
                 while let Ok(event) = changes.recv().await {
-                    let _ = handle.emit("mount://changed", &event);
+                    // Addressed, not broadcast (E23-S1): a share dropping is
+                    // news for the windows looking at that share, and a banner
+                    // in a window on a different mount would be a window
+                    // reporting a failure that is not its own. The engine names
+                    // the audience at the moment the event happened, so a
+                    // window that has since switched shares is not told about
+                    // one it has left.
+                    if event.audience.is_empty() {
+                        // Nobody is on it: a mount that failed before any
+                        // window took it, or a session outliving its window.
+                        // Broadcast rather than drop, so a window that is mid
+                        // connect still hears about it.
+                        let _ = handle.emit("mount://changed", &event);
+                        continue;
+                    }
+                    for label in &event.audience {
+                        let _ = handle.emit_to(label.as_str(), "mount://changed", &event);
+                    }
                 }
             });
 
@@ -1313,15 +1576,247 @@ pub fn run() {
             mount,
             unmount,
             remount_read_write,
-            set_active
-        ])
-        .run(tauri::generate_context!())
-        .expect("the webview failed to start");
+            set_active,
+            new_window
+        ]);
+
+    // The menu bar exists only on macOS, and only so that ⌘Q is something this
+    // app can answer for. Everywhere else Tauri's default menu is what it was.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(menu_with_confirming_quit)
+        .on_menu_event(|app, event| {
+            if event.id() == QUIT_MENU_ITEM {
+                // Through `exit` rather than terminating: that is what raises
+                // `ExitRequested`, which is where the confirmation lives.
+                app.exit(0);
+            }
+        });
+
+    builder
+        .build(tauri::generate_context!())
+        .expect("the webview failed to start")
+        // Built rather than `run`, because two of E23-S1's rules live in the
+        // run loop and nowhere else: a window closing has to reach the session
+        // manager, and the app has to survive the last one.
+        .run(move |app, event| match event {
+            // Not `CloseRequested`: a window can refuse to close, and a share
+            // released before the window is actually gone is a listing that
+            // fails in a window still on screen.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } => {
+                let sessions = Arc::clone(&closing);
+                // Spawned rather than blocked on: this is the UI thread, and
+                // dropping a mount disconnects a client.
+                tauri::async_runtime::spawn(async move {
+                    sessions.close_window(&label).await;
+                });
+            }
+            tauri::RunEvent::ExitRequested { api, code, .. } if !confirm_exit(app, code) => {
+                api.prevent_exit();
+            }
+            // The Dock icon, clicked on an app that is running with no windows
+            // — which is the state the line above deliberately leaves it in.
+            // Without this, closing the last window would keep the app alive
+            // with no way back into it, which is worse than quitting.
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                // Nothing mounted, at the root: the sessions of the window that
+                // closed went with it, and guessing at one of the app's other
+                // mounts would put a window on a share nobody asked for.
+                let label = next_label(app);
+                let _ = open_window(app, &label, None, "", None);
+            }
+            _ => {}
+        });
+}
+
+/// The id of the Quit item this app builds for itself.
+#[cfg(target_os = "macos")]
+const QUIT_MENU_ITEM: &str = "quit";
+
+/// macOS's menu bar, with a Quit item this app can stand in front of.
+///
+/// Tauri's default menu is reproduced item for item, with **one** change: the
+/// app menu's `Quit` is an ordinary item rather than the predefined one. The
+/// predefined item sends `terminate:` straight to `NSApplication`, which never
+/// reaches `RunEvent::ExitRequested` — so a ⌘Q with transfers in flight would
+/// kill them without asking, which is exactly what E23-S1 says must not happen.
+/// This one calls `AppHandle::exit`, which does.
+///
+/// Everything else is copied rather than invented, and the Edit submenu is the
+/// reason it has to be copied rather than dropped: `Cut`, `Copy`, `Paste` and
+/// `Select All` are menu items on macOS, and a webview with no Edit menu is a
+/// webview where ⌘C does nothing in a text field.
+///
+/// There is deliberately no `New Window` item, even though ⌘N now means
+/// something. A menu accelerator is handled before the webview sees the key,
+/// and the window's *path* — which ⌘N opens the new window on — lives in the
+/// webview. An item here could only ever open a window at the share root.
+#[cfg(target_os = "macos")]
+fn menu_with_confirming_quit(
+    app: &tauri::AppHandle,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let package = app.package_info();
+    let config = app.config();
+    let about = AboutMetadata {
+        name: Some(package.name.clone()),
+        version: Some(package.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config
+            .bundle
+            .publisher
+            .clone()
+            .map(|publisher| vec![publisher]),
+        ..Default::default()
+    };
+    let quit = MenuItem::with_id(
+        app,
+        QUIT_MENU_ITEM,
+        format!("Quit {}", package.name),
+        true,
+        Some("Cmd+Q"),
+    )?;
+
+    Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                package.name.clone(),
+                true,
+                &[
+                    &PredefinedMenuItem::about(app, None, Some(about))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit,
+                ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "File",
+                true,
+                &[&PredefinedMenuItem::close_window(app, None)?],
+            )?,
+            &Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "View",
+                true,
+                &[&PredefinedMenuItem::fullscreen(app, None)?],
+            )?,
+            &Submenu::with_items(
+                app,
+                "Window",
+                true,
+                &[
+                    &PredefinedMenuItem::minimize(app, None)?,
+                    &PredefinedMenuItem::maximize(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::close_window(app, None)?,
+                ],
+            )?,
+        ],
+    )
+}
+
+/// Whether the app should actually go away, given why it was asked to.
+///
+/// Two distinct questions wear the same event. `code: None` is *every window
+/// closed*, which on a Mac is not a quit at all — the app stays in the Dock
+/// with no windows, and ⌘N or the Dock icon brings one back. `code: Some(_)` is
+/// a deliberate quit, and the only reason to stand in its way is work in
+/// flight.
+///
+/// The confirmation is asked from Rust, through the dialog plugin's own API
+/// rather than through its command, so `dialog:allow-ask` stays out of the
+/// capability: a permission granted to the webview is a permission every page
+/// in it has, and nothing in this app should be able to put a system modal on
+/// screen by calling a plugin. The webview cannot ask this question anyway —
+/// the quit does not come from it, and by the time one window could answer,
+/// which window would be a question with no answer.
+fn confirm_exit(app: &tauri::AppHandle, code: Option<i32>) -> bool {
+    // Answered once. Without it the `exit` below re-enters this and asks again,
+    // forever.
+    static CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+
+    if code.is_none() {
+        // Closing the last window is not quitting (macOS). Elsewhere it is: a
+        // Linux app with no window and no tray icon is a process the user
+        // cannot see and cannot stop.
+        return !cfg!(target_os = "macos");
+    }
+    if CONFIRMED.load(Ordering::SeqCst) {
+        return true;
+    }
+    let moving = tauri::async_runtime::block_on(app.state::<AppState>().transfers.all())
+        .into_iter()
+        .filter(|transfer| {
+            matches!(
+                transfer.status,
+                TransferStatus::Running | TransferStatus::Queued
+            )
+        })
+        .count();
+    if moving == 0 {
+        return true;
+    }
+
+    let quitting = app.clone();
+    let noun = if moving == 1 { "transfer" } else { "transfers" };
+    tauri_plugin_dialog::DialogExt::dialog(app)
+        .message(format!(
+            "{moving} {noun} still moving. Quitting stops them where they are; \
+             a paused transfer keeps its partial and resumes next time."
+        ))
+        .title("Quit Excalibur?")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+            "Quit".to_owned(),
+            "Keep going".to_owned(),
+        ))
+        // Not `blocking_show`: this runs on the UI thread, which is the one
+        // thread a blocking dialog cannot be waited on from.
+        .show(move |quit| {
+            if quit {
+                CONFIRMED.store(true, Ordering::SeqCst);
+                quitting.exit(0);
+            }
+        });
+    false
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_range, percent_decode, STREAM_DEFAULT_WINDOW, STREAM_MAX_WINDOW};
+    use super::{
+        encode, parse_range, percent_decode, window_from_host, STREAM_DEFAULT_WINDOW,
+        STREAM_MAX_WINDOW,
+    };
 
     #[test]
     fn no_range_header_serves_a_window_from_the_start() {
@@ -1370,6 +1865,43 @@ mod tests {
         for header in ["bytes=200-100", "bytes=", "bytes=abc-", "items=0-1", "0-1"] {
             assert_eq!(parse_range(Some(header), 1000), None, "{header}");
         }
+    }
+
+    #[test]
+    fn a_stream_url_names_the_window_that_asked() {
+        // The authority is the window's label (E23-S1), because a protocol
+        // handler is handed a request and not a caller.
+        assert_eq!(window_from_host(Some("browser-2")), Some("browser-2"));
+        assert_eq!(window_from_host(Some("main")), Some("main"));
+    }
+
+    #[test]
+    fn a_stream_url_with_no_window_falls_back_rather_than_failing() {
+        // The three shapes that carry no label: a URL written before this
+        // story, one with no authority at all, and the `http://<scheme>
+        // .localhost/…` rewrite that Windows and Android apply to a custom
+        // scheme — which loses the authority on the way through.
+        assert_eq!(window_from_host(Some("localhost")), None);
+        assert_eq!(window_from_host(Some("")), None);
+        assert_eq!(window_from_host(None), None);
+        assert_eq!(window_from_host(Some("excalibur-stream.localhost")), None);
+    }
+
+    #[test]
+    fn a_new_window_url_survives_a_bookmark_id_and_a_path() {
+        // A mount id is a bookmark's id, which carries colons; a path carries
+        // slashes and spaces. Both go into a query string and come back out of
+        // `URLSearchParams` on the other side, so neither may be left raw —
+        // an unencoded `&` in a filename would split the query in two.
+        assert_eq!(encode("smb:nas.local:media"), "smb%3Anas.local%3Amedia");
+        assert_eq!(
+            encode("Films/Blade Runner & Co"),
+            "Films%2FBlade%20Runner%20%26%20Co"
+        );
+        assert_eq!(encode("browser-2"), "browser-2");
+        // Round-trips through this file's own decoder, which is what the
+        // stream protocol uses on the way back in.
+        assert_eq!(percent_decode(&encode("a b/c#d.mkv")), "a b/c#d.mkv");
     }
 
     #[test]

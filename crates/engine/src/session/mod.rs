@@ -9,6 +9,15 @@
 //! reconnecting is not merely restoring a connection, it is re-reading the
 //! facts and republishing them. That is the part worth testing, and the part a
 //! simpler design would get wrong.
+//!
+//! **"Active" is per window, not per app (E23-S1).** The shell can show several
+//! browser windows over one engine, and each of them is looking at its own
+//! mount. So the single `active` this held became a map keyed by an opaque
+//! window label — a `String` the caller chooses, which keeps Tauri out of the
+//! engine — and every caller that used to mean "the active mount" says whose.
+//! Two windows on one mount share one session and one connection; the session
+//! goes when the last window holding it does, which is
+//! [`SessionManager::close_window`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,6 +55,20 @@ pub struct SessionEvent {
     pub mount: Option<MountInfo>,
     /// Why, when the status is `Error`.
     pub reason: Option<String>,
+    /// Which windows were looking at this mount when it changed (E23-S1).
+    ///
+    /// Routing, not payload — hence `serde(skip)`: what the window renders is
+    /// the four fields above, and this only says who should be told. It is
+    /// computed here rather than by the shell at delivery time because the
+    /// answer must be the one that was true *when the event happened*: a mount
+    /// that failed and gave the window its old share back would otherwise have
+    /// its failure delivered to whoever happens to be on it a moment later.
+    ///
+    /// Empty means nobody is looking, which is normal — the CLI has no
+    /// windows, and a health loop can outlive the window that opened it by the
+    /// length of one event.
+    #[serde(skip)]
+    pub audience: Vec<String>,
 }
 
 /// How often to check, and how long to wait before trying again.
@@ -79,12 +102,41 @@ struct Session {
     mount: Option<MountInfo>,
 }
 
+/// Which windows are looking at `id`, in a stable order.
+///
+/// A free function rather than a method because the health loop holds the map
+/// and not the manager, and both of them have to answer the same question the
+/// same way.
+fn audience_of(active: &HashMap<String, String>, id: &str) -> Vec<String> {
+    let mut windows: Vec<String> = active
+        .iter()
+        .filter(|(_, mount)| mount.as_str() == id)
+        .map(|(window, _)| window.clone())
+        .collect();
+    // Sorted so a test can assert on it and a log reads the same twice; a
+    // `HashMap` would otherwise hand back a different order every run.
+    windows.sort();
+    windows
+}
+
 /// Every mount the app holds.
 pub struct SessionManager {
     connector: Arc<dyn Connector>,
     policy: HealthPolicy,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
-    active: Arc<RwLock<Option<String>>>,
+    /// Which mount each window is looking at, keyed by window label (E23-S1).
+    ///
+    /// The label is whatever the caller uses to name a window; the engine never
+    /// interprets it. Several windows may name the same mount, which is the
+    /// point: they share the one session underneath.
+    active: Arc<RwLock<HashMap<String, String>>>,
+    /// The mount some window most recently made active.
+    ///
+    /// The app-wide fallback for the things that are not a window's: the
+    /// transfer worker, and the stream handler when a URL names no window. It
+    /// is not "the active mount" — with two windows there is no such thing —
+    /// and it is deliberately not used by any command that has a window to ask.
+    recent: Arc<RwLock<Option<String>>>,
     events: broadcast::Sender<SessionEvent>,
     /// Health tasks, aborted when their mount goes or the manager drops.
     tasks: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
@@ -104,7 +156,8 @@ impl SessionManager {
             connector,
             policy,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            active: Arc::new(RwLock::new(None)),
+            active: Arc::new(RwLock::new(HashMap::new())),
+            recent: Arc::new(RwLock::new(None)),
             // Bounded: a subscriber that stops reading loses old events rather
             // than growing the queue without limit. Lagging is survivable
             // because every event carries the full state, not a delta.
@@ -124,13 +177,36 @@ impl SessionManager {
         let _ = self.events.send(event);
     }
 
-    /// Connect and mount a share, making it the active one.
+    /// Who should hear about `id` changing, plus the window that asked.
+    ///
+    /// `asking` is included even though it is not on the mount yet: a window
+    /// that is connecting is the one window that must see `Mounting` and, if it
+    /// fails, `Error` — and it is not in the map until the connection succeeds,
+    /// because a failed mount leaves the window on the share it already had.
+    async fn audience(&self, id: &str, asking: Option<&str>) -> Vec<String> {
+        let mut windows = audience_of(&*self.active.read().await, id);
+        if let Some(window) = asking {
+            if !windows.iter().any(|held| held == window) {
+                windows.push(window.to_owned());
+                windows.sort();
+            }
+        }
+        windows
+    }
+
+    /// Connect and mount a share, making it `window`'s active one.
+    ///
+    /// Mounting a share a second window already holds does **not** connect
+    /// twice: the session is replaced by a fresh one, and both windows then
+    /// look at it. That is a deliberate simplification over refusing — the
+    /// caller asked for a connection, and the alternative is a mount that
+    /// silently ignores what was typed in the dialog.
     ///
     /// # Errors
     ///
     /// Returns the connector's failure. The session is kept in `Error` so the
     /// UI can show it and offer a reconnect rather than losing the row.
-    pub async fn mount(&self, spec: ConnectionSpec) -> Result<()> {
+    pub async fn mount(&self, window: &str, spec: ConnectionSpec) -> Result<()> {
         let id = spec.id.clone();
         {
             let mut sessions = self.sessions.write().await;
@@ -149,6 +225,7 @@ impl SessionManager {
             status: MountStatus::Mounting,
             mount: None,
             reason: None,
+            audience: self.audience(&id, Some(window)).await,
         });
 
         match self.connector.connect(&spec).await {
@@ -162,12 +239,17 @@ impl SessionManager {
                         session.mount = Some(info.clone());
                     }
                 }
-                *self.active.write().await = Some(id.clone());
+                self.active
+                    .write()
+                    .await
+                    .insert(window.to_owned(), id.clone());
+                *self.recent.write().await = Some(id.clone());
                 self.publish(SessionEvent {
                     id: id.clone(),
                     status: MountStatus::Ready,
                     mount: Some(info),
                     reason: None,
+                    audience: self.audience(&id, None).await,
                 });
                 self.spawn_health_check(id).await;
                 Ok(())
@@ -179,11 +261,16 @@ impl SessionManager {
                         session.status = MountStatus::Error;
                     }
                 }
+                // The window that asked keeps whatever share it had: a
+                // connection that never came up must not take a working one
+                // off the screen of the window that tried.
+                let audience = self.audience(&id, Some(window)).await;
                 self.publish(SessionEvent {
                     id,
                     status: MountStatus::Error,
                     mount: None,
                     reason: Some(error.to_string()),
+                    audience,
                 });
                 Err(error)
             }
@@ -236,6 +323,11 @@ impl SessionManager {
             status: MountStatus::Ready,
             mount: Some(info.clone()),
             reason: None,
+            // Every window on this mount, not just whoever pressed the button:
+            // the share is read-write for all of them now, and a window still
+            // showing an `RO` badge over a writable mount is the disagreement
+            // this event exists to prevent.
+            audience: self.audience(id, None).await,
         });
         Ok(info)
     }
@@ -256,19 +348,45 @@ impl SessionManager {
         Ok(backend.mount_info())
     }
 
-    /// Drop a mount and stop watching it.
+    /// Drop a mount and stop watching it, whoever is looking at it.
+    ///
+    /// The explicit disconnect. Every window on it is left with nothing, which
+    /// is the honest outcome: the share is gone, and leaving windows pointing
+    /// at a session that is not there would be a listing that fails without
+    /// saying why.
     pub async fn unmount(&self, id: &str) {
         if let Some(task) = self.tasks.write().await.remove(id) {
             task.abort();
         }
         self.sessions.write().await.remove(id);
-        let mut active = self.active.write().await;
-        if active.as_deref() == Some(id) {
-            *active = None;
+        self.active.write().await.retain(|_, mount| mount != id);
+        let mut recent = self.recent.write().await;
+        if recent.as_deref() == Some(id) {
+            *recent = None;
         }
     }
 
-    /// Make `id` the mount the UI is looking at.
+    /// Forget a window, and disconnect its mount if it was the last one on it.
+    ///
+    /// Returns the mount that was closed, if one was. This is the other half of
+    /// "a mount used by two windows is one session": closing one of them must
+    /// not take the share away from the other, and closing the last one must
+    /// not leave a connection nobody can see.
+    ///
+    /// Note what it is *not*: a window switching mounts does not close the one
+    /// it left. Those sessions are kept deliberately, so switching back costs
+    /// nothing — a window's history of shares is not the same thing as the set
+    /// of windows open on them.
+    pub async fn close_window(&self, window: &str) -> Option<String> {
+        let left = self.active.write().await.remove(window)?;
+        if !audience_of(&*self.active.read().await, &left).is_empty() {
+            return None;
+        }
+        self.unmount(&left).await;
+        Some(left)
+    }
+
+    /// Make `id` the mount `window` is looking at.
     ///
     /// Switching does not disconnect anything: the other mounts keep their
     /// connections and their health loops, because a user switching back
@@ -277,17 +395,33 @@ impl SessionManager {
     /// # Errors
     ///
     /// Returns [`EngineError::NotFound`] when no such mount is held.
-    pub async fn set_active(&self, id: &str) -> Result<()> {
+    pub async fn set_active(&self, window: &str, id: &str) -> Result<()> {
         if !self.sessions.read().await.contains_key(id) {
             return Err(EngineError::NotFound(format!("no mount {id}")));
         }
-        *self.active.write().await = Some(id.to_owned());
+        self.active
+            .write()
+            .await
+            .insert(window.to_owned(), id.to_owned());
+        *self.recent.write().await = Some(id.to_owned());
         Ok(())
     }
 
-    /// The mount the UI is looking at.
-    pub async fn active(&self) -> Option<String> {
-        self.active.read().await.clone()
+    /// The mount one window is looking at.
+    pub async fn active(&self, window: &str) -> Option<String> {
+        self.active.read().await.get(window).cloned()
+    }
+
+    /// Every window looking at `id`, in a stable order.
+    pub async fn windows_on(&self, id: &str) -> Vec<String> {
+        audience_of(&*self.active.read().await, id)
+    }
+
+    /// The mount some window most recently made active, for the app-wide
+    /// callers that have no window to ask: the transfer worker, and a stream
+    /// URL that names no window.
+    pub async fn recent(&self) -> Option<String> {
+        self.recent.read().await.clone()
     }
 
     /// How many mounts are held, whatever their state.
@@ -323,14 +457,29 @@ impl SessionManager {
             .and_then(|s| s.backend.clone())
     }
 
-    /// The active mount's backend.
+    /// The backend one window is looking at.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Disconnected`] when nothing is mounted, or the
-    /// active mount is not currently connected.
-    pub async fn active_backend(&self) -> Result<Arc<dyn ShareBackend>> {
-        let Some(id) = self.active().await else {
+    /// Returns [`EngineError::Disconnected`] when that window has nothing
+    /// mounted, or its mount is not currently connected.
+    pub async fn active_backend(&self, window: &str) -> Result<Arc<dyn ShareBackend>> {
+        let Some(id) = self.active(window).await else {
+            return Err(EngineError::Disconnected("no share is mounted".to_owned()));
+        };
+        self.backend(&id)
+            .await
+            .ok_or_else(|| EngineError::Disconnected(format!("{id} is not connected")))
+    }
+
+    /// The backend behind [`Self::recent`], for callers with no window.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::active_backend`], for the app-wide mount instead of a
+    /// window's.
+    pub async fn recent_backend(&self) -> Result<Arc<dyn ShareBackend>> {
+        let Some(id) = self.recent().await else {
             return Err(EngineError::Disconnected("no share is mounted".to_owned()));
         };
         self.backend(&id)
@@ -344,6 +493,10 @@ impl SessionManager {
         let connector = Arc::clone(&self.connector);
         let events = self.events.clone();
         let policy = self.policy;
+        // The loop routes its own events, so a share that drops reaches every
+        // window on it and no others — including windows that joined the mount
+        // after the loop started.
+        let active = Arc::clone(&self.active);
 
         let watched = id.clone();
         let task = tokio::spawn(async move {
@@ -383,6 +536,7 @@ impl SessionManager {
                     status: MountStatus::Reconnecting,
                     mount: None,
                     reason: None,
+                    audience: audience_of(&*active.read().await, &id),
                 });
 
                 loop {
@@ -408,6 +562,7 @@ impl SessionManager {
                                 status: MountStatus::Ready,
                                 mount: Some(info),
                                 reason: None,
+                                audience: audience_of(&*active.read().await, &id),
                             });
                             backoff = policy.backoff_initial;
                             break;
@@ -432,6 +587,7 @@ impl SessionManager {
                                 status: MountStatus::Error,
                                 mount: None,
                                 reason: Some(error.to_string()),
+                                audience: audience_of(&*active.read().await, &id),
                             });
                             return;
                         }
@@ -441,6 +597,7 @@ impl SessionManager {
                                 status: MountStatus::Reconnecting,
                                 mount: None,
                                 reason: Some(error.to_string()),
+                                audience: audience_of(&*active.read().await, &id),
                             });
                             // Backing off rather than hammering: a server that
                             // is down stays down for longer than one second,

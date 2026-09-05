@@ -6819,7 +6819,16 @@ dependencies = [
  "thiserror 2.0.20",
  "unicode-normalization",
  "xattr",
+ "xsync-endpoint",
  "zstd",
+]
+
+[[package]]
+name = "xsync-endpoint"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

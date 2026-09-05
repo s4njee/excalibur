@@ -372,3 +372,118 @@ tab row; it is last because the dialog opens on xsync and leading with the one t
 reaches nothing would misread. And whether `This Mac` is the right thing in the title
 bar — the alternative is the folder's parent path, which is more informative and less
 readable.
+
+## Two windows, side by side *(E23-S1, 2026-09-05)*
+
+**What the handoff shows.** One window. Every screen `1a`–`1h` draws a single
+browser with a single share in it, and §Screens/4 draws the transfer queue as a
+separate window beside it. Nothing in the handoff says what a *second* browser
+window is, or what the two of them share.
+
+**The problem** is that everything about the app is currently written as though
+there were one of it: the session manager has one active mount, the stream
+protocol serves "the active mount", and the window's chrome names it. A second
+window on a second share would have made both windows show the second one.
+
+**What was built** — one engine, many windows. Each window is a *whole* browser,
+not a pane of one:
+
+- **Duplicated in every window:** title bar (`<share> — <host>`), toolbar with
+  its breadcrumb and filter, sidebar, file list, status bar, Quick Look panel,
+  the connection banner, and the empty state. A window with nothing mounted sits
+  beside a window on `smb://nas.local/media` and looks exactly like first run,
+  because for that window it is.
+- **Per-window state:** the active mount, the path, the back/forward history,
+  the selection, the filter text, the row layout, the Quick Look panel and the
+  sheets. Two windows on one share can be in different folders with different
+  rows selected, which is the entire reason to open the second one.
+- **Shared, app-wide, one copy:** the mounted sessions themselves, the bookmark
+  list, the keychain, the preferences, and the transfer queue with its worker. A
+  share mounted in two windows is **one** connection, not two logins; it is
+  disconnected when the last window looking at it closes.
+- **The sidebar is duplicated rather than shared.** It is not a palette that
+  belongs to the app: it is how a window changes *its own* mount, so it has to
+  be in the window whose mount it changes. Its contents are the same list in
+  both, and a bookmark added in one appears in the other.
+- **Two windows on one mount are titled identically**, with no `(2)` suffix.
+  macOS does not number windows and the mock has nowhere to put a suffix; the
+  window's own path field is what tells them apart.
+- **A mutation in one window shows in the other.** Creating, renaming or
+  deleting sends `listing://changed` to every window on that mount, which each
+  window feeds into the 250 ms refresh coalescer it already had. The two lists
+  agree within a quarter-second without either window polling.
+- **⌘N** opens a new window on the same mount and the same folder, offset 24px
+  down and right from the one that opened it.
+- **Closing the last window does not quit.** The app stays in the Dock with no
+  windows, as a macOS app does; ⌘Q quits, and asks first if transfers are still
+  moving.
+
+**The macOS menu bar is now this app's own, for one item.** Tauri already
+installed a default menu bar — the E8-S4 entry above, which says the app has no
+menu, is about the *window* chrome the handoff draws, and was never true of the
+system menu. That default menu's `Quit` sends `terminate:` straight to
+`NSApplication`, which no part of this app can stand in front of; a ⌘Q with a
+transfer half-finished would have killed it silently. The menu is now built here
+instead, item for item the same, with `Quit` as an ordinary item that goes
+through the code that asks. Nothing visible changed.
+
+**The row layout is the one setting that is per-window and persisted at the same
+time.** ⌘1/⌘2/⌘3 changes the window you pressed it in, and writes the value as
+the app's default for the next window opened. It is not pushed sideways into
+windows already open, because a layout is a property of the view you are looking
+at, not of the app.
+
+**What a designer still owns.** Four things:
+
+- **The transfers sheet.** It is still a sheet inside each window, showing the
+  one app-wide queue — so with two windows open and the sheet up in both, the
+  same rows are drawn twice. The handoff draws the queue as a separate window,
+  which is now the obviously right answer and is the change this story makes
+  worth doing rather than the one it does.
+- **Whether a second window on the same share should be distinguishable at all**
+  — a subtitle, a tint, a numbered title — or whether identical titles are
+  correct because the folder is the difference that matters.
+- **What the sidebar's `MOUNTED` section means with two windows.** It currently
+  marks the mount *this* window is looking at. The alternatives are marking
+  every mount the app holds (accurate about the connections, silent about which
+  window is where) or showing both states differently.
+- **Where ⌘N should land.** It opens on the same mount and folder, on the
+  reading that a second window is for comparing two places in one share. Opening
+  on the empty state instead — a fresh window for a different share — is the
+  other defensible answer, and is a one-line change.
+- **Whether `File ▸ New Window` should exist in the menu bar.** It deliberately
+  does not: a menu accelerator is handled before the webview sees the key, and
+  the folder ⌘N opens the new window on lives in the webview — so the item could
+  only ever open a window at the share root, which is not what ⌘N does. It
+  becomes possible once a window's path is somewhere the Rust side can read,
+  which is what E23-S2's restore needs anyway.
+
+## Go to Folder *(E26-S2, 2026-09-06)*
+
+**The mock** has no Go to Folder sheet. It draws a path field in the toolbar
+that is a breadcrumb — a row of clickable crumbs, not an editable line — so
+there is nowhere in the design to type a path that is not already on screen.
+
+**The problem** is that ⌘⇧G is in the story's AC and is the one keyboard route
+to a folder the user cannot see: deep paths, a folder whose name they know, a
+path pasted from a terminal. Making the breadcrumb editable was the alternative
+and was rejected — the crumbs are also the drop target and the navigation
+control, and a field that is sometimes a row of buttons has two behaviours in
+one place.
+
+**What was built:** a small modal borrowing `dialog.module.css` the way
+Preferences and Move to… do — a title bar, one mono field prefixed with the
+share's name, a hint line, and Cancel / Go. It opens seeded with the folder the
+window is showing plus a trailing slash, so it is a place to edit a path rather
+than an empty box to retype one into. Tab and → complete the next component from
+the folder being typed into; several candidates extend as far as they agree and
+draw the rest as chips underneath. Enter lists the resolved path and navigates,
+or shows the engine's refusal inline. A leading `/` means the share root, and
+`..` cannot climb above it.
+
+**For the designer:** three judgement calls. Whether this belongs in a modal at
+all, or as a mode of the path field, which is where a Finder user would look for
+it. Whether the chips are worth their space, or whether an ambiguous Tab should
+say nothing the way a shell's first Tab does. And whether the share name should
+be a fixed prefix beside the field — it is there to say the path is *inside* the
+mount, which is the one thing a user typing `/` is likely to get wrong.

@@ -1,0 +1,65 @@
+/*
+ * Go to Folder (E26-S2). The chrome is `dialog.module.css`'s; what is here is
+ * only the one field, its completions and its refusal.
+ */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The part of the path the user cannot type past. Shown so the field reads as
+   a place inside the share rather than a path on the machine. */
+.share {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.path {
+  flex: 1;
+  min-width: 0;
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.error {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--error);
+}
+
+/* The candidates Tab is choosing between. A row of chips rather than a list:
+   they are read at a glance, not scrolled. */
+.matches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.match,
+.more {
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--segment-track);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.more {
+  color: var(--text-tertiary);
+}
