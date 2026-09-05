@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- macOS 15 and later gate every connection to a host on the local network
+       behind an explicit permission, and an app that does not declare why it
+       needs one is refused without a prompt. Excalibur is a browser for shares
+       on your own network: without this key the reachability probe reports
+       every LAN bookmark as unreachable, and the SFTP, NFS and SMB backends —
+       which open their sockets in-process, unlike xsync, which runs `ssh` as a
+       child — cannot connect at all. Tauri merges this file into the bundle's
+       generated Info.plist. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Excalibur connects to file shares on your local network.</string>
+</dict>
+</plist>

@@ -184,6 +184,7 @@ reconstruct it from git history.
 | **M4.5** | E13-S7 — Streaming reads for transfers | **Done** 2026-09-05 (27.6 → 66.1 MB/s release; ≈101% of raw `ssh cat`) |
 | **M4.5** | E18-S1 — macOS build (local, unsigned) | **Partly done** 2026-09-05 (icon set and `.app`/`.dmg`; signing deferred) |
 | **M4.5** | E18-S4 — Staging `xs` on a server | **Done** 2026-09-05 (verified on `root@orion.local`) |
+| **M4.5** | E18-S5 — macOS local network permission | **Done** 2026-09-05 (found in the bundled app) |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -3676,6 +3677,59 @@ the `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` targets installed.
 - Nothing stages `xs` for the user automatically from the app. It should stay that
   way: a share browser that copies binaries onto servers is a different, larger
   promise than the one on the tin.
+
+#### E18-S5 — The macOS local network permission — **Done**
+
+*2026-09-05. Found by running the bundled app rather than the dev build.*
+
+Both saved bookmarks showed **unreachable** in the sidebar while `nc` reached
+one of the hosts in 25 ms and the engine's own probe, run from a terminal,
+agreed with `nc`. The same code in the same build disagreed with itself
+depending on how it was launched.
+
+macOS 15 and later gate *every* connection to a host on the local network
+behind a per-app permission, and an app whose `Info.plist` does not say why it
+wants one is refused — with no prompt and no error, the connection simply never
+completes. A binary run from a terminal inherits the terminal's grant, which is
+why every test up to this point had passed.
+
+**AC**
+- [x] `src-tauri/Info.plist` declares `NSLocalNetworkUsageDescription`, and
+  Tauri merges it into the bundle. Verified with `PlistBuddy` against the built
+  `Excalibur.app`, not against the source file.
+- [x] The bundled app shows a reachable LAN host as reachable.
+
+**Results**
+
+- **The sidebar's dot was the symptom, not the bug.** The reachability probe is
+  the only thing that connects to a LAN address *in process* on the xsync path —
+  the mount itself runs `ssh` as a child process, which has its own permission
+  and was never blocked. That is exactly why this survived a full session of
+  end-to-end testing against a real server: the feature that mattered worked,
+  and the thing that broke was a grey dot nobody had reason to distrust.
+- **SFTP, NFS and SMB were the real casualties, and are untested here.** All
+  three open their sockets in the app's own process. On any macOS 15+ machine
+  this build would have failed to connect to a share on the user's own network,
+  and reported it as a connection failure rather than as a permission the user
+  could grant. The xsync backend's use of a child `ssh` is what hid it.
+- **The declaration was enough; no prompt appeared.** The permission was granted
+  on the strength of the usage string. The dot for the live host went normal on
+  the next launch and the share mounted, listed and reported `10.2 TB free of
+  19.6 TB`.
+- The story that would have caught this earlier is E19-S3 (end to end): every
+  check up to now ran either in a browser or from a terminal, and neither is
+  the environment the app ships in.
+
+**Next steps**
+
+- **Linux has the same shape of problem waiting** in Flatpak and Snap
+  confinement, where network access is a manifest permission. E18-S2 packages
+  a `.deb` and an AppImage, which are unconfined, so it does not bite yet.
+- A user who *denies* the permission gets the same silent failure this fixed.
+  The window cannot tell that case apart from a host being down — the probe just
+  times out — so a share that will not connect on macOS should probably say
+  "check Local Network in System Settings" somewhere. Not built; it needs a way
+  to distinguish the two, and macOS does not offer one directly.
 
 #### E18-S2 — Linux
 **AC**
