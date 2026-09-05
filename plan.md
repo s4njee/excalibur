@@ -26,6 +26,9 @@ handoff wins on look and this plan wins on architecture.
 | Icons / fonts | Lucide (monochrome) at 12–16px; JetBrains Mono 400/500 bundled as woff2; sans stack `"Helvetica Neue", Helvetica, Arimo, system-ui, sans-serif`. | No runtime font fetch (Tauri CSP). |
 | Persistence | `tauri-plugin-store` for bookmarks, prefs, transfer-queue state; secrets only in the OS keychain. | Nothing secret is ever in a JSON file or in frontend state. |
 | `unsafe` code | **Denied by default, not forbidden** *(2026-09-03)*. Preference order: a safe crate, then a vetted FFI crate (`rustix`, `nix`, `cap-std`), then hand-written `unsafe` — which is now permitted where none of the above is adequate. | The allow goes on the one module that needs it, never the crate or workspace; every block carries a `// SAFETY:` note; a tested safe wrapper is what the rest of the tree sees; `docs/supply-chain.md` records it like a dependency. Held as an absolute, this lint had already deferred a feature out of xsync (owner names) rather than deciding anything about the feature, and would have forced a weaker path-confinement design. Mirrors `xsyncv3.md` §7 Decision 9. |
+| "xsync under the hood" *(2026-09-06)* | **Every transfer runs xsync's pipeline; `xs` itself runs only where it can.** Local↔xsync pairs are driven by xsync's push/pull engine over its own SSH session. Every other pair (NFS, SMB, SFTP, local↔local, and any remote↔remote) runs the *same* planner, scheduler, BLAKE3 verification, resume journal and progress model, with `ShareBackend` supplying the bytes — which requires xsync-core to gain an endpoint abstraction it does not have today (E22-S0). Excalibur is the relay for remote↔remote until xsync has a server-side copy. | Excalibur's own transfer worker (E13) is retired in stages, not rewritten in parallel; the queue model survives, the byte-moving does not. Progress, resume and conflict semantics become xsync's, and are the same for every pair. |
+| Multi-window *(2026-09-06)* | **One engine, many windows.** Each browser window has its own active mount and path; sessions, bookmarks, the keychain, the transfer queue and the worker are per-app. A window is a Tauri `WebviewWindow` addressed by label; every command that today means "the active mount" takes the calling window's label. | The session manager's single `active` becomes a map keyed by window; events are `emitTo(label)` for listings and broadcast for mounts and transfers. The Transfers sheet becomes the app-wide window the handoff drew. |
+| Drag and drop *(2026-09-06)* | **Native drags, not HTML5 ones.** Tauri's drag events carry OS file paths only, and a webview cannot start a drag that Finder or a second webview can receive. Drags out of a list are `NSDraggingSession`s carrying **file promises** (`NSFilePromiseProvider`) plus a private pasteboard type naming the source mount and paths; drops onto a window are received by a native drop target that reads that type first and file paths second. Linux gets the same model over GTK/XDG with the download-to-temp-first shape it forces. | The first hand-written FFI under Decision 9: one module, `objc2-app-kit`, `// SAFETY:` per block, a tested safe wrapper (`drag.rs`) that the rest of the tree sees. A dragged file that is not local yet is not fetched until Finder asks for it. |
 
 ## Architecture
 
@@ -4092,6 +4095,297 @@ original layout. A seeded local bookmark renders as a single-line, undimmed side
 
 - *(Lead, in the bundled app, 2026-09-06:)* see the commit for what the real picker and mount did.
 
+---
+
+# Part II — A Finder replacement *(asked for directly 2026-09-06)*
+
+> "Create a backlog to where this could be used as a Finder replacement. I want it to use
+> xsync under the hood though for file transfers. You should be able to drag files in and
+> out of Finder into Excalibur. Drag and drop in and out of multiple Excalibur windows,
+> say from local filesystem to an NFS/SMB remote, should also be possible."
+
+**What "Finder replacement" is taken to mean.** macOS does not let anything replace
+Finder as the system's file manager — the Desktop, the Dock's file handling and
+`open -R` are Finder's, and stay so. The target is narrower and achievable: *the window
+you keep open instead of Finder* — for this machine's folders and for every share —
+which means it has to do the things that send a person back to Finder today: more than
+one window, drag and drop in every direction, opening files in their apps, a sidebar
+that knows where things are, and being there when the machine starts. None of that is
+in the handoff. Every story below is past the mocks, so each epic opens with a design
+spike and everything shipped goes in `docs/design-gaps.md` — the same rule as E20, kept
+rather than waived: the parking lot was about not inventing screens the design *owns*;
+these are screens the design does not have yet.
+
+**What "xsync under the hood" is taken to mean, and what was found.** xsync's engine
+(`../xsync/crates/xsync-core`) is fast where it matters — 2–8× rsync on small-file
+corpora, a persistent BLAKE3 hash cache, a durable resume journal, adaptive
+compression, a size-ladder scheduler — but it is **hard-wired to `std::fs` on one side
+and its own wire protocol on the other**: the crate has exactly one public trait
+(`WirePathPattern`); `SourceReader` and `Sink` are concrete local-filesystem structs;
+`Location` is `Local | Remote{user,host}` and remote↔remote is refused by
+`PathError::RemoteToRemote`; progress is a `FnMut(LocalEvent)` callback; there is **no
+cancellation** below the protocol layer; and nothing in xsync's own backlog mentions a
+file manager, drag and drop or a transfer API. So "xsync under the hood" cannot mean
+"call `xs` for everything" — `xs` cannot speak NFS or SMB and never will. It means two
+things, in order: (1) where an `xs` pair exists (a local folder and an xsync server),
+use xsync's real push/pull engine, today; (2) for everything else, give xsync-core the
+endpoint seam it lacks and let Excalibur's `ShareBackend` — which *is* that seam, on this
+side — plug NFS, SMB, SFTP and local folders into xsync's planner, scheduler, verification
+and resume. That second part is xsync work, written up here as E22-S0 the way E7-S0
+was, for whoever owns that repo to take into its backlog.
+
+**Order.** E23 (windows) before E24-S2 (drag between them); E24-S1 (file promises)
+before any drop *into* Finder; E22-S0 is the long pole and lives in another repo, so it
+starts first and in parallel; E22-S1 needs nothing from it and ships early. E25–E27 are
+independent of each other.
+
+### E22 — xsync as the transfer engine
+
+#### E22-S0 — Prerequisites in `../xsync` *(asks, in xsync's terms)*
+Written against `xsync` `v3` @ `599d9d4529`. Each names the seam it would replace.
+
+- **Endpoint traits.** `xsync-core` gains `Source` and `Sink` traits — the shape
+  `source.rs:91` (`SourceReader::{new, read, read_range}`) and `sink.rs` (staged
+  `.xsync.tmp.<hash>` publication) already have as concrete structs — and the planner,
+  scheduler and push/pull engines become generic over them. `Location` (`path.rs:265`)
+  grows a variant for "an endpoint the caller supplies". The `std::fs` implementations
+  are the existing code behind the traits; the wire-protocol side stays as it is. A
+  small `xsync-endpoint` crate holds the traits so Excalibur can implement them without
+  a dependency cycle.
+- **Remote↔remote as a product decision, resolved as relay.** `PathError::RemoteToRemote`
+  (`path.rs:322`) is lifted for the caller-supplied endpoint case: the process that owns
+  both endpoints relays. `backlogv3.md:698` has this as an open decision; this is the
+  ask for one of its three answers.
+- **Cancellation.** A token honoured by `sync`, `run_client_push` and `run_client_pull`
+  between files and between chunks, releasing the stage on the far side (the protocol
+  already has `Cancel`, type 18; the engine does not). Today a library consumer can only
+  kill the thread.
+- **Events as a stream.** `LocalEvent` delivered over a channel (or `Stream`) as well as
+  the `FnMut` callback, so a GUI's queue can consume it on its own runtime; `Progress`
+  carries a stable per-file id and a job id, not only a path. `progress-json-v1.md` is the
+  schema to keep.
+- **Library push/pull over a caller-owned session.** `run_client_push`/`run_client_pull`
+  take `R: Read, W: Write` already; document and test them as the supported entry for
+  a consumer that spawned `ssh` itself (Excalibur owns the host-key policy, E3-S4). A
+  Session-role connection and a sync-role one are different protocols; a consumer
+  holding a browse session opens a second `ssh` for the transfer.
+- **Fix the open P0 in `BUGS.md`** — the paranoid *pull* path sends an all-zero
+  `LargeFileFinish` digest — before a GUI relies on "verified" meaning verified.
+- **Later, not now:** `Notify`/watch (types 110–115, never advertised) so a listing
+  refreshes when a transfer lands in it; a server-side `Copy` so xsync↔xsync on the same
+  host does not round-trip through the client; session `Resume` (52–55) so a transfer
+  survives a link drop without re-opening every handle.
+
+#### E22-S1 — Local↔xsync transfers through xsync's engine
+**AC**
+- A transfer whose two ends are a Local mount and an xsync mount (either direction)
+  runs `run_client_push`/`run_client_pull` over a second `ssh … xs --server` spawned with
+  the same host-key policy as the browse session (`hostkeys::verify`, the app's
+  `known_hosts`, `BatchMode`). Whole trees go through xsync's planner, not E13-S4's walk.
+- Progress rows come from `LocalEvent::{Progress, Transferred, Skipped, Failed}` and read
+  exactly as today's rows do; the aggregate rate is xsync's. Resume after an interruption
+  is xsync's `ResumeJournal`, keyed by job id — the `.part` mechanism is not used for
+  this pair.
+- Verification is on by default (BLAKE3, xsync's `--checksum` semantics) and the row
+  says `verified`, not `done`, when it is. Conflicts follow the queue's answer
+  (Replace / Keep both / Skip) mapped onto xsync's collision policy; **mirror/delete is
+  never enabled** — this is a copy, not a sync, and the option is not exposed.
+- Cancel kills the transfer's own `ssh` (the only cancellation xsync offers until
+  E22-S0's token lands) and leaves the far side's stage for the journal to resume.
+- Measured against orion and freya: a 1 GiB file, `congress`-shaped small files, and a
+  tree with a symlink and an empty directory; numbers in `docs/benchmarks.md` beside
+  E13-S7's.
+
+#### E22-S2 — `ShareBackend` as an xsync endpoint *(needs E22-S0)*
+**AC**
+- `crates/engine/src/transfer/endpoint.rs` implements xsync's `Source` and `Sink` over
+  `ShareBackend`: `Source` from `list_dir`/`stat`/`open_read`; `Sink` from
+  `write_range`/`rename`/`mkdir`, using the backend's own staging where it has one
+  (xsync's `Stage*`, SFTP's temp+`posix-rename`) and temp-then-rename elsewhere, so a
+  half-written file never appears under its final name on any backend.
+- Every pair not covered by E22-S1 — NFS, SMB, SFTP, local↔local, and remote↔remote
+  with Excalibur relaying — runs through xsync's planner, scheduler, hash cache and
+  resume journal via those adapters. The E13 worker's `download`/`upload` are deleted,
+  not kept as a fallback.
+- The hash cache (`hash_cache.rs`, redb) is keyed by mount id + path so a file re-copied
+  from the same share is not re-read to decide it is unchanged.
+- The conformance suite (E19-S1) gains "copy a tree between every pair of backends"
+  over the Docker fixtures, verified by digest on both sides.
+
+#### E22-S3 — One queue, any pair
+**AC**
+- `Transfer` loses `Direction::{Up,Down}` and gains `from: Endpoint` / `to: Endpoint`
+  where an `Endpoint` is a mount id and a path; the row shows both ends the way the
+  handoff's row shows a destination path. Local is a mount like any other (E21).
+- Pause/resume/retry/cancel are per transfer and survive a restart and a reconnect of
+  either end (this closes E13-S6). Rate and ETA are xsync's.
+- The queue is the app-wide **Transfers window** the handoff drew, not a per-window
+  sheet; the sheet stays as the compact view. (Resolves the E13-S1 design gap.)
+- "Apply to all remaining" is a choice on the conflict prompt, as E13-S6 asked.
+
+### E23 — Windows
+
+#### E23-S1 — More than one browser window
+**AC**
+- Design spike: what two windows of this app look like side by side (title, sidebar
+  duplication or not, which chrome is per-window). One page in `docs/design-gaps.md`
+  before the code.
+- ⌘N opens a new window on the same mount and path; a window has its own mount, path,
+  history, selection, filter and row layout; sidebar, bookmarks, preferences and the
+  transfer queue are shared and stay in step across windows.
+- Engine: `SessionManager` keys the active mount by window label; every command that
+  meant "the active mount" takes the label (`tauri::Window` argument); listing and
+  mount-changed events `emitTo` the window that asked, transfer and bookmark events
+  broadcast. A mount used by two windows is one session, closed when the last window
+  leaves it.
+- Closing the last window keeps the app running (menu bar, Dock); ⌘Q quits and asks if
+  transfers are active.
+- Tests: two windows on one mount see the same listing after a mutation from either; a
+  window closing does not disconnect a share another window is showing.
+
+#### E23-S2 — Restore
+**AC**
+- On launch, every window from the previous run comes back on its mount and path,
+  connecting in the background with the empty state until the listing arrives (E1-S6's
+  chrome), and a share that fails reconnects into the banner rather than a dialog.
+- A mount that needed a password prompts once, not once per window.
+
+#### E23-S3 — Tabs *(after S1; optional)*
+Tabs in one window, Finder-style (⌘T, ⌘W closes a tab before a window, drag a tab out
+to a window). Only if S1's design spike says windows alone are not enough.
+
+### E24 — Drag and drop, every direction
+
+#### E24-S1 — Drag out to Finder (file promises)
+**AC**
+- Dragging a selection out of the list starts a native `NSDraggingSession` whose
+  pasteboard carries one `NSFilePromiseProvider` per item (`objc2-app-kit`,
+  `NSFilePromiseProvider` feature) with the item's UTI from the kind table, plus the
+  private type `dev.excalibur.selection` (mount id + paths, JSON). Nothing is fetched
+  until Finder calls the delegate with a destination; then the transfer is queued to
+  that folder through E22 and the promise is fulfilled when it lands. A drag cancelled
+  over the Desktop moves nothing.
+- Folders promise a folder and produce the tree.
+- The FFI lives in one module (`crates/engine/src/drag/macos.rs`, allow `unsafe_code`
+  there only, `// SAFETY:` per block) behind a safe `start_drag(items, image)` that the
+  Tauri layer calls from the list's `pointerdown`+move on the name cell — the gesture
+  E8-S8 reserved.
+- The drag image is the row's name and glyph (rendered to an image in the webview,
+  handed across as PNG bytes — not a file).
+- Tested: a real drag onto a temp folder in Finder through the accessibility test
+  harness, asserting the file appears with the right digest and that a cancelled drag
+  queued nothing.
+
+#### E24-S2 — Drag between Excalibur windows
+**AC**
+- A native drop target on each window (`NSView` subclass registered for
+  `dev.excalibur.selection` and `public.file-url`) receives drops and reports (window
+  label, position, payload) to the webview, which hit-tests exactly as E13-S5 does
+  (physical→CSS pixels, folder rows, the list background).
+- Dropping our own selection: same mount ⇒ **move** (`rename`, E14-S3's rules —
+  refusing a folder into itself); different mounts ⇒ **copy** through E22, one queue
+  row per file. ⌥ forces a copy on the same mount. The drop ring says which
+  (`Move to Documentaries` / `Copy 3 items to raid6`).
+- Dropping Finder files (`public.file-url`) is E13-S5's upload, unchanged; dropping onto
+  a sidebar bookmark copies to that share's root (replaces E13-S5's "coming later").
+- Spring-loaded folders: hovering a folder row for 600 ms while dragging descends into
+  it, with the same delay Finder uses and Escape to back out.
+- The same drag can end in Finder or in another window; the pasteboard carries both
+  types from the start.
+
+#### E24-S3 — Copy and paste
+**AC**
+- ⌘C/⌘X/⌘V are the keyboard twin of S2: the general pasteboard gets
+  `dev.excalibur.selection` and file promises; ⌘V in another window (or Finder) does
+  what a drop would. Cut is a move, completed on paste.
+
+#### E24-S4 — Linux
+**AC**
+- GTK drag source with `text/uri-list` after downloading to a temp under
+  `$XDG_RUNTIME_DIR` *before* the drag starts (the shape the platform forces; a size
+  cap and a progress toast make it honest), and an XDG portal drop target. Between our
+  own windows the private type works as on macOS.
+
+### E25 — Opening things
+
+#### E25-S1 — Open
+**AC**
+- Double-click or Enter-with-⌘O on a *file* opens it in its default app: a local file
+  directly (`open`/`xdg-open`), a remote one through a per-share cache
+  (`~/Library/Caches/dev.excalibur.browser/<mount>/<path>`) fetched through E22, then
+  opened, then watched for write-back exactly as E12 does — E12's edit-in-place becomes
+  the general case with the editor as the default app.
+- A file already in the cache and unchanged on the share (size/mtime/cookie) opens
+  without a fetch.
+- **Open With…** lists the apps macOS registers for the UTI (`NSWorkspace`), via the
+  same FFI module as E24.
+
+#### E25-S2 — Reveal, Show in Finder, and the reverse
+**AC**
+- `Reveal in Finder` on a local item; `Show in Excalibur` as a Finder Quick Action
+  (an Automator/Shortcuts-registered service invoking `open -a Excalibur <path>`), and
+  the app handles `open` of a folder path and of `smb://`, `nfs://`, `sftp://`,
+  `xsync://` URLs (URL scheme registration in `Info.plist`, the handoff's URI grammar).
+
+### E26 — Finder parity in the browser
+
+#### E26-S1 — Sidebar: Favorites and Locations
+**AC**
+- Design spike. Then: **Favorites** (drag a folder from any mount into the sidebar to
+  pin it, as Finder does), **This Mac** (Home, Desktop, Documents, Downloads, and every
+  mounted volume under `/Volumes`, appearing and disappearing as they mount — a
+  `DiskArbitration`-free poll of `/Volumes` is enough), and the existing **Shares**.
+  Local defaults are present on first run so the empty state is never the first thing
+  a user of "this machine" sees.
+
+#### E26-S2 — Keyboard navigation
+**AC**
+- ↑/↓ move the selection, ⇧↑/↓ extend it, ⌘↑ ascends (exists), ⌘↓/Enter... *(Enter is
+  rename per the handoff; ⌘O opens; ⌘↓ descends, exists)*, Home/End, Page Up/Down,
+  ⌘⇧G Go to Folder with path completion, ⌘⇧. toggles hidden files. All in
+  `state/shortcuts.ts`'s one table.
+
+#### E26-S3 — Undo
+**AC**
+- ⌘Z undoes the last move, rename or copy-into (by moving back / renaming back /
+  deleting what was copied, each refused when the target changed since), with the
+  deferred-delete undo folded into the same stack. Never across a restart.
+
+#### E26-S4 — Views the design does not have
+Icon view and column view, with a design spike each. Column view is the one Finder
+users reach for; it is also the one that maps least onto the handoff's four-row
+layout. Only after E23–E25.
+
+#### E26-S5 — Search across a share *(from E20)*
+Filename search over a mount, driven by xsync's `ReadTree` where the backend is xsync
+(a subtree in one round trip) and a bounded walk elsewhere; results as a listing with a
+`Where` column; ⌘F becomes search when the field is submitted rather than typed.
+
+#### E26-S6 — Get Info, completed
+Properties gains POSIX mode, owner and group once xsync sends names (`OWNER_NAMES`
+bit, E5-S1b there), and a `Calculate` button that sizes a folder through the queue.
+
+### E27 — Being there
+
+#### E27-S1 — Menu bar and Dock
+**AC**
+- A real menu bar (File / Edit / View / Go / Window / Help) from Tauri's menu API, each
+  item bound through `state/shortcuts.ts`; the Dock icon shows a transfer badge; a
+  completion notification for a queue that finishes while the app is in the
+  background.
+
+#### E27-S2 — Launch at login, and stay
+**AC**
+- A preference for launch at login (`SMAppService` via the FFI module, or the login
+  items API Tauri exposes), the app staying resident with no windows, and E23-S2's
+  restore. Quitting with transfers active asks.
+
+#### E27-S3 — Trash for shares
+The local backend trashes (E21). Shares have no Trash; deleted files on a share are
+gone. The deferred delete (E14-S1) is the only net. Decide, with the design, whether
+a per-share `.excalibur-trash/` is worth its confusion; the default answer is no, and
+the story exists to make that a decision rather than an omission.
+
 ## Milestones
 
 | Milestone | Epics / stories | Demo |
@@ -4104,6 +4398,10 @@ original layout. A seeded local bookmark renders as a single-line, undimmed side
 | **M4 Polish** | E8-S3/S4/S9, E16, E17, E1-S4/S5, E19, E7-S1 (reduced mode), E7-S3 | Row variants, shortcuts, a11y, prefs, test matrix green, older-`xs` fallback. |
 | **M5 Release** | E18 | Signed macOS + Linux builds. |
 | **M6 xsync daemon** | E3-S1 xsync auth fields, E7-S3 export picker (after `xsyncv3.md` Phase 2) | Connect to `xs serve` over TLS with principals and exports, no SSH. |
+| **M7 Two windows, one drag** *(Part II)* | E23-S1, E22-S1, E24-S2 (own-window drops only), E26-S2 | ⌘N a second window on `raid6`, drag a folder from `~/Downloads` into it, watch xsync's engine copy it with verification; move between folders of one share by drag. |
+| **M8 Finder in, Finder out** | E24-S1, E24-S3, E24-S4 (Linux), E25 | Drag a remote file onto the Desktop and it arrives when Finder asks; double-click a remote `.md` and it opens in its app and writes back; `Show in Excalibur` from Finder. |
+| **M9 xsync everywhere** | E22-S0 *(in `../xsync`)*, E22-S2, E22-S3, E23-S2 | NFS→SMB copy between two windows runs xsync's planner and resume journal with Excalibur relaying; the app-wide Transfers window; everything comes back after a restart. |
+| **M10 The window you keep open** | E26-S1/S3/S4/S5/S6, E27 | Sidebar with This Mac and Favorites, menu bar, launch at login, undo, column view, search. |
 
 ## Definition of done (v1)
 
@@ -4119,3 +4417,16 @@ original layout. A seeded local bookmark renders as a single-line, undimmed side
 - [ ] `docs/design-gaps.md` lists every place this plan built beyond the mocks, with a
       screenshot, awaiting design sign-off. *(Started 2026-09-03 with E9-S3's two
       entries; screenshots still to attach.)*
+
+## Definition of done (v2 — Part II)
+
+- [ ] Every transfer between any two mounts, in either direction, runs xsync's planner,
+      scheduler, BLAKE3 verification and resume journal; Excalibur's own byte-moving
+      worker is gone. Verified by the pairwise conformance matrix on the Docker fixtures.
+- [ ] A file dragged out of any mount arrives in Finder only when Finder asks for it,
+      with the right digest; a drag cancelled queues nothing.
+- [ ] Two windows on two different protocols can exchange files by drag and by paste,
+      with move on the same mount and copy across, and the drop ring says which.
+- [ ] Every window comes back after a restart on its mount and path.
+- [ ] `docs/design-gaps.md` carries a signed-off page for each Part II screen, and
+      `docs/supply-chain.md` records the one FFI module and every `// SAFETY:` block.
