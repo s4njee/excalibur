@@ -609,6 +609,37 @@ and which the panel has no vocabulary for. The engine can supply any of the
 three — the planner names and sizes every file before the first byte moves —
 so this is a drawing question, not a plumbing one.
 
+**Amended 2026-09-06 (E22-S3): both shapes are now the folder row, and the row
+learned to say what it holds.** `enqueue_downloads` no longer pre-walks a
+selection, so a folder is one row whichever way it was started — dragged,
+dropped, or picked in the list and downloaded. What settled it was not the
+argument above but a measurement: every row is run as its own `sync_endpoints`
+session, and a folder of 1002 files took 21.7 s as one row per file against
+0.31 s as one row, with only 0.30 s of the 21.7 spent talking to the share.
+The per-file shape was 70× of pure scheduling.
+
+The first of the three candidates is what was built, minus the expansion. A
+running row now reads `41.2 / 61.7 GB · 412 / 1002 files · 112 MB/s · 3m 04s`
+and a finished one `verified · 1002 files · 8.1 GB`. The count is the planner's
+`Planned` event, which the adapter already received for its byte total and
+threw the file count away from; it appears the moment the scan ends, so a row
+briefly shows a size and no count. A row that names a single file shows no
+count at all, because `1 file` repeats the row's own title.
+
+**What this gave up, stated rather than hidden:** a subdirectory the walk could
+not read used to be its own failed row beside the ones that worked. It is now a
+per-entry failure inside the session, and the *folder's* row fails with the
+count and the first reason — `3 of 1002 entries failed — season 2: permission
+denied`. Nothing is silently omitted, which was E13-S4's actual rule, but the
+detail is one sentence instead of one row per problem.
+
+**Still for the designer**, and now the only part left: **clicking a folder row
+expands to nothing.** The engine names and sizes every file before the first
+byte moves and could feed a disclosure triangle, and the panel has no
+vocabulary for one. The other open question is the "current file" line most
+file managers show under a folder row — `season 1/e04.mkv` — which the engine
+emits on every `Transferred` event and this app currently drops on the floor.
+
 ## Dragging out to Finder is invisible in this app *(E24-S1, 2026-09-06)*
 
 **The mock** draws no state for a drag that leaves the window. §Screens/4's
@@ -627,13 +658,23 @@ dragged *from* shows nothing at all at the moment of the drop.
 
 Three things are undesigned, and only the first is urgent:
 
-1. **Where the promise's rows go.** They are indistinguishable from a Download
-   in the panel: same direction, same shape, and a destination path in a
-   staging directory the user never sees, renamed into place at the end. A
+1. **Where the promise's rows go.** ~~They are indistinguishable from a
+   Download in the panel: same direction, same shape, and a destination path in
+   a staging directory the user never sees, renamed into place at the end. A
    person who drags a film onto the Desktop and then opens the sheet sees a
-   download to a folder whose name has a dot in front of it. The row needs to
-   say *dragged to Desktop*, or the panel needs to leave these out entirely on
-   the grounds that Finder is already reporting them.
+   download to a folder whose name has a dot in front of it.~~ **Half-answered
+   by accident, 2026-09-06 (E22-S3).** A promise is now **one** row rather than
+   one per file, and the row is *taken back out of the queue* when the drag
+   ends, whatever happened to it — so the sheet no longer accumulates downloads
+   to dotted folders, and a person who opens it after the drop sees nothing.
+   That was not a design decision, it was a correctness one: a row naming a
+   staging directory that survives into `transfers.json` is re-queued on the
+   next launch and copies a tree into a folder that was deleted when the drag
+   ended, which is how three abandoned drags left 42 MB of `.excalibur-*`
+   directories in a real Downloads folder. The row still needs to say *dragged
+   to Desktop* while it is there; the question of whether the panel should show
+   these at all is now the only one left, and "no" is closer to what the code
+   does.
 2. **A failure has nowhere good to land.** A promise that cannot be fulfilled
    reports an `NSError`, and Finder renders it as its own alert — which is the
    right place for it, but it means one error appears in Finder's words and the

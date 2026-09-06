@@ -140,6 +140,8 @@ impl SshEndpoint {
 pub struct Settled {
     /// Bytes the session accounts for: published plus already-present.
     pub bytes: u64,
+    /// Files it accounts for, on the same terms. `0` when nothing said.
+    pub files: u64,
     /// Whether every published file went through a verified path.
     pub verified: bool,
     /// A short phrase for the row when there is more to say than a size.
@@ -614,6 +616,35 @@ fn kill(child: &Mutex<Option<std::process::Child>>) {
     }
 }
 
+/// How big a job is, in the planner's own words.
+///
+/// `files` is here because a folder is one row now (E22-S3) and a byte count is
+/// not enough to describe a tree: "3.1 of 8.2 GB" says nothing about whether
+/// the copy is on its tenth file or its ten-thousandth. The planner counts both
+/// before the first byte moves and this is where that answer is carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Planned {
+    /// Regular files the planner selected for transfer.
+    pub files: u64,
+    /// Logical bytes in those files, as of the scan.
+    pub bytes: u64,
+}
+
+/// What a session has moved so far, as the row should read it.
+///
+/// One struct rather than three arguments to the progress callback: both
+/// adapters call it from a hot loop and every one of these has grown a meaning
+/// the position of an argument does not carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Moved {
+    /// Bytes settled, plus whatever is in flight.
+    pub bytes: u64,
+    /// Files the engine has finished with — published or found already there.
+    pub files: u64,
+    /// The whole job, once the planner's scan has ended. `None` until then.
+    pub planned: Option<Planned>,
+}
+
 /// Everything one session's events add up to.
 ///
 /// Shared with [`super::endpoint`] rather than written twice: the two routes
@@ -633,7 +664,7 @@ pub(super) struct Tally {
     /// False as soon as one published file did not take a verified path.
     every_file_verified: bool,
     /// Set once `Planned` has said how big the job is.
-    planned_bytes: Option<u64>,
+    planned: Option<Planned>,
 }
 
 impl Tally {
@@ -644,13 +675,17 @@ impl Tally {
         }
     }
 
-    pub(super) fn moved(&self) -> u64 {
-        self.settled + self.in_flight.values().sum::<u64>()
-    }
-
-    /// How big the planner said the job was, once it has said.
-    pub(super) fn planned_bytes(&self) -> Option<u64> {
-        self.planned_bytes
+    /// Where the row stands right now.
+    ///
+    /// A failed entry is deliberately not counted as a file done: the row is
+    /// going to fail anyway, and a bar that filled on the strength of files
+    /// that did not land would be the one lie this whole tally exists to avoid.
+    pub(super) fn moved(&self) -> Moved {
+        Moved {
+            bytes: self.settled + self.in_flight.values().sum::<u64>(),
+            files: (self.transferred + self.skipped) as u64,
+            planned: self.planned,
+        }
     }
 
     /// How many entries failed.
@@ -668,8 +703,11 @@ impl Tally {
     /// Fold one event in. Returns true when the row should be redrawn.
     pub(super) fn absorb(&mut self, event: &LocalEvent) -> bool {
         match event {
-            LocalEvent::Planned { bytes, .. } => {
-                self.planned_bytes = Some(*bytes);
+            LocalEvent::Planned { files, bytes, .. } => {
+                self.planned = Some(Planned {
+                    files: *files as u64,
+                    bytes: *bytes,
+                });
                 true
             }
             LocalEvent::Progress {
@@ -752,6 +790,7 @@ impl Tally {
         };
         Settled {
             bytes,
+            files: (report.transferred_files + report.skipped_files) as u64,
             // Nothing published is nothing verified. A row that said `verified`
             // for a run that moved no bytes would be claiming this app checked
             // something it never read.
@@ -855,7 +894,7 @@ pub async fn run(
     transfer: &Transfer,
     remote_is_dir: bool,
     stop: Arc<AtomicBool>,
-    mut progress: impl FnMut(u64, Option<u64>) + Send + 'static,
+    mut progress: impl FnMut(Moved) + Send + 'static,
 ) -> Result<Settled> {
     // The seam rule, and here the only gate there is: `--read-only` on the
     // remote does not stop a v1/v2 push.
@@ -923,8 +962,8 @@ pub async fn run(
             continue;
         }
         let moved = tally.moved();
-        if sampler.sample(moved, Instant::now()) {
-            progress(moved, tally.planned_bytes);
+        if sampler.sample(moved.bytes, Instant::now()) {
+            progress(moved);
         }
     }
 
@@ -940,8 +979,10 @@ pub async fn run(
     // That is the user's decision arriving, not a failure, and it outranks
     // whatever the engine was about to say.
     if stop.load(Ordering::SeqCst) {
+        let moved = tally.moved();
         return Ok(Settled {
-            bytes: tally.moved(),
+            bytes: moved.bytes,
+            files: moved.files,
             verified: false,
             note: None,
             stopped: true,
@@ -952,7 +993,11 @@ pub async fn run(
 
     // Whatever the throttle last published, the row ends on the real number.
     let settled = tally.settle(&report);
-    progress(settled.bytes, tally.planned_bytes);
+    progress(Moved {
+        bytes: settled.bytes,
+        files: settled.files,
+        planned: tally.planned,
+    });
     drop(plan.staging);
     Ok(settled)
 }

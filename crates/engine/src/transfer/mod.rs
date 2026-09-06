@@ -71,11 +71,16 @@ impl Status {
     }
 }
 
-/// One file moving in one direction.
+/// One item moving in one direction — a file, or a whole folder.
 ///
-/// A folder is not a transfer. It expands to one of these per file, because a
+/// A folder used to expand to one of these per file, on the argument that a
 /// single row for a directory can only report a percentage that means nothing
-/// when one file in it fails.
+/// when one file in it fails. E22-S3 withdrew that: since every transfer runs
+/// xsync's planner, the folder row's percentage is the planner's own, and the
+/// per-file expansion bought its honesty by running one whole session per file
+/// — 21 seconds of pure scheduling for a thousand small files that the session
+/// itself moves in a third of one. [`Self::files_total`] is what a folder row
+/// says instead of a number it made up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transfer {
@@ -133,6 +138,19 @@ pub struct Transfer {
     /// the bytes. `error` is the wrong field for it: nothing failed.
     #[serde(default)]
     pub note: Option<String>,
+    /// Files the planner has finished with, of the ones it found.
+    ///
+    /// Both are `0` until the planner's scan ends, the same way `bytes_total`
+    /// is — and for a single-file row they stay that way, because a row that
+    /// names one file has nothing to add by saying `1 file`. A folder row is
+    /// the reason they exist: it is one row for a tree, and "412 of 1002
+    /// files" is the part of that tree's progress a byte count cannot show.
+    ///
+    /// Defaulted, so a queue written before E22-S3 still loads.
+    #[serde(default)]
+    pub files_done: u64,
+    #[serde(default)]
+    pub files_total: u64,
 }
 
 impl Transfer {
@@ -170,6 +188,8 @@ impl Transfer {
             mount: None,
             verified: false,
             note: None,
+            files_done: 0,
+            files_total: 0,
         }
     }
 

@@ -20,7 +20,7 @@ use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 #[cfg(feature = "smb")]
 use excalibur_engine::backend::smb::{SmbBackend, SmbTarget};
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
-use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
+use excalibur_engine::backend::{Access, ConnectionSpec, EntryKind, Protocol, ShareBackend};
 use excalibur_engine::drag::{self, Selection};
 use excalibur_engine::transfer::conflict::{self, Conflict};
 use excalibur_engine::transfer::plan;
@@ -720,11 +720,39 @@ async fn transfers(state: tauri::State<'_, AppState>) -> std::result::Result<Vec
 
 /// Queue a download of each path, and start moving.
 ///
-/// A folder becomes one row per file beneath it, at
-/// `<destination>/<folder>/<relative path>` — never a single row for the
-/// folder, because such a row can only report a percentage that means nothing
-/// once one file in it fails. The walk itself is
-/// [`plan::plan_downloads`](excalibur_engine::transfer::plan::plan_downloads).
+/// **A folder is one row**, at `<destination>/<folder>`, exactly as
+/// [`enqueue_uploads`] makes it one row — the two commands are the same shape
+/// again for the first time since E22-S2.
+///
+/// It used to be one row per file, walked here by
+/// [`plan::plan_downloads`](excalibur_engine::transfer::plan::plan_downloads)
+/// before any row existed, on the argument (E13-S4) that a single row for a
+/// directory can only report a percentage that means nothing once one file in
+/// it fails. E22-S3 withdrew that argument on a measurement rather than a
+/// preference. Every row is run by `Worker::attempt`, and every attempt is a
+/// whole `sync_endpoints` session — a scoped thread pool, a cancel watcher and
+/// a journal, set up and torn down to move one file. On this machine a folder
+/// of 1002 files took **21.7 s** that way and **0.31 s** as one session, and
+/// only 0.30 s of the 21.7 was spent talking to the share at all; 2000 small
+/// files were 38.3 s against 1.1 s. The per-file row was 70× of pure
+/// scheduling.
+///
+/// What the walk here used to buy, and where each part went:
+///
+/// - **the sizes on the rows** are now the planner's `Planned` event, which is
+///   the same scan the transfer was going to do anyway rather than a second
+///   one over the browse session;
+/// - **an empty remote directory** is created by the sink as it walks, not by
+///   this command creating `plan.directories` first;
+/// - **a subdirectory that could not be listed** is a per-entry failure inside
+///   the session, and [`endpoint::run`](excalibur_engine::transfer::endpoint)
+///   refuses to report success for a run with any: the row fails with the
+///   count and the first reason. It is one failed row for the folder instead of
+///   one failed row beside the ones that worked, which is a real loss of
+///   detail and the only thing this change gives up.
+///
+/// [`plan::plan_downloads`] itself is still there — the CLI's `get` uses it,
+/// and it is still the walk that says what a selection *would* copy.
 #[tauri::command]
 async fn enqueue_downloads(
     window: tauri::Window,
@@ -738,32 +766,49 @@ async fn enqueue_downloads(
     // (E24-S2), where the answer is in the payload and not in who is asking.
     let (mount, backend) = state.mount_and_backend(&window, mount.as_deref()).await?;
     let root = std::path::PathBuf::from(destination.trim_end_matches('/'));
-    // A directory expands to one row per file (E13-S4). The walk is the
-    // engine's, so it can be tested without a window; the sizes it carries
-    // come from a fresh stat rather than the listing the window had, because a
-    // progress bar built on a number that has since changed is worse than one
-    // that admits it does not know.
-    let plan = plan::plan_downloads(backend.as_ref(), &paths, &root).await;
-
     let mut ids = Vec::new();
-    // Directories before rows, and *all* of them: the worker creates a file's
-    // parent on its way past, which is exactly what an empty directory has
-    // nothing to trigger. Without this an empty folder is silently absent from
-    // a copy that reports success.
-    for directory in &plan.directories {
-        if let Err(error) = std::fs::create_dir_all(directory) {
+    // The one directory this command still creates. The session creates
+    // everything under it, but it opens its sink *at* this folder, and a
+    // download into a folder that is not there should say so on a row rather
+    // than as a per-entry failure halfway down a tree.
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        ids.push(
+            report_problem(
+                &state.transfers,
+                String::new(),
+                root.to_string_lossy().into_owned(),
+                format!("create {}: {error}", root.display()),
+            )
+            .await,
+        );
+        return Ok(ids);
+    }
+    for path in paths {
+        // Names from the server are not paths (E13-S4's other rule, and the
+        // one worth keeping whatever the row shape is). A listing that answers
+        // `..` is describing a write outside the folder the user chose.
+        let name = plan::local_name(&path).map(ToOwned::to_owned);
+        let Some(name) = name else {
             ids.push(
                 report_problem(
                     &state.transfers,
-                    String::new(),
-                    directory.to_string_lossy().into_owned(),
-                    format!("create {}: {error}", directory.display()),
+                    path.clone(),
+                    root.to_string_lossy().into_owned(),
+                    format!("{path:?} is not a name that can be written locally"),
                 )
                 .await,
             );
-        }
-    }
-    for file in plan.files {
+            continue;
+        };
+        // A directory has no size worth showing: its own `stat` size is an
+        // inode's, and the planner's `Planned` event fills the real one in a
+        // moment later. A stat that fails is not a reason to drop the item —
+        // the session will report what is actually wrong with it, on the row
+        // the user is looking at.
+        let size = match backend.stat(&path).await {
+            Ok(attrs) if attrs.kind != EntryKind::Dir => attrs.size,
+            _ => 0,
+        };
         let id = new_id();
         state
             .transfers
@@ -771,29 +816,14 @@ async fn enqueue_downloads(
                 Transfer::new(
                     id.clone(),
                     Direction::Down,
-                    file.source,
-                    file.destination.to_string_lossy().into_owned(),
-                    file.size,
+                    path,
+                    root.join(name).to_string_lossy().into_owned(),
+                    size,
                 )
                 .on_mount(&mount),
             )
             .await;
         ids.push(id);
-    }
-    // A subtree that could not be listed is a failed row, not one fewer file.
-    // The queue is where the user is already looking for what a copy did, and
-    // a copy that quietly omits a directory it could not read is the failure
-    // this story exists to prevent.
-    for problem in plan.problems {
-        ids.push(
-            report_problem(
-                &state.transfers,
-                problem.path,
-                problem.destination.to_string_lossy().into_owned(),
-                problem.reason,
-            )
-            .await,
-        );
     }
     run_queue(&state);
     Ok(ids)
@@ -866,6 +896,10 @@ async fn enqueue_uploads(
 }
 
 /// Pause one transfer. It keeps its partial, which is its resume point.
+///
+/// Since E22-S3 "one transfer" can be a whole folder, and the granularity is
+/// the row: pausing a folder stops the session, which drains what is in flight
+/// and leaves the files it already published where they are.
 #[tauri::command]
 async fn pause_transfer(
     state: tauri::State<'_, AppState>,
@@ -876,6 +910,13 @@ async fn pause_transfer(
 }
 
 /// Cancel one transfer. Its partial is not kept.
+///
+/// "Its partial" is the file that was mid-flight: the engine never publishes a
+/// staged file it did not finish and verify. For a **folder** row (E22-S3) the
+/// files that already landed do stay — a cancel stops a copy, it does not undo
+/// one, and removing a tree the user can see arriving is not something a Cancel
+/// button should do on their behalf. Retrying the row resumes into the same
+/// destination and the planner skips what is already there.
 #[tauri::command]
 async fn cancel_transfer(
     state: tauri::State<'_, AppState>,
@@ -886,6 +927,13 @@ async fn cancel_transfer(
 }
 
 /// Put a paused or failed transfer back in the queue.
+///
+/// A retried **folder** row (E22-S3) is not a second copy of the tree: the
+/// session runs the planner again, which skips every file already at the
+/// destination on size and mtime, and a file that was torn mid-flight is picked
+/// up from the resume journal rather than from the start. So the granularity
+/// being the folder costs a re-scan and nothing else — which is the trade that
+/// makes one row per folder work at all.
 #[tauri::command]
 async fn retry_transfer(
     state: tauri::State<'_, AppState>,
@@ -1011,6 +1059,26 @@ fn existing_directories(paths: Vec<String>) -> Vec<String> {
 /// Answered by the engine rather than the window because the naming rule —
 /// the suffix goes before the extension, numbering skips what is taken — is
 /// the kind of thing two implementations would disagree about.
+///
+/// **This asks about the items the user picked, not about what is inside
+/// them**, and it always did — which is why E22-S3 could make a folder one row
+/// without touching this function. A folder named in `paths` clashes when a
+/// folder of that name is already at the destination, and the three answers
+/// mean, at that granularity:
+///
+/// - **Skip** drops the folder from the batch; nothing beneath it is looked at.
+/// - **Replace** enqueues it, and the session merges into what is there —
+///   same-named files are overwritten, ones the source does not have are left
+///   alone. It is not a delete-then-copy, because `delete` is off in
+///   `LocalSyncOptions` and stays off: a transfer must not remove files at the
+///   destination nobody asked about (E22-S1). A folder-level "Replace" is
+///   therefore weaker than a file-level one, and that is the honest reading of
+///   what a copy can promise.
+/// - **Keep both** offers a free name, and **the window does not yet use it** —
+///   `resolveConflicts` re-sends the original paths, so it currently behaves as
+///   Replace. That is a pre-existing gap, older than this story and not made
+///   worse by it: applying the suggested name needs a per-path destination in
+///   `enqueue_downloads`/`enqueue_uploads`, which neither command takes.
 #[tauri::command]
 async fn check_conflicts(
     window: tauri::Window,
@@ -1430,9 +1498,16 @@ fn promise_sink(state: &tauri::State<'_, AppState>) -> drag::PromiseSink {
 /// - a rename inside one directory is on one filesystem, so it is atomic and
 ///   free. Nothing half-copied ever appears under the final name.
 ///
-/// The transfer itself is E22's, unchanged: `plan_downloads` for the walk and
-/// the ordinary queue for the bytes, so a promise is visible in the transfers
-/// sheet like anything else and can be paused, cancelled and retried there.
+/// The transfer itself is the ordinary queue's, so a promise is visible in the
+/// transfers sheet while it runs and can be paused or cancelled there — and it
+/// is **one row for the whole item**, folder or file, since E22-S3.
+///
+/// The row is taken back out of the queue when the promise ends, whatever
+/// happened. It is the one row in the app whose destination stops existing the
+/// moment it finishes, and a queue file that outlived the drag that made it is
+/// how this leaked: `TransferQueue::restore` re-queues anything unfinished on
+/// the next launch, so an abandoned drag came back as a transfer copying into a
+/// staging directory nobody was ever going to sweep. See [`retire`].
 async fn fulfil_promise(
     sessions: &Arc<SessionManager>,
     transfers: &Arc<TransferQueue>,
@@ -1440,76 +1515,98 @@ async fn fulfil_promise(
     request: &drag::PromiseRequest,
 ) -> Result<()> {
     let mount = &request.selection.mount;
-    let backend = sessions
-        .backend(mount)
-        .await
-        .ok_or_else(|| EngineError::Disconnected(format!("{mount} is not connected")))?;
-
-    let staging = request.folder().join(format!(".excalibur-{}", new_id()));
-    std::fs::create_dir_all(&staging)
-        .map_err(|error| EngineError::Io(format!("create {}: {error}", staging.display())))?;
-    // Every early return from here on has to take the staging directory with
-    // it: a dotted directory left on somebody's Desktop is invisible litter,
-    // which is the worst kind.
-    let landed = fetch_into(transfers, worker, backend.as_ref(), request, &staging).await;
-    let outcome = match landed {
+    if sessions.backend(mount).await.is_none() {
+        return Err(EngineError::Disconnected(format!(
+            "{mount} is not connected"
+        )));
+    }
+    let staging = PromiseStaging::inside(request.folder())?;
+    let landed = fetch_into(transfers, worker, request, staging.path()).await;
+    match landed {
         Ok(landed) => place(&landed, &request.destination),
         Err(error) => Err(error),
-    };
-    let _ = std::fs::remove_dir_all(&staging);
-    outcome
+    }
+    // `staging` is swept here, on every path out including a panic.
+}
+
+/// A promise's staging directory, swept when it goes out of scope.
+///
+/// A guard rather than a `remove_dir_all` at the end of [`fulfil_promise`],
+/// because what used to sit there was a comment asking the reader to keep an
+/// invariant — "every early return from here on has to take the staging
+/// directory with it". A `?` kept it. The `catch_unwind` one frame up in
+/// `drag::macos`, which turns a panic in this sink into a refused promise, did
+/// not; nor did a `⌘Q` accepted while a copy was still running. Three
+/// `.excalibur-*` directories holding 42 MB were found in a real Downloads
+/// folder, which is the cost of an invariant a type was not asked to keep.
+struct PromiseStaging(std::path::PathBuf);
+
+impl PromiseStaging {
+    /// A fresh hidden directory inside the folder Finder named.
+    fn inside(folder: &Path) -> Result<Self> {
+        let directory = folder.join(format!(".excalibur-{}", new_id()));
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| EngineError::Io(format!("create {}: {error}", directory.display())))?;
+        Ok(Self(directory))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PromiseStaging {
+    fn drop(&mut self) {
+        // Best effort, like every other sweep in this app: failing a drag that
+        // worked because its scaffolding could not be removed is the worse
+        // trade. [`sweep_abandoned_staging`] is the backstop for a process that
+        // died before getting here.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Run the transfer, and answer with the one thing that landed in `staging`.
 async fn fetch_into(
     transfers: &Arc<TransferQueue>,
     worker: &Arc<Worker>,
-    backend: &dyn ShareBackend,
     request: &drag::PromiseRequest,
     staging: &Path,
 ) -> Result<std::path::PathBuf> {
-    let plan = plan::plan_downloads(backend, std::slice::from_ref(&request.path), staging).await;
-    // A problem in the walk is the answer here, not a row: nobody is watching
-    // the queue for a drag onto the Desktop, and a promise that reported
-    // success for a subtree it could not read would produce a folder that is
-    // quietly missing files. Finder shows this sentence.
-    if let Some(problem) = plan.problems.first() {
-        return Err(EngineError::Io(problem.reason.clone()));
-    }
-    for directory in &plan.directories {
-        std::fs::create_dir_all(directory)
-            .map_err(|error| EngineError::Io(format!("create {}: {error}", directory.display())))?;
-    }
-
+    // Names from the server are not paths, the same rule `enqueue_downloads`
+    // keeps — and here it guards a write into somebody's Desktop.
+    let name = plan::local_name(&request.path).ok_or_else(|| {
+        EngineError::Io(format!(
+            "{:?} is not a name that can be written locally",
+            request.path
+        ))
+    })?;
     // Subscribed before anything is queued: a small file can finish before the
     // wait below starts, and a wait that missed its own transfer would hold
     // Finder's progress open until the queue happened to change again.
     let changes = transfers.events();
-    let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for file in plan.files {
-        let id = new_id();
-        transfers
-            .add(
-                Transfer::new(
-                    id.clone(),
-                    Direction::Down,
-                    file.source,
-                    file.destination.to_string_lossy().into_owned(),
-                    file.size,
-                )
-                .on_mount(&request.selection.mount),
+    let id = new_id();
+    transfers
+        .add(
+            Transfer::new(
+                id.clone(),
+                Direction::Down,
+                request.path.clone(),
+                staging.join(name).to_string_lossy().into_owned(),
+                0,
             )
-            .await;
-        pending.insert(id);
-    }
+            .on_mount(&request.selection.mount),
+        )
+        .await;
     let running = Arc::clone(worker);
     tauri::async_runtime::spawn(async move { running.drain().await });
 
-    settle(transfers, changes, pending).await?;
+    let settled = settle(transfers, changes, &id).await;
+    retire(transfers, worker, &id).await;
+    settled?;
     only_child(staging)
 }
 
-/// Wait for every row in `pending` to stop moving, or say why one did not.
+/// Wait for one row to stop moving, or say why it did not land.
 ///
 /// The broadcast channel is a **wake-up**, not the record: it drops messages
 /// for a slow consumer without telling it, so every pass re-reads the queue,
@@ -1518,38 +1615,105 @@ async fn fetch_into(
 async fn settle(
     transfers: &Arc<TransferQueue>,
     mut changes: tokio::sync::broadcast::Receiver<QueueEvent>,
-    mut pending: std::collections::HashSet<String>,
+    id: &str,
 ) -> Result<()> {
     loop {
-        let rows = transfers.all().await;
-        for row in &rows {
-            if !pending.contains(&row.id) {
-                continue;
-            }
-            match row.status {
-                TransferStatus::Done => {
-                    pending.remove(&row.id);
-                }
-                // Paused counts as an ending, not as a wait. The user pausing a
-                // queue must not leave Finder spinning on a copy that is never
-                // going to move again.
-                TransferStatus::Failed | TransferStatus::Cancelled | TransferStatus::Paused => {
-                    return Err(EngineError::Io(
-                        row.error
-                            .clone()
-                            .unwrap_or_else(|| format!("{} did not finish", row.name)),
-                    ));
-                }
-                TransferStatus::Queued | TransferStatus::Running => {}
-            }
-        }
-        // A row cleared out from under us is one nobody can report on any more.
-        pending.retain(|id| rows.iter().any(|row| &row.id == id));
-        if pending.is_empty() {
+        let row = transfers.all().await.into_iter().find(|row| row.id == id);
+        // A row cleared out from under us — `Clear finished` landing between the
+        // copy ending and this pass — is one nobody can report on any more, so
+        // the wait ends and `only_child` becomes the judge of whether anything
+        // arrived. Inventing a failure here would refuse a promise that worked.
+        let Some(row) = row else {
             return Ok(());
+        };
+        match row.status {
+            TransferStatus::Done => return Ok(()),
+            // Paused counts as an ending, not as a wait. The user pausing a
+            // queue must not leave Finder spinning on a copy that is never
+            // going to move again.
+            TransferStatus::Failed | TransferStatus::Cancelled | TransferStatus::Paused => {
+                return Err(EngineError::Io(
+                    row.error
+                        .clone()
+                        .unwrap_or_else(|| format!("{} did not finish", row.name)),
+                ));
+            }
+            TransferStatus::Queued | TransferStatus::Running => {}
         }
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), changes.recv()).await;
     }
+}
+
+/// How long a retired promise waits for its session to let go of the stage.
+///
+/// A cancel reaches the engine on its own poll — a tenth of a second in both
+/// adapters — and the session then finishes the write it is inside before it
+/// returns. Two seconds is far past that and short enough that a wedged session
+/// does not hold up the drag; the sweep goes ahead either way, because a
+/// directory removed while something is still writing is a worse outcome only
+/// for that write, and a directory never removed is litter forever.
+const RETIRE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Stop a promise's row, wait for the session to let go, and forget the row.
+///
+/// Both halves matter and neither used to happen. **Stopping** is what a
+/// cancelled or paused promise needs: the old code returned on the first bad
+/// row and left its siblings running, so the staging directory was removed and
+/// then re-created underneath by a session still writing into it —
+/// `LocalSink` calls `create_dir_all` on its own root. **Forgetting** is what a
+/// restart needs: a row that names a staging directory must never be in the
+/// file that `TransferQueue::restore` re-queues from.
+async fn retire(transfers: &Arc<TransferQueue>, worker: &Arc<Worker>, id: &str) {
+    worker.stop(id, TransferStatus::Cancelled).await;
+    let deadline = std::time::Instant::now() + RETIRE_WAIT;
+    while worker.is_busy(id).await && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    transfers.remove(id).await;
+}
+
+/// Remove staging directories a previous run left behind, and their rows.
+///
+/// The only orphan the guard on [`PromiseStaging`] cannot catch is a process
+/// that stopped existing — a quit accepted mid-drag, a crash, a kill. What such
+/// a run does leave is its **row**, in a queue file that names the staging
+/// directory in `dest_path`, so the app can say which directories are its own
+/// rather than deleting anything that matches a pattern in somebody's folder.
+///
+/// Called before the restored queue is drained, because draining it is the
+/// thing that would otherwise copy a whole tree back into one of these.
+async fn sweep_abandoned_staging(transfers: &Arc<TransferQueue>) {
+    for row in transfers.all().await {
+        let Some(staging) = staging_root(Path::new(&row.dest_path)) else {
+            continue;
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        transfers.remove(&row.id).await;
+    }
+}
+
+/// The `.excalibur-*` ancestor of a path, when it has one.
+///
+/// Two narrowings, because this answer becomes a `remove_dir_all` and a false
+/// positive is somebody's data. It matches a whole path **component**, so a
+/// folder called `my.excalibur-stuff` is not one; and only a **proper
+/// ancestor**, so a file the user downloaded and called `.excalibur-notes.txt`
+/// is not one either — a staging directory always has the landed item inside
+/// it, which is why the row's path continues past it.
+fn staging_root(destination: &Path) -> Option<std::path::PathBuf> {
+    let mut walked = std::path::PathBuf::new();
+    let mut parts = destination.iter().peekable();
+    while let Some(part) = parts.next() {
+        walked.push(part);
+        if parts.peek().is_some()
+            && part
+                .to_str()
+                .is_some_and(|part| part.starts_with(".excalibur-"))
+        {
+            return Some(walked);
+        }
+    }
+    None
 }
 
 /// The single entry a fulfilled promise left in its staging directory.
@@ -2112,9 +2276,17 @@ pub fn run() {
                 }
             });
 
-            // Anything restored from the last run is queued, so it starts.
+            // Anything restored from the last run is queued, so it starts —
+            // but a row left over from a drag that never finished names a
+            // staging directory, and draining it would refill one. Swept first,
+            // in the same task, so the order is the code's rather than the
+            // scheduler's.
             let resuming = Arc::clone(&worker);
-            tauri::async_runtime::spawn(async move { resuming.drain().await });
+            let restored = Arc::clone(&queue);
+            tauri::async_runtime::spawn(async move {
+                sweep_abandoned_staging(&restored).await;
+                resuming.drain().await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2474,10 +2646,44 @@ fn confirm_exit(app: &tauri::AppHandle, code: Option<i32>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
-        encode, parse_range, percent_decode, window_from_host, STREAM_DEFAULT_WINDOW,
+        encode, parse_range, percent_decode, staging_root, window_from_host, STREAM_DEFAULT_WINDOW,
         STREAM_MAX_WINDOW,
     };
+
+    #[test]
+    fn a_row_inside_a_staging_directory_names_the_directory_to_sweep() {
+        // What the startup sweep matches on. The answer has to be the staging
+        // directory itself and not the file under it, because the whole tree
+        // is scaffolding.
+        assert_eq!(
+            staging_root(Path::new(
+                "/Users/x/Downloads/.excalibur-1a2b-3/Show/season 1/e01.txt"
+            )),
+            Some(Path::new("/Users/x/Downloads/.excalibur-1a2b-3").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn an_ordinary_download_is_never_swept() {
+        // The sweep removes directories, so a false positive is data loss. It
+        // matches a whole path component: a file the user happens to have
+        // called `.excalibur-notes.txt` must not take its folder with it.
+        assert_eq!(
+            staging_root(Path::new("/Users/x/Downloads/Show/season 1/e01.txt")),
+            None
+        );
+        assert_eq!(
+            staging_root(Path::new("/Users/x/Downloads/.excalibur-notes.txt")),
+            None
+        );
+        assert_eq!(
+            staging_root(Path::new("/Users/x/Downloads/my.excalibur-stuff/a.txt")),
+            None
+        );
+    }
 
     #[test]
     fn no_range_header_serves_a_window_from_the_start() {

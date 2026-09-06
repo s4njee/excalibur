@@ -7,6 +7,17 @@
 //! Persisted here too, for the same reason: the thing that changes the queue
 //! is the thing that should be writing it down, and a shell that saved on
 //! every event would race the worker that produced them.
+//!
+//! **Every update is broadcast; only a durable one is written down.** The two
+//! used to be the same call, and the cost of that was measured rather than
+//! argued: a real `transfers.json` on this machine is 1.2 MB across 2253 rows,
+//! and [`TransferQueue::persist`] rewrites the whole file, so every progress
+//! tick of every running transfer rewrote 1.2 MB. Progress is the one thing in
+//! a row that a restart does not need — see [`restore`], which throws away the
+//! rate and the ETA and re-queues anything that was moving — so the file is
+//! written when the row's *durable* shape changes and not when its byte count
+//! moves. There is no timer and no coalescing window: the rule is a comparison
+//! of two values, which is a thing a test can state.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -84,7 +95,9 @@ impl TransferQueue {
             .write()
             .await
             .insert(transfer.id.clone(), transfer.clone());
-        self.announce(transfer).await;
+        // A row appearing is durable by definition: it is the whole of what
+        // the file exists to remember.
+        self.announce(transfer, true).await;
     }
 
     /// Apply a change to one transfer, if it is still there.
@@ -93,14 +106,31 @@ impl TransferQueue {
     /// progress cannot overwrite a `Cancelled` the user set while the chunk
     /// was in flight — the read and the write happen under one lock.
     pub async fn update(&self, id: &str, change: impl FnOnce(&mut Transfer)) -> Option<Transfer> {
-        let updated = {
+        let (updated, durable_changed) = {
             let mut items = self.items.write().await;
             let transfer = items.get_mut(id)?;
+            let before = durable(transfer);
             change(transfer);
-            transfer.clone()
+            let after = durable(transfer);
+            (transfer.clone(), before != after)
         };
-        self.announce(updated.clone()).await;
+        self.announce(updated.clone(), durable_changed).await;
         Some(updated)
+    }
+
+    /// Forget one transfer, whatever state it is in.
+    ///
+    /// For a row whose destination stops existing when the thing that made it
+    /// finishes — a promised drag's staging directory (E24-S1). Leaving such a
+    /// row in the file is not a harmless record: [`restore`] re-queues it on
+    /// the next launch, and it would copy a file into a directory that was
+    /// deleted when the drag ended.
+    pub async fn remove(&self, id: &str) -> Option<Transfer> {
+        let gone = self.items.write().await.remove(id);
+        if gone.is_some() {
+            self.persist().await;
+        }
+        gone
     }
 
     /// The next transfer a free worker should start, if any.
@@ -156,9 +186,13 @@ impl TransferQueue {
         changed
     }
 
-    async fn announce(&self, transfer: Transfer) {
+    /// Tell the window, and write the file only when the window is not the
+    /// only one that needed telling.
+    async fn announce(&self, transfer: Transfer, durable: bool) {
         let _ = self.events.send(QueueEvent { transfer });
-        self.persist().await;
+        if durable {
+            self.persist().await;
+        }
     }
 
     /// Write the queue out. A failure is logged by being ignored: losing the
@@ -173,6 +207,29 @@ impl TransferQueue {
             return;
         };
         let _ = write_atomically(path, &text);
+    }
+}
+
+/// One row with everything a restart does not need blanked out.
+///
+/// Compared either side of an update to decide whether the file has to be
+/// rewritten. The four fields blanked here are exactly the ones [`restore`]
+/// either discards or cannot use: `rate` and `eta_seconds` describe a process
+/// that will not exist, and `bytes_done` and `files_done` describe progress a
+/// restored row re-derives — it comes back as `Queued`, and what it does not
+/// have to move again is the resume journal's answer, not this file's.
+///
+/// A whole clone rather than a tuple of the fields that *do* matter, so that a
+/// field added to [`Transfer`] later is durable until somebody says otherwise.
+/// That is the safe direction to be wrong in: the cost of a needless write is a
+/// write, and the cost of a missed one is a row that does not come back.
+fn durable(transfer: &Transfer) -> Transfer {
+    Transfer {
+        bytes_done: 0,
+        files_done: 0,
+        rate: None,
+        eta_seconds: None,
+        ..transfer.clone()
     }
 }
 

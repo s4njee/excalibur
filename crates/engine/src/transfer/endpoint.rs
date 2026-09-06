@@ -55,7 +55,7 @@ use xsync_endpoint::{
 };
 
 use super::rate::Progress;
-use super::xsync_engine::{Settled, Tally};
+use super::xsync_engine::{Moved, Settled, Tally};
 use super::{Direction, Transfer};
 use crate::backend::{Attrs, EntryKind, ShareBackend, WriteMode};
 use crate::error::{EngineError, Result};
@@ -1299,7 +1299,7 @@ pub async fn run(
     transfer: &Transfer,
     read_depth: usize,
     stop: Arc<AtomicBool>,
-    mut progress: impl FnMut(u64, Option<u64>) + Send + 'static,
+    mut progress: impl FnMut(Moved) + Send + 'static,
 ) -> Result<Settled> {
     let ends = Ends::build(share, transfer, read_depth).await?;
     let share = Arc::clone(share);
@@ -1340,8 +1340,8 @@ pub async fn run(
             continue;
         }
         let moved = tally.moved();
-        if sampler.sample(moved, Instant::now()) {
-            progress(moved, tally.planned_bytes());
+        if sampler.sample(moved.bytes, Instant::now()) {
+            progress(moved);
         }
     }
 
@@ -1356,8 +1356,10 @@ pub async fn run(
     if stop.load(Ordering::SeqCst) || report.cancelled {
         // The user's decision arriving, not a failure. The row's status is
         // already theirs and the caller must not settle it.
+        let moved = tally.moved();
         return Ok(Settled {
-            bytes: tally.moved(),
+            bytes: moved.bytes,
+            files: moved.files,
             verified: false,
             note: None,
             stopped: true,
@@ -1374,7 +1376,11 @@ pub async fn run(
     }
 
     let settled = tally.settle(&report);
-    progress(settled.bytes, tally.planned_bytes());
+    progress(Moved {
+        bytes: settled.bytes,
+        files: settled.files,
+        planned: tally.moved().planned,
+    });
     Ok(settled)
 }
 

@@ -43,7 +43,7 @@ use tokio::sync::{RwLock, Semaphore};
 
 use super::queue::TransferQueue;
 use super::rate::{backoff, Progress};
-use super::xsync_engine::{Settled, XsyncRoute};
+use super::xsync_engine::{Moved, Settled, XsyncRoute};
 use super::{Direction, Status, Transfer};
 use crate::backend::ShareBackend;
 use crate::error::Result;
@@ -237,6 +237,19 @@ impl Worker {
                 }
             })
             .await;
+    }
+
+    /// Whether a session for this row is still open.
+    ///
+    /// The registration [`Self::stop`] signals through, read as a fact: it is
+    /// inserted before the first attempt and removed after the last one, so it
+    /// answers "has the engine let go of this transfer's files yet", which is
+    /// not the same question as the row's status. A cancel writes `Cancelled`
+    /// on the row immediately and the session then drains what is in flight;
+    /// anything that has to sweep the destination — a promised drag's staging
+    /// directory (E24-S1) — has to wait for *this* rather than for the status.
+    pub async fn is_busy(&self, id: &str) -> bool {
+        self.stopping.read().await.contains_key(id)
     }
 
     /// Run queued transfers until there are none left.
@@ -443,40 +456,45 @@ impl Worker {
     /// Both routes report bytes on their own schedule and are already throttled
     /// by the session; this only writes it down, on a task so that the engine's
     /// thread never waits for the queue's lock.
-    fn pump(&self, transfer: &Transfer) -> impl FnMut(u64, Option<u64>) + Send + 'static {
+    fn pump(&self, transfer: &Transfer) -> impl FnMut(Moved) + Send + 'static {
         let queue = Arc::clone(&self.queue);
         let id = transfer.id.clone();
-        let (updates, mut written) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+        let (updates, mut written) = tokio::sync::mpsc::unbounded_channel::<Moved>();
         tokio::spawn(async move {
             let mut rate = Progress::new();
-            while let Some((done, total)) = written.recv().await {
+            while let Some(moved) = written.recv().await {
                 let now = Instant::now();
-                rate.sample(done, now);
+                rate.sample(moved.bytes, now);
                 let speed = rate.rate();
-                let eta = total.and_then(|total| rate.eta_seconds(done, total));
+                let eta = moved
+                    .planned
+                    .and_then(|planned| rate.eta_seconds(moved.bytes, planned.bytes));
                 queue
                     .update(&id, |item| {
                         if item.status != Status::Running {
                             return;
                         }
-                        item.bytes_done = done;
+                        item.bytes_done = moved.bytes;
+                        item.files_done = moved.files;
                         item.rate = speed;
                         item.eta_seconds = eta;
-                        // `Planned` is where a directory row learns its size:
+                        // `Planned` is where a folder row learns what it is:
                         // until the planner has scanned, nothing on this side
-                        // knows how big the job is, and a bar at zero for a
-                        // whole transfer looks broken.
-                        if let Some(total) = total {
-                            if total > 0 {
-                                item.bytes_total = total;
-                            }
+                        // knows how big the job is or how many files are in it,
+                        // and a bar at zero for a whole transfer looks broken.
+                        let Some(planned) = moved.planned else {
+                            return;
+                        };
+                        if planned.bytes > 0 {
+                            item.bytes_total = planned.bytes;
                         }
+                        item.files_total = planned.files;
                     })
                     .await;
             }
         });
-        move |done, total| {
-            let _ = updates.send((done, total));
+        move |moved| {
+            let _ = updates.send(moved);
         }
     }
 
@@ -500,6 +518,14 @@ impl Worker {
                 item.bytes_done = settled.bytes;
                 item.verified = settled.verified;
                 item.note.clone_from(&settled.note);
+                // The last word on the count, for the same reason as the bytes:
+                // the throttle may have dropped the tick that carried the final
+                // file, and a folder row that finished on "1001 of 1002" would
+                // be reporting a file it actually moved as missing.
+                item.files_done = settled.files;
+                if item.files_total < settled.files {
+                    item.files_total = settled.files;
+                }
             })
             .await;
         Ok(())

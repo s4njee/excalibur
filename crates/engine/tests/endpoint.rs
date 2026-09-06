@@ -193,6 +193,50 @@ async fn a_folder_pulled_off_a_share_is_walked_too() {
         b"a whole other year"
     );
     assert!(destination.join("Show/artwork").is_dir());
+    // One row for the folder is only honest if the row can say what the folder
+    // was (E22-S3). The count is the planner's `Planned` event, which used to
+    // be read for its byte total and thrown away.
+    assert_eq!(done.files_total, 4, "the row does not know what it copied");
+    assert_eq!(done.files_done, 4, "the row stopped short of its own total");
+    assert!(
+        done.bytes_total > 0,
+        "the row never learned its size from the planner"
+    );
+}
+
+#[tokio::test]
+async fn one_file_says_nothing_about_a_count() {
+    // The count exists for a folder row. A row that names one file and then
+    // announced `1 file` would be repeating its own title, so the planner's
+    // answer is carried and the *window* decides not to show it — which means
+    // this asserts the engine reports one, honestly, rather than zero.
+    let workspace = tempfile::tempdir().expect("temp dir");
+    let exported = workspace.path().join("export");
+    std::fs::create_dir_all(&exported).unwrap();
+    std::fs::write(exported.join("one.txt"), b"just this").unwrap();
+    let destination = workspace.path().join("downloads");
+    std::fs::create_dir(&destination).unwrap();
+
+    let share: Arc<dyn ShareBackend> = Arc::new(
+        LocalBackend::open(&exported, false)
+            .await
+            .expect("open the export as a mount"),
+    );
+    let done = run_one(
+        &share,
+        Transfer::new(
+            "pull",
+            Direction::Down,
+            "one.txt",
+            destination.join("one.txt").to_str().expect("utf-8"),
+            0,
+        ),
+    )
+    .await;
+
+    assert_eq!(done.status, Status::Done, "{:?}", done.error);
+    assert_eq!(done.files_total, 1);
+    assert_eq!(done.files_done, 1);
 }
 
 #[tokio::test]

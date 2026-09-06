@@ -183,6 +183,13 @@ export function formatRate(bytesPerSecond: number): string {
  *   difference between the two words is the whole point of having both.
  * - `done · unchanged` when the copy found the file already there. Nothing
  *   moved and nothing failed, which is neither `done · 0 B` nor an error.
+ *
+ * And one more since E22-S3, where a folder became **one row**: a count of
+ * files, `412 / 1002 files` while running and `1002 files` when finished. Only
+ * when there is more than one — a row that named a single file and then said
+ * `1 file` would be repeating its own title. The count is the planner's, so it
+ * appears the moment the scan ends rather than being guessed at enqueue time,
+ * which is why a folder row can briefly show a size and no count.
  */
 export function formatTransferStatus(transfer: {
   status: string;
@@ -192,7 +199,11 @@ export function formatTransferStatus(transfer: {
   etaSeconds: number | null;
   verified?: boolean;
   note?: string | null;
+  filesDone?: number;
+  filesTotal?: number;
 }): string {
+  const filesTotal = transfer.filesTotal ?? 0;
+  const filesDone = transfer.filesDone ?? 0;
   switch (transfer.status) {
     case "queued":
       return "queued";
@@ -204,7 +215,8 @@ export function formatTransferStatus(transfer: {
       const word = transfer.verified ? "verified" : "done";
       // The note replaces the size rather than joining it: "done · unchanged ·
       // 84 KB" reads as though 84 KB moved, which is the one thing it did not.
-      return `${word} · ${transfer.note ?? formatSize(transfer.bytesDone)}`;
+      const what = transfer.note ?? formatSize(transfer.bytesDone);
+      return filesTotal > 1 ? `${word} · ${filesTotal} files · ${what}` : `${word} · ${what}`;
     }
     case "failed":
       return "failed";
@@ -223,6 +235,7 @@ export function formatTransferStatus(transfer: {
   } else {
     parts.push(formatSize(transfer.bytesDone));
   }
+  if (filesTotal > 1) parts.push(`${filesDone} / ${filesTotal} files`);
   if (transfer.rate !== null && transfer.rate > 0) parts.push(formatRate(transfer.rate));
   if (transfer.etaSeconds !== null) parts.push(formatDuration(transfer.etaSeconds));
   return parts.join(" · ");

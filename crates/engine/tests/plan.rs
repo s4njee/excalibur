@@ -272,3 +272,21 @@ async fn a_path_that_cannot_be_stated_still_becomes_a_row() {
     assert_eq!(plan.files.len(), 1);
     assert_eq!(plan.files[0].size, 0);
 }
+
+#[test]
+fn a_name_that_is_not_a_name_is_refused_before_it_becomes_a_path() {
+    // The security rule of this file, reachable on its own since E22-S3: a
+    // caller that makes one row for a whole folder needs it as much as the
+    // walk that makes one per file, and two copies of it is one too many.
+    use excalibur_engine::transfer::plan::local_name;
+
+    assert_eq!(local_name("Media/Show"), Some("Show"));
+    assert_eq!(local_name("Media/Show/"), Some("Show"));
+    assert_eq!(local_name("Show"), Some("Show"));
+    assert_eq!(local_name("Media/.."), None);
+    assert_eq!(local_name(".."), None);
+    assert_eq!(local_name("."), None);
+    assert_eq!(local_name(""), None);
+    assert_eq!(local_name("Media/a\\b"), None);
+    assert_eq!(local_name("Media/a\0b"), None);
+}

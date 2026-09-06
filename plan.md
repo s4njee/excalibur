@@ -195,6 +195,7 @@ reconstruct it from git history.
 | **M7** | E22-S1 — Local↔xsync through xsync's engine | **Done** 2026-09-06 (congress 40× faster; one 1 GiB file 20% slower) |
 | **M7** | E22-S2 — `ShareBackend` as an xsync endpoint | **Done** 2026-09-06 (folder drop fixed; remote↔remote and the hash-cache key deferred to E22-S3 / xsync) |
 | **M7** | E24-S2 — Drag between our own windows | **Done** 2026-09-06 (drag out to Finder is E24-S1) |
+| **M7** | E22-S3 — One queue, any pair | **Partly done** 2026-09-06 (a folder is one row, 33–63× faster; the queue stops rewriting itself; the four ACs are open) |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -4575,16 +4576,201 @@ the dependency and retires the red-gate note.
   unchanged. The interesting number is a tree over SFTP or NFS through the planner
   against the chunk loop's, and it wants orion back on a wired link.
 
-#### E22-S3 — One queue, any pair
+#### E22-S3 — One queue, any pair — **Partly done (the folder row; the four ACs below are untouched)**
+
+*2026-09-06.*
+
 **AC**
-- `Transfer` loses `Direction::{Up,Down}` and gains `from: Endpoint` / `to: Endpoint`
+- [x] **A directory row stops being one row per file.** Written as an AC here rather
+  than left implicit: it is not in the four bullets below, but E22-S1's and E22-S2's
+  `Next steps` both assign it to this story by name, and it is what was done.
+  `enqueue_downloads` makes **one row for a folder**, as `enqueue_uploads` already
+  did, and the row says what the folder holds — `412 / 1002 files` from the planner's
+  `Planned` event.
+- [ ] `Transfer` loses `Direction::{Up,Down}` and gains `from: Endpoint` / `to: Endpoint`
   where an `Endpoint` is a mount id and a path; the row shows both ends the way the
   handoff's row shows a destination path. Local is a mount like any other (E21).
-- Pause/resume/retry/cancel are per transfer and survive a restart and a reconnect of
+  **Untouched.** This is the change that unblocks remote↔remote (E22-S2's first
+  unticked AC), and it is a data-model change across the queue, the worker, both
+  adapters, the persisted file and the panel. Doing it inside a performance fix would
+  have hidden the fix in it.
+- [ ] Pause/resume/retry/cancel are per transfer and survive a restart and a reconnect of
   either end (this closes E13-S6). Rate and ETA are xsync's.
-- The queue is the app-wide **Transfers window** the handoff drew, not a per-window
+  **Partly, and not on purpose.** The granularity is now the folder rather than one
+  file of it, which is what makes cancelling a dropped folder possible at all; and a
+  retried folder re-runs the planner, which skips what already landed. What is still
+  missing is the *reconnect* half — a row whose mount came back is not re-pointed at
+  it — and that is E13-S6's, not this fix's.
+- [ ] The queue is the app-wide **Transfers window** the handoff drew, not a per-window
   sheet; the sheet stays as the compact view. (Resolves the E13-S1 design gap.)
-- "Apply to all remaining" is a choice on the conflict prompt, as E13-S6 asked.
+  **Untouched.**
+- [ ] "Apply to all remaining" is a choice on the conflict prompt, as E13-S6 asked.
+  **Untouched**, and worth flagging: `Keep both` on the existing prompt computes a free
+  name, shows it, and then does not use it — `resolveConflicts` re-sends the original
+  paths, so it currently behaves as `Replace`. That is older than this story and was
+  found while reading the conflict path; it is written up on `check_conflicts`.
+
+**Results**
+
+**Two measured bugs fixed; the story's own four ACs are still open.** Both are in
+`docs/benchmarks.md`'s spirit rather than its letter — the harness is
+`crates/engine/tests/throughput.rs`, `#[ignore]`d, and it prints the table below.
+
+*The folder download was 70× of pure scheduling*
+
+Every queue row is run by `Worker::attempt`, and every attempt is a whole
+`sync_endpoints` session: a scoped thread pool of four, a cancel watcher, a journal.
+`enqueue_downloads` walked a selection with `plan::plan_downloads` and made **one row
+per file**, so a folder of a thousand files was a thousand sessions and roughly four
+thousand thread spawns to move a thousand 4 KiB files. `enqueue_uploads` had already
+stopped doing this in E22-S2, which is why the panel showed two shapes at once.
+
+Serial run, release, this machine (`--test-threads=1`; the same tests run concurrently
+give noisier and slower numbers):
+
+| tree | `endpoint: down` | app **before** (row per file) | app **after** (row per folder) |
+|---|---|---|---|
+| 1002 files, 67 MiB | 0.23 s — 300.7 MB/s | 10.17 s — 6.7 MB/s | **0.31 s — 216.0 MB/s** |
+| 2000 × 4 KiB, 7 MiB | 0.58 s — 13.5 MB/s | 23.84 s — 0.3 MB/s | **0.38 s — 20.7 MB/s** |
+| 4 × 64 MiB, 256 MiB | 0.18 s — 1426.9 MB/s | 0.19 s — 1349.4 MB/s | **0.16 s — 1581.3 MB/s** |
+
+33× and 63× on the two trees that have file counts; nothing on four large files, which
+is the control — four sessions were never the problem. The after row is now at or
+inside the adapter's own number, which is the ceiling this could reach. The seam
+counters say why: the old shape made **3005** `stat` calls for 1002 files (the pre-walk
+plus each session's own), the new one makes 1003.
+
+*What the pre-walk bought, and where each part went*
+
+- the sizes on the rows are the planner's `Planned` event now, which is the scan the
+  transfer was going to do anyway rather than a second one over the browse session;
+- an empty remote directory is created by the sink as it walks, not by the command
+  creating `plan.directories` first — `endpoint.rs`'s existing test for that still
+  passes and it is the one that would have caught a loss;
+- **a subdirectory that could not be listed is the one real loss.** It used to be its
+  own failed row beside the ones that worked; it is now a per-entry failure inside the
+  session, and `endpoint::run` refuses to report success for a run with any, so the
+  *folder's* row fails with `3 of 1002 entries failed — season 2: permission denied`.
+  Nothing is silently omitted, which was E13-S4's actual rule; the detail is one
+  sentence instead of one row per problem. Written up in `docs/design-gaps.md`.
+
+`plan::plan_downloads` is **not** deleted: the CLI's `get` uses it to size a job before
+it starts, and its `safe_component` check is now reachable on its own as
+`plan::local_name`, which `enqueue_downloads` and the promise path both call. Its tests
+stay.
+
+*The queue rewrote itself 1.2 MB at a time*
+
+`announce()` broadcast **and** persisted on every update, and `persist()` writes the
+whole file. The user's real `transfers.json` is 1.2 MB over 2253 rows, so every progress
+tick of every running transfer rewrote 1.2 MB — additive on top of the bug above, and
+invisible in the harness until now because it used `TransferQueue::in_memory()`.
+
+The fix is a comparison, not a timer: `update()` takes a snapshot of the row either side
+of the closure with `bytes_done`, `files_done`, `rate` and `eta_seconds` blanked, and
+writes the file only when those two differ. The justification is `restore()` itself — it
+re-queues anything that was `Running`, throws the rate and the ETA away, and the resume
+point is the journal's rather than the recorded byte count's (E22-S2 moved it there), so
+progress is exactly the part a restart does not need. Everything else is durable by
+construction: the snapshot is a whole `Transfer` clone with four fields cleared, so a
+field added later is durable until somebody says otherwise.
+
+| case | before (derived) | after |
+|---|---|---|
+| 2253 rows, 1000 progress ticks | ≈2.93 s, 1065 MiB written | **512 µs, nothing written** |
+| 200 rows, 1000 progress ticks | ≈371 ms, 94 MiB written | **512 µs, nothing written** |
+
+"Before" is derived rather than measured: the harness prints the cost of **one** status
+change on the same queue — which is one full persist — and multiplies. There is no
+time-based coalescing anywhere in it.
+
+*Three orphaned `.excalibur-*` directories, 42 MB, in a real Downloads folder*
+
+`fulfil_promise` created the staging directory and removed it on the last line, under a
+comment asking the reader to keep the invariant that every early return takes it with
+them. Three holes, all found by reading the drag's state machine:
+
+1. **`settle` gave up on the first bad row and left its siblings running.** A cancelled
+   or paused promise removed the staging directory while a session was still writing
+   into it, and `LocalSink` calls `create_dir_all` on its own root — so it came straight
+   back, with nobody left to remove it.
+2. **The rows outlived the drag and were persisted.** `restore()` re-queues anything
+   unfinished, so the next launch resumed a copy *into* the abandoned staging directory.
+   That is how an abandoned drag turns into megabytes rather than an empty folder.
+3. **A straight-line `remove_dir_all` skips every non-local exit** — the `catch_unwind`
+   one frame up in `drag::macos`, a quit accepted mid-copy, a crash.
+
+Fixed in three matching pieces: `PromiseStaging` is an RAII guard, so (3) is a type's job
+rather than a reader's; `retire()` stops the row, waits for `Worker::is_busy` to go false
+so the session has let go, and takes the row out of the queue, which closes (1) and (2);
+and `sweep_abandoned_staging()` runs before the restored queue is drained and removes any
+staging directory *named by a restored row's `dest_path`*, which is the backstop for a
+process that stopped existing. It matches on a whole path component and only on a proper
+ancestor, so a file called `.excalibur-notes.txt` is not swept. The user's three existing
+directories will go on the next launch; none was deleted by hand.
+
+The promise is also one row now rather than one per file, which is the same change as
+the download and is what makes "stop the row" a single thing to do.
+
+*Files*
+
+| File | What |
+|---|---|
+| `src-tauri/src/lib.rs` | `enqueue_downloads` makes one row per selection. `PromiseStaging`, `retire`, `sweep_abandoned_staging`, `staging_root` new; `fetch_into`/`settle` are one-row. Folder semantics documented on `check_conflicts`, `pause_transfer`, `cancel_transfer`, `retry_transfer`. |
+| `crates/engine/src/transfer/queue.rs` | `announce` takes a durability flag; `durable()` decides it; `remove()` new. |
+| `crates/engine/src/transfer/xsync_engine.rs` | `Planned` and `Moved` new; `Tally` keeps the file count `Planned` was already carrying; `Settled` gains `files`. |
+| `crates/engine/src/transfer/endpoint.rs` | The progress callback is `FnMut(Moved)`. |
+| `crates/engine/src/transfer/worker.rs` | The pump writes `files_done`/`files_total`; `is_busy()` new. |
+| `crates/engine/src/transfer/mod.rs` | `Transfer` gains `files_done`/`files_total`, both `#[serde(default)]`. |
+| `crates/engine/src/transfer/plan.rs` | `local_name` public. The module comment says it no longer builds the app's rows. |
+| `crates/engine/tests/throughput.rs` | New in this story. Adds `app: down, one row per folder` beside the old shape, and a queue backed by a real file. |
+| `src/state/format.ts`, `src/state/types.ts` | The row says `412 / 1002 files`. |
+
+*Tests, each confirmed to fail when the change is reverted*
+
+| Test | Reverting |
+|---|---|
+| `queue::a_progress_tick_is_broadcast_but_not_written_down` | `announce(_, true)` unconditionally → the file gains `"bytesDone": 64` and it fails. |
+| `queue::a_status_a_size_and_an_error_are_all_written_down` | blanking `bytes_total` in `durable()` → the new total never reaches the file. |
+| `queue::a_removed_transfer_is_gone_from_the_file_too` | dropping `TransferQueue::remove` → does not compile, which is the point. |
+| `endpoint::a_folder_pulled_off_a_share_is_walked_too` | `Tally::absorb` ignoring `files` again → `files_total` is 0, not 4. |
+| `endpoint::one_file_says_nothing_about_a_count` | same. |
+| `plan::a_name_that_is_not_a_name_is_refused_before_it_becomes_a_path` | `local_name` without `safe_component` → `..` comes back as a name. |
+| `lib::a_row_inside_a_staging_directory_names_the_directory_to_sweep` | `staging_root` returning the leaf → the sweep removes one file instead of the tree. |
+| `lib::an_ordinary_download_is_never_swept` | dropping the proper-ancestor rule → a user's `.excalibur-notes.txt` matches. |
+| `format.test.ts` "says how far through a folder it is" | dropping the count from the running string. |
+
+*Gates*
+
+`cargo fmt -p excalibur-engine -p excalibur-cli -p excalibur` ✅ · `cargo clippy
+--workspace --all-targets` ✅ (zero warnings) · `cargo test --workspace` ✅ ·
+`cargo deny check` ✅ (advisories, bans, licenses, sources — E22-S1's pre-existing
+failure is gone) · `npx tsc --noEmit` ✅ · `npx vitest run` ✅ (492).
+
+*One thing found and reverted rather than adopted*
+
+The working tree held an uncommitted change to `endpoint.rs` — `WRITE_CHUNK` from 1 MiB
+to 8 MiB, with an `endpoint.rs.bak` beside it — which breaks
+`nothing_appears_under_its_final_name_until_every_byte_is_there`. It is not a flake: a
+sweep of `failing_after(N)` shows that at 8 MiB the whole 9 MiB upload takes at most 9
+backend calls and every smaller N fails during the *scan*, so there is no N at which the
+failure lands mid-write and the test can no longer test what it names. It affects the
+**upload** path only (`ShareSink::write_at`), so no download number above depends on it.
+Reverted to the committed 1 MiB; re-applying it wants a larger fixture in that test.
+
+**Next steps**
+
+- **The four ACs above are still the story.** `from: Endpoint` / `to: Endpoint` is the
+  one that unblocks remote↔remote, and it is now the only thing standing between the two
+  adapters and a relayed NFS→SMB copy.
+- **`Keep both` does nothing.** The prompt computes a free name and the enqueue ignores
+  it, for uploads and downloads alike. It wants a per-path destination on both commands.
+- **A folder row expands to nothing.** The planner names and sizes every file before the
+  first byte moves and emits the current one on every `Transferred`; the panel drops
+  both. This is the last open question in `docs/design-gaps.md`'s folder-row entry.
+- **Re-measure on a network.** Every number here is one machine's disk through
+  `LocalBackend`. The interesting one is a tree over SFTP or NFS, and it wants orion
+  back on a wired link — same caveat E22-S2 left.
 
 > **Withdrawn, 2026-09-06: the bundle was never blank, and the diagnosis above was
 > wrong.** The packaged app renders correctly and always did. Two mistakes produced

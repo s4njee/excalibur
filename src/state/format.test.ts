@@ -115,6 +115,35 @@ describe("transfer row strings", () => {
       formatTransferStatus({ ...running, bytesTotal: 0, rate: null, etaSeconds: null }),
     ).toBe("41.2 GB");
   });
+
+  it("says how far through a folder it is, because one row is the whole tree", () => {
+    // E22-S3: a folder is one row, so the bytes alone cannot say whether the
+    // copy is on its tenth file or its ten-thousandth. The count is the
+    // planner's, which is why it can be absent for the first moment.
+    expect(
+      formatTransferStatus({ ...running, filesDone: 412, filesTotal: 1002 }),
+    ).toBe("41.2 / 61.7 GB · 412 / 1002 files · 112 MB/s · 3m 04s");
+    expect(
+      formatTransferStatus({
+        ...running,
+        status: "done",
+        bytesDone: 84_000,
+        filesDone: 1002,
+        filesTotal: 1002,
+      }),
+    ).toBe("done · 1002 files · 84 KB");
+  });
+
+  it("says nothing about a count on a row that names one file", () => {
+    // A row titled `e01.txt` that then announced `1 file` would be repeating
+    // itself, and a row with no count at all has nothing to say yet.
+    expect(formatTransferStatus({ ...running, filesDone: 1, filesTotal: 1 })).toBe(
+      "41.2 / 61.7 GB · 112 MB/s · 3m 04s",
+    );
+    expect(
+      formatTransferStatus({ ...running, status: "done", bytesDone: 84_000, filesTotal: 1 }),
+    ).toBe("done · 84 KB");
+  });
 });
 
 describe("formatDuration", () => {

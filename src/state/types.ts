@@ -92,7 +92,7 @@ export interface MountEvent {
 export type TransferDirection = "up" | "down";
 export type TransferStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
-/** One file moving in one direction. A folder expands to one of these per file. */
+/** One item moving in one direction — a file, or a whole folder (E22-S3). */
 export interface Transfer {
   id: string;
   direction: TransferDirection;
@@ -119,6 +119,15 @@ export interface Transfer {
   verified?: boolean;
   /** A short phrase a finished row shows instead of a size, e.g. `unchanged`. */
   note?: string | null;
+  /**
+   * Files the planner has finished with, of the ones it found.
+   *
+   * Both `0` until the planner's scan ends, and for a single-file row they
+   * stay that way. A folder row is the reason they exist: it is one row for a
+   * tree, and a byte count alone cannot say where in that tree the copy is.
+   */
+  filesDone?: number;
+  filesTotal?: number;
 }
 
 /** A destination that already exists, awaiting a decision. */

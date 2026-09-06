@@ -1,10 +1,17 @@
-//! Turning a selection into rows (E13-S4).
+//! Walking a selection into the files it names (E13-S4).
 //!
-//! A folder is not a transfer. It expands to one row per file, because a
-//! single row for a directory can only report a percentage that means nothing
-//! when one file in it fails — so the walk that produces those rows has to
-//! happen somewhere, and it happens here rather than in the Tauri command so
-//! that it can be tested without a window.
+//! **This is no longer how the app builds transfer rows.** E13-S4 expanded a
+//! folder into one row per file, on the argument that a single row for a
+//! directory can only report a percentage that means nothing when one file in
+//! it fails; E22-S3 withdrew that, because since E22-S2 every row is run by
+//! xsync's planner and a row per file is a *session* per file — measured at 70×
+//! the cost of the one session that copies the whole tree. `enqueue_downloads`
+//! now makes one row for a folder, and the percentage on it is the planner's.
+//!
+//! What is left here is the walk itself, which is still the answer to a
+//! different question: *what would this selection copy?* The CLI's `get` asks
+//! it to size a job before it starts, and [`local_name`] is the security rule
+//! below, which every caller needs whatever shape its rows are.
 //!
 //! Two rules the walk exists to keep:
 //!
@@ -97,13 +104,11 @@ pub async fn plan_downloads(
     let mut visited: HashSet<String> = HashSet::new();
 
     for path in paths {
-        let trimmed = path.trim_end_matches('/');
-        let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
-        let Some(name) = safe_component(name) else {
+        let Some(name) = local_name(path) else {
             plan.problems.push(PlanProblem {
                 path: path.clone(),
                 destination: destination.to_path_buf(),
-                reason: format!("{name:?} is not a name that can be written locally"),
+                reason: format!("{path:?} is not a name that can be written locally"),
             });
             continue;
         };
@@ -201,6 +206,19 @@ async fn walk(
             }
         }
     }
+}
+
+/// The local name one share path lands under, or `None` when it must not.
+///
+/// The basename, put through [`safe_component`] — which is the whole of the
+/// "names from the server are not paths" rule stated at the top of this file.
+/// Public because a caller that makes **one row for a whole folder** (E22-S3's
+/// `enqueue_downloads`) needs exactly the same check as the walk that makes one
+/// row per file, and two copies of a security rule is one too many.
+#[must_use]
+pub fn local_name(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches('/');
+    safe_component(trimmed.rsplit('/').next().unwrap_or(trimmed))
 }
 
 /// One path component, or `None` when it must not become one.

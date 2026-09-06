@@ -172,6 +172,104 @@ async fn an_unreadable_queue_file_is_an_empty_queue() {
     assert!(TransferQueue::open(&path).all().await.is_empty());
 }
 
+/// What is on disk right now, or `""` when nothing has been written.
+fn saved(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_progress_tick_is_broadcast_but_not_written_down() {
+    // The measured cost of writing every update: a real `transfers.json` on
+    // this machine was 1.2 MB over 2253 rows, and `persist` rewrites all of it,
+    // so every tick of every running transfer rewrote 1.2 MB. What a restart
+    // needs is the row, and `restore` throws the rate away and re-queues
+    // anything that was moving — so progress is exactly the part it does not
+    // need.
+    let home = tempfile::tempdir().expect("temp dir");
+    let path = home.path().join("transfers.json");
+    let queue = TransferQueue::open(&path);
+    queue.add(transfer("job", 100)).await;
+    let mut watching = queue.events();
+    let after_add = saved(&path);
+
+    queue
+        .update("job", |transfer| {
+            transfer.bytes_done = 64;
+            transfer.files_done = 1;
+            transfer.rate = Some(1_000_000);
+            transfer.eta_seconds = Some(3);
+        })
+        .await;
+
+    assert_eq!(saved(&path), after_add, "a progress tick rewrote the queue");
+    let seen = watching.try_recv().expect("the window is still told");
+    assert_eq!(seen.transfer.bytes_done, 64);
+}
+
+#[tokio::test]
+async fn a_status_a_size_and_an_error_are_all_written_down() {
+    // The other half of the rule, and the one that makes it safe: everything a
+    // restart has to be able to reconstruct still reaches the file on the
+    // update that changes it, with no timer in between.
+    let home = tempfile::tempdir().expect("temp dir");
+    let path = home.path().join("transfers.json");
+    let queue = TransferQueue::open(&path);
+    queue.add(transfer("job", 100)).await;
+
+    queue
+        .update("job", |transfer| transfer.status = Status::Running)
+        .await;
+    assert!(saved(&path).contains("running"), "a status change was lost");
+
+    // `bytes_total` becoming known is the planner's answer, not progress: a
+    // row restored without it would come back as an indeterminate bar.
+    queue
+        .update("job", |transfer| {
+            transfer.bytes_total = 999_111;
+            transfer.files_total = 42;
+        })
+        .await;
+    assert!(saved(&path).contains("999111"), "a new total was lost");
+    assert!(
+        saved(&path).contains(r#""filesTotal": 42"#),
+        "a count was lost"
+    );
+
+    queue
+        .update("job", |transfer| {
+            transfer.status = Status::Failed;
+            transfer.error = Some("the share went away".to_owned());
+        })
+        .await;
+    assert!(
+        saved(&path).contains("the share went away"),
+        "an error was lost"
+    );
+}
+
+#[tokio::test]
+async fn a_removed_transfer_is_gone_from_the_file_too() {
+    // A promised drag's row names a staging directory that stops existing when
+    // the drag ends. Leaving it in the file is not a harmless record: `restore`
+    // re-queues it on the next launch and copies a tree into a folder that was
+    // deleted.
+    let home = tempfile::tempdir().expect("temp dir");
+    let path = home.path().join("transfers.json");
+    let queue = TransferQueue::open(&path);
+    queue.add(transfer("promised", 100)).await;
+    assert!(saved(&path).contains("promised"));
+
+    assert!(queue.remove("promised").await.is_some());
+    assert!(
+        !saved(&path).contains("promised"),
+        "the row survived in the file"
+    );
+    assert!(
+        queue.remove("promised").await.is_none(),
+        "removing twice is not an event"
+    );
+}
+
 #[tokio::test]
 async fn a_change_reaches_subscribers() {
     let queue = TransferQueue::in_memory();
