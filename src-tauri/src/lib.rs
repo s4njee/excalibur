@@ -923,6 +923,78 @@ fn download_folder() -> String {
         .unwrap_or_default()
 }
 
+/// The folders the sidebar's FAVORITES section is seeded from.
+///
+/// Asked of the OS rather than assembled in the window, because every one of
+/// them is a fact the platform owns and the webview cannot see: the home
+/// directory has no browser API, and the media folders are neither named nor
+/// placed the same way twice — macOS keeps films in `~/Movies` and Linux in
+/// whatever `XDG_VIDEOS_DIR` says, which on a localised desktop is not an
+/// English word at all. Guessing `~/Videos` everywhere would seed a row for a
+/// folder that is not there.
+///
+/// An empty string means *this platform has no such folder*, which the window
+/// drops. It is not an error: Linux has no Applications directory a person
+/// browses, and `dirs` answers `None` for a media folder the user never made.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserFolders {
+    home: String,
+    applications: String,
+    desktop: String,
+    documents: String,
+    pictures: String,
+    /// `~/Movies` on macOS, `XDG_VIDEOS_DIR` on Linux. The window labels it by
+    /// its own last path segment rather than calling it "Videos" everywhere,
+    /// so the row reads as the folder the user already has.
+    videos: String,
+}
+
+/// Where the sidebar's default favourites live on this machine.
+#[tauri::command]
+fn user_folders() -> UserFolders {
+    fn path(folder: Option<std::path::PathBuf>) -> String {
+        folder
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+    UserFolders {
+        home: path(dirs::home_dir()),
+        // `dirs` has no applications folder, because most platforms have no
+        // such thing. macOS does, at a fixed absolute path; everywhere else
+        // this is deliberately empty rather than pointed at
+        // `/usr/share/applications`, which holds `.desktop` files and is not a
+        // folder anyone means by "Applications".
+        applications: if cfg!(target_os = "macos") {
+            "/Applications".to_owned()
+        } else {
+            String::new()
+        },
+        desktop: path(dirs::desktop_dir()),
+        documents: path(dirs::document_dir()),
+        pictures: path(dirs::picture_dir()),
+        videos: path(dirs::video_dir()),
+    }
+}
+
+/// Which of `paths` are directories that exist right now.
+///
+/// The sidebar hides a favourite whose folder is gone — an external disk
+/// ejected, a project deleted — because the only thing clicking it could do is
+/// fail. Answered in a batch rather than one call per row: the list is checked
+/// on every load, and a round trip per favourite is a round trip per favourite.
+///
+/// Symlinks are followed (`metadata`, not `symlink_metadata`): a favourite
+/// pointing at a link to a real directory opens that directory, so it is a
+/// directory as far as this question goes.
+#[tauri::command]
+fn existing_directories(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()))
+        .collect()
+}
+
 /// Whether a destination is already taken, and what `Keep both` would call it.
 ///
 /// Answered by the engine rather than the window because the naming rule —
@@ -1180,6 +1252,31 @@ async fn set_active(
         .map_err(Into::into)
 }
 
+/// Name the calling window, for the platform rather than for the app.
+///
+/// The title the design draws is painted by the webview — it is centred over
+/// the toolbar, and the native title is hidden to make room — so without this
+/// the window's real title stays whatever it was built with. Every window was
+/// then called "Excalibur", and the macOS Window menu, Mission Control and the
+/// app switcher list windows by exactly that: two windows, two identical rows,
+/// no way to tell which was which.
+///
+/// A command of this app's own rather than `core:window:allow-set-title` in the
+/// capability. Granting the core window API is granting it to every page the
+/// webview ever loads, to save writing these four lines.
+#[tauri::command]
+async fn set_window_title(
+    window: tauri::Window,
+    title: String,
+) -> std::result::Result<(), CommandError> {
+    window.set_title(&title).map_err(|error| CommandError {
+        message: error.to_string(),
+        surface: excalibur_engine::error::Surface::Banner,
+        transient: false,
+        host_key: None,
+    })
+}
+
 /// Open a second browser window on this window's mount and folder (⌘N).
 ///
 /// Built in Rust rather than with `WebviewWindow` from the frontend, so that
@@ -1378,9 +1475,8 @@ fn open_window(
     if let Some((x, y)) = at {
         builder = builder.position(x, y);
     }
-    // The same chrome `tauri.conf.json` gives the first window. Kept in step by
-    // hand because a config window and a built one have no shared source; the
-    // alternative is a second window that grows a native title bar.
+    // Every window's chrome, including the first: `tauri.conf.json` declares no
+    // window, so there is no second copy of this to drift from.
     #[cfg(target_os = "macos")]
     {
         builder = builder
@@ -1397,8 +1493,12 @@ fn open_window(
 /// after a close-and-reopen would look like the shortcut had stopped working.
 fn next_label(app: &tauri::AppHandle) -> String {
     let open = app.webview_windows();
-    // `main` is the config's window, so the second window is `browser-2` and
-    // the pattern in `capabilities/default.json` covers every one after it.
+    // `main` first, and not only for tidiness: `capabilities/default.json`
+    // grants this app's commands to `main` and to `browser-*`, and the first
+    // window is the one every other name is numbered from.
+    if !open.contains_key("main") {
+        return "main".to_owned();
+    }
     // Bounded rather than an open range: there is no number of windows worth
     // searching forever for, and a machine that has run out of labels has run
     // out of screen a long way back.
@@ -1827,6 +1927,8 @@ pub fn run() {
             pause_all_transfers,
             clear_finished_transfers,
             download_folder,
+            user_folders,
+            existing_directories,
             check_conflicts,
             edit_file,
             save_edit,
@@ -1836,6 +1938,7 @@ pub fn run() {
             unmount,
             remount_read_write,
             set_active,
+            set_window_title,
             new_window,
             begin_drag
         ]);
@@ -1860,6 +1963,33 @@ pub fn run() {
         // run loop and nowhere else: a window closing has to reach the session
         // manager, and the app has to survive the last one.
         .run(move |app, event| match event {
+            // Once the app is actually up, which is later than it sounds: the
+            // menu is installed onto `NSApp` after `setup` runs, and muda
+            // resolves through the installed menu.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Ready => {
+                // Before the first window, deliberately. AppKit adds a window
+                // to its list when the window is *created*, and does not go
+                // back for ones that already existed — so a window built from
+                // `tauri.conf.json` (which is built during `build`, before any
+                // of this) is permanently absent from the menu. That was the
+                // whole bug: with two windows open, the first one could never
+                // be picked by name.
+                //
+                // Which is why `tauri.conf.json` declares no window at all and
+                // this opens it. It also settles a duplication `open_window`
+                // used to carry by hand — the config's chrome and the builder's
+                // had no shared source, and a drifted pair shows up as a second
+                // window that grows a native title bar.
+                #[cfg(target_os = "macos")]
+                hand_window_menu_to_appkit(app);
+
+                if app.webview_windows().is_empty() {
+                    let label = next_label(app);
+                    let _ = open_window(app, &label, None, "", None);
+                }
+            }
+
             // Not `CloseRequested`: a window can refuse to close, and a share
             // released before the window is actually gone is a listing that
             // fails in a window still on screen.
@@ -1900,14 +2030,23 @@ pub fn run() {
 #[cfg(target_os = "macos")]
 const QUIT_MENU_ITEM: &str = "quit";
 
-/// macOS's menu bar, with a Quit item this app can stand in front of.
+/// macOS's menu bar, with a Quit item this app can stand in front of and a
+/// Window menu that can reach a window.
 ///
-/// Tauri's default menu is reproduced item for item, with **one** change: the
-/// app menu's `Quit` is an ordinary item rather than the predefined one. The
-/// predefined item sends `terminate:` straight to `NSApplication`, which never
-/// reaches `RunEvent::ExitRequested` — so a ⌘Q with transfers in flight would
-/// kill them without asking, which is exactly what E23-S1 says must not happen.
-/// This one calls `AppHandle::exit`, which does.
+/// Tauri's default menu is reproduced item for item, with **two** changes.
+///
+/// The app menu's `Quit` is an ordinary item rather than the predefined one.
+/// The predefined item sends `terminate:` straight to `NSApplication`, which
+/// never reaches `RunEvent::ExitRequested` — so a ⌘Q with transfers in flight
+/// would kill them without asking, which is exactly what E23-S1 says must not
+/// happen. This one calls `AppHandle::exit`, which does.
+///
+/// The Window menu is handed to `AppKit` as the application's windows menu.
+/// E23-S1
+/// made a second window possible without giving anyone a way to get *back* to
+/// the first: the menu offered Minimize, Zoom and Close, so a window sitting
+/// behind another could only be raised by clicking whatever sliver of it
+/// happened to be showing.
 ///
 /// Everything else is copied rather than invented, and the Edit submenu is the
 /// reason it has to be copied rather than dropped: `Cut`, `Copy`, `Paste` and
@@ -1945,7 +2084,29 @@ fn menu_with_confirming_quit(
         Some("Cmd+Q"),
     )?;
 
-    Menu::with_items(
+    // Handed to AppKit below, so it has to exist before the menu that holds it.
+    //
+    // Minimize/Zoom/Close alone left no way to reach a window that is behind
+    // another: with two windows overlapping, the one underneath could only be
+    // raised by finding an exposed sliver of it to click. `Bring All to Front`
+    // is the standard verb for that, and the *list* of windows underneath it is
+    // what actually lets one be picked by name.
+    let windows = Submenu::with_id_and_items(
+        app,
+        WINDOW_MENU_ITEM,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::bring_all_to_front(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    let menu = Menu::with_items(
         app,
         &[
             &Submenu::with_items(
@@ -1989,19 +2150,45 @@ fn menu_with_confirming_quit(
                 true,
                 &[&PredefinedMenuItem::fullscreen(app, None)?],
             )?,
-            &Submenu::with_items(
-                app,
-                "Window",
-                true,
-                &[
-                    &PredefinedMenuItem::minimize(app, None)?,
-                    &PredefinedMenuItem::maximize(app, None)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::close_window(app, None)?,
-                ],
-            )?,
+            &windows,
         ],
-    )
+    )?;
+
+    // Not handed to AppKit here: at this point the submenu has not been attached
+    // to anything, and muda resolves the `NSMenu` *through* the installed app
+    // menu — it finds nothing and returns quietly, so the call would look like
+    // it worked and the list would simply never appear.
+    // `hand_window_menu_to_appkit` does it once the menu is installed.
+    Ok(menu)
+}
+
+/// The id of the Window submenu, so it can be found again after installation.
+#[cfg(target_os = "macos")]
+const WINDOW_MENU_ITEM: &str = "window-menu";
+
+/// Let `AppKit` maintain the list of open windows in the Window menu.
+///
+/// It appends an item per window, keeps them in step as windows open and close,
+/// checkmarks the active one, and wires Cmd-backquote to cycle between them.
+/// Doing it by
+/// hand would mean rebuilding the menu on every window open, close and retitle
+/// — three places to forget — to arrive at a worse copy of what the platform
+/// already maintains.
+///
+/// Called on `RunEvent::Ready` rather than from the menu builder or `setup`,
+/// because muda looks the `NSMenu` up through the application's *installed*
+/// menu — `NSApp.mainMenu`, and its delegate. Before the menu is installed the
+/// lookup fails, and it fails silently: `let Some(..) else { return }`, with no
+/// error to propagate. Both earlier points were tried and both looked like they
+/// had worked while leaving the menu exactly as it was.
+#[cfg(target_os = "macos")]
+fn hand_window_menu_to_appkit(app: &tauri::AppHandle) {
+    use tauri::menu::MenuItemKind;
+
+    let Some(menu) = app.menu() else { return };
+    if let Some(MenuItemKind::Submenu(windows)) = menu.get(WINDOW_MENU_ITEM) {
+        let _ = windows.set_as_windows_menu_for_nsapp();
+    }
 }
 
 /// Whether the app should actually go away, given why it was asked to.

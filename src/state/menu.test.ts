@@ -8,7 +8,7 @@
 // is the failure that would otherwise slip through.
 
 import { describe, expect, it } from "vitest";
-import { menuFor, type MenuAction } from "./menu";
+import { favoriteMenu, menuFor, type MenuAction } from "./menu";
 import { READ_AFFORDANCES, WRITE_AFFORDANCES, type Context } from "./permissions";
 import type { Category, Entry } from "./types";
 
@@ -51,8 +51,11 @@ describe("the context menu's items", () => {
       "move",
       "delete",
       "properties",
+      "addFavorite",
     ]);
-    expect(items.filter((item) => item.disabled)).toEqual([]);
+    // `addFavorite` is the exception, and for a reason that has nothing to do
+    // with the mount: a text file is not a folder. Every *verb* is available.
+    expect(byAction(items.filter((item) => item.disabled))).toEqual(["addFavorite"]);
   });
 
   it("disables exactly the writes on a read-only mount, and says the server's reason", () => {
@@ -106,6 +109,37 @@ describe("the context menu's items", () => {
     expect(find(folder, "edit")?.disabled).toBe(true);
   });
 
+  it("offers Add to Favorites for one folder on a local mount, and nothing else", () => {
+    const folder = entry("Projects", "folder", "dir");
+    const here = { local: true };
+    expect(find(menuFor([folder], RW, here), "addFavorite")?.disabled).toBe(false);
+
+    // A file is not a folder, whatever else is true of it.
+    expect(find(menuFor([entry("notes.txt")], RW, here), "addFavorite")?.reason).toMatch(
+      /folders/i,
+    );
+    // Two folders is a section with two rows, which the gesture does not say
+    // the user asked for.
+    expect(
+      find(menuFor([folder, entry("Archive", "folder", "dir")], RW, here), "addFavorite")
+        ?.reason,
+    ).toBe("Select one item");
+    // A folder on a share has no absolute path on this machine to save.
+    expect(find(menuFor([folder], RW), "addFavorite")?.reason).toMatch(/this computer/i);
+    // Already there: offering it again would be a menu item that does nothing.
+    expect(
+      find(menuFor([folder], RW, { local: true, favorite: true }), "addFavorite")?.reason,
+    ).toBe("Already in Favorites");
+  });
+
+  it("keeps Add to Favorites available on a read-only mount", () => {
+    // The section is the app's own list, not the share's. A folder being
+    // read-only says nothing about whether it can be bookmarked, and gating it
+    // on `writable` is the mistake this assertion exists to catch.
+    const items = menuFor([entry("Projects", "folder", "dir")], RO, { local: true });
+    expect(find(items, "addFavorite")?.disabled).toBe(false);
+  });
+
   it("offers every action the type allows, somewhere", () => {
     // The same accretion guard the affordance list has: an action added to the
     // union and to the window's switch, but to no menu, is a verb nobody can
@@ -120,10 +154,13 @@ describe("the context menu's items", () => {
       properties: true,
       newFolder: true,
       upload: true,
+      addFavorite: true,
+      removeFavorite: true,
     };
     const offered = new Set([
       ...byAction(menuFor([entry("a.txt")], RW)),
       ...byAction(menuFor([], { ...RW, hasSelection: false })),
+      ...byAction(favoriteMenu()),
     ]);
     expect([...offered].sort()).toEqual(Object.keys(all).sort());
   });

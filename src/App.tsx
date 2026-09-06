@@ -13,6 +13,21 @@ import {
   withMounted,
   type BookmarkStore,
 } from "./state/bookmarks";
+import {
+  addFavorite,
+  defaultFavoriteStore,
+  defaultFavorites,
+  describeFavoriteDrop,
+  favoriteDraft,
+  favoriteDrop,
+  isFavorite,
+  normalisePath,
+  removeFavorite,
+  toFavorite,
+  visibleFavorites,
+  type Favorite,
+  type FavoriteStore,
+} from "./state/favorites";
 import { toSpec, uriScheme, type Draft } from "./state/connection";
 import { thisMachine } from "./state/platform";
 import {
@@ -67,11 +82,12 @@ import {
   SPRING_DELAY_MS,
   describeDrop,
   moveTargets,
+  osPath,
   resolveDrop,
   type DropMount,
   type DropPlan,
 } from "./state/dnd";
-import { menuFor, type MenuAction, type MenuItem } from "./state/menu";
+import { favoriteMenu, menuFor, type MenuAction, type MenuItem } from "./state/menu";
 import { editable } from "./state/preview";
 import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
@@ -92,6 +108,8 @@ export default function App(props: {
   theme?: Theme;
   readOnly?: boolean;
   bookmarks?: BookmarkStore;
+  /** Where FAVORITES is kept. Injected the same way bookmarks are (E27-S1). */
+  favorites?: FavoriteStore;
   prefs?: Prefs;
   /**
    * Which window this is and what it opened on (E23-S1).
@@ -282,6 +300,94 @@ export default function App(props: {
   const persist = (next: Bookmark[]) => {
     setBookmarks(next);
     void store.save(next);
+  };
+
+  // FAVORITES (E27-S1). The saved list, and separately the subset whose
+  // folders are actually there — kept apart so that unplugging a disk hides a
+  // row without forgetting it, and plugging it back in brings it back.
+  const favoriteStore = props.favorites ?? defaultFavoriteStore();
+  const [favorites, setFavorites] = createSignal<Favorite[]>([]);
+  const [presentFolders, setPresentFolders] = createSignal<Set<string>>(new Set());
+  /** The home directory, which is the one favourite not named after its leaf. */
+  const [home, setHome] = createSignal("");
+  const shownFavorites = createMemo(() => visibleFavorites(favorites(), presentFolders()));
+
+  const persistFavorites = (next: Favorite[]) => {
+    setFavorites(next);
+    void favoriteStore.save(next);
+  };
+
+  /**
+   * Which of these favourites are folders that exist, as normalised paths.
+   *
+   * A failed check answers *all of them* rather than none. The section is a
+   * convenience; emptying a user's sidebar because one IPC call failed is a
+   * worse outcome than offering a row that turns out to be gone, which fails
+   * with the engine's own message and can be tried again.
+   */
+  const foldersPresent = async (list: Favorite[]): Promise<Set<string>> => {
+    const paths = list.map((favorite) => normalisePath(favorite.path));
+    try {
+      return new Set((await backend.existingDirectories(paths)).map(normalisePath));
+    } catch {
+      return new Set(paths);
+    }
+  };
+
+  onMount(async () => {
+    let saved: Favorite[] | null;
+    try {
+      saved = await favoriteStore.load();
+    } catch {
+      // Unreadable store. The section stays empty for this run, and — the part
+      // that matters — nothing is written: seeding the defaults over a list
+      // that is still on disk would destroy it to fix a transient failure.
+      return;
+    }
+    if (saved !== null) {
+      setFavorites(saved);
+      setPresentFolders(await foldersPresent(saved));
+      // Only for the naming rule, so a folder added later can still be
+      // recognised as home. Nothing is seeded from it.
+      void backend
+        .userFolders()
+        .then((folders) => setHome(folders.home))
+        .catch(() => undefined);
+      return;
+    }
+    // Nothing has ever been saved: this is a first run, and the only run that
+    // seeds. Once the list exists, removing a default is final.
+    try {
+      const folders = await backend.userFolders();
+      setHome(folders.home);
+      const candidates = defaultFavorites(folders);
+      const present = await foldersPresent(candidates);
+      // Seeded with what is actually there, so the saved list is exactly what
+      // the user sees. Seeding a folder this machine does not have would put a
+      // permanently invisible row in everyone's store.
+      const seeded = candidates.filter((favorite) =>
+        present.has(normalisePath(favorite.path)),
+      );
+      setPresentFolders(present);
+      persistFavorites(seeded);
+    } catch {
+      // No answer about this machine's folders, so nothing to seed from. The
+      // next launch asks again.
+    }
+  });
+
+  /** Add folders to the section, skipping any already there. */
+  const addFavorites = (paths: string[]) => {
+    const before = favorites();
+    let next = before;
+    for (const path of paths) next = addFavorite(next, toFavorite(path, home()));
+    if (next === before) return before;
+    // These paths came from a listing or from a check against the filesystem,
+    // so they are known to be there — recorded now rather than waiting for the
+    // next load, which would otherwise draw nothing for the row just added.
+    setPresentFolders(new Set([...presentFolders(), ...paths.map(normalisePath)]));
+    persistFavorites(next);
+    return next;
   };
 
   onMount(async () => {
@@ -654,21 +760,53 @@ export default function App(props: {
    */
   const mountBookmark = async (id: string) => {
     const bookmark = bookmarks().find((candidate) => candidate.id === id);
-    if (!bookmark) return;
+    if (bookmark) await openMount(bookmark);
+  };
+
+  /**
+   * Connect a share, make it this window's, and remember it.
+   *
+   * Split out of `mountBookmark` so that opening a favourite is the *same*
+   * connection rather than a second one that happens to look like it (E27-S1).
+   * A favourite is a local folder with the path already chosen, so it arrives
+   * here as the bookmark the dialog's Local tab would have produced —
+   * `bookmarkId` gives the two the same id, which is what stops opening
+   * Documents twice from growing two rows under MOUNTED.
+   *
+   * `upsert` rather than a map over the existing list: the bookmark may be one
+   * this window has never held.
+   */
+  const openMount = async (bookmark: Bookmark) => {
     try {
       await backend.mount(toSpec(toDraft(bookmark), bookmark.id));
       persist(
-        bookmarks().map((candidate) =>
-          candidate.id === id
-            ? { ...candidate, mounted: true }
-            : { ...candidate, mounted: false },
-        ),
+        upsert(bookmarks(), bookmark).map((candidate) => ({
+          ...candidate,
+          mounted: candidate.id === bookmark.id,
+        })),
       );
       setHistory(nav.initial());
       listingState.load("");
     } catch {
       setConnecting(toDraft(bookmark));
     }
+  };
+
+  /**
+   * Open a favourite: mount the folder and show it (E27-S1).
+   *
+   * Deliberately the bookmark route and nothing else. A favourite that has
+   * been opened therefore also appears under MOUNTED, and stays as a bookmark
+   * afterwards — noted in `docs/design-gaps.md`, because the alternative is a
+   * second way to hold a mount and two answers to "what is this window on".
+   */
+  const openFavorite = (path: string) => {
+    const target = normalisePath(path);
+    const favorite = favorites().find(
+      (candidate) => normalisePath(candidate.path) === target,
+    );
+    if (!favorite) return;
+    void openMount(fromDraft(favoriteDraft(favorite)));
   };
 
   const [remounting, setRemounting] = createSignal(false);
@@ -710,6 +848,8 @@ export default function App(props: {
   const [dropTarget, setDropTarget] = createSignal<{
     folder: string | null;
     bookmark?: string | null;
+    /** The FAVORITES section, which highlights whole rather than by row. */
+    favorites?: boolean;
     message?: string;
     refused?: boolean;
   } | null>(null);
@@ -990,6 +1130,20 @@ export default function App(props: {
    * leaves it alone, which is the whole point of the gesture on a multiple
    * selection.
    */
+  /**
+   * A share-relative path on this window's mount, as an absolute OS path.
+   *
+   * `null` unless the mount is a folder on this machine, which is the only
+   * case where a share-relative path *has* an absolute form: everything else
+   * is reachable through its mount and nowhere else, which is why a favourite
+   * can only ever be local (E27-S1).
+   */
+  const absolutePath = (path: string): string | null => {
+    const bookmark = activeBookmark();
+    if (!bookmark || bookmark.protocol !== "local") return null;
+    return osPath({ id: bookmark.id, protocol: "local", root: bookmark.share }, path);
+  };
+
   const openContextMenu = (entry: Entry | null, at: { x: number; y: number }) => {
     if (entry && !selected().has(entry.path)) {
       setSelection(clickSelect(EMPTY_SELECTION, order(), entry.path));
@@ -1000,7 +1154,27 @@ export default function App(props: {
     const context = entry
       ? permissions()
       : { ...permissions(), hasSelection: false, editable: undefined };
-    setContextMenu({ at, items: menuFor(subject, context) });
+    // A menu opened on the list is never about a favourite row, so the
+    // previous one's path is cleared rather than left to be acted on.
+    setFavoriteMenuPath(null);
+    const only = subject.length === 1 ? subject[0] : undefined;
+    const absolute = only ? absolutePath(only.path) : null;
+    setContextMenu({
+      at,
+      items: menuFor(subject, context, {
+        local: activeBookmark()?.protocol === "local",
+        favorite: absolute !== null && isFavorite(favorites(), absolute),
+      }),
+    });
+  };
+
+  /** The favourite a context menu was opened on, while that menu is open. */
+  const [favoriteMenuPath, setFavoriteMenuPath] = createSignal<string | null>(null);
+
+  /** The one-item menu on a row in FAVORITES. */
+  const openFavoriteMenu = (path: string, at: { x: number; y: number }) => {
+    setFavoriteMenuPath(path);
+    setContextMenu({ at, items: favoriteMenu() });
   };
 
   const runMenuAction = (action: MenuAction) => {
@@ -1039,6 +1213,24 @@ export default function App(props: {
       case "upload":
         void uploadHere();
         return;
+      case "addFavorite": {
+        // The menu only offers this for one folder on a local mount, so both
+        // of these are already true — checked again because a menu item and
+        // the action behind it disagreeing is exactly how a disabled verb
+        // still runs.
+        const folder = chosen.length === 1 ? chosen[0] : undefined;
+        const absolute = folder?.kind === "dir" ? absolutePath(folder.path) : null;
+        if (absolute === null) return;
+        addFavorites([absolute]);
+        setNotice(`Added ${folder?.name ?? absolute} to Favorites`);
+        return;
+      }
+      case "removeFavorite": {
+        const path = favoriteMenuPath();
+        setFavoriteMenuPath(null);
+        if (path !== null) persistFavorites(removeFavorite(favorites(), path));
+        return;
+      }
     }
   };
 
@@ -1401,6 +1593,51 @@ export default function App(props: {
     return { id, protocol: bookmark.protocol, root: bookmark.share };
   };
 
+  /** Whether a point is over the sidebar's FAVORITES section (E27-S1). */
+  const overFavorites = (position: { x: number; y: number }): boolean =>
+    document.elementFromPoint(position.x, position.y)?.closest("[data-favorites]") != null;
+
+  /**
+   * Add what a drop onto FAVORITES was carrying.
+   *
+   * The pasteboard carries paths and a mount, never a kind — `dnd.ts` says so
+   * where it has to invent one — so which of them are folders is a question
+   * for the filesystem, asked with the same call the section already uses to
+   * hide a favourite whose folder is gone. That answer arrives after the drop,
+   * which is why the ring says `Add to Favorites` for a file too: the window
+   * cannot know at drag time, and a ring that flickered between two answers
+   * while the pointer sat still would be worse than one that is occasionally
+   * followed by "that was not a folder".
+   *
+   * A file among the folders is skipped rather than refusing the whole drop:
+   * dragging a folder and a file together plainly means the folder.
+   */
+  const addDroppedFavorites = async (paths: string[]) => {
+    const folders = await backend.existingDirectories(paths).catch(() => []);
+    if (folders.length === 0) {
+      setNotice(
+        paths.length === 1
+          ? "Only folders can be added to Favorites"
+          : "None of those are folders",
+      );
+      return;
+    }
+    const before = favorites();
+    const after = addFavorites(folders);
+    const added = after.length - before.length;
+    if (added === 0) {
+      setNotice("Already in Favorites");
+      return;
+    }
+    const skipped = paths.length - folders.length;
+    const what = added === 1 ? "1 folder" : `${added} folders`;
+    setNotice(
+      skipped === 0
+        ? `Added ${what} to Favorites`
+        : `Added ${what} to Favorites — ${skipped} skipped, not folders`,
+    );
+  };
+
   /** Where a point would drop: a folder row, a sidebar row, or this folder. */
   const targetUnder = (
     position: { x: number; y: number } | null,
@@ -1449,6 +1686,28 @@ export default function App(props: {
         endDrag(true);
         return;
       }
+      // FAVORITES is answered before `resolveDrop`, which knows only about
+      // verbs that touch a share: this drop moves no bytes at all, it adds
+      // rows to the sidebar's own list (E27-S1).
+      if (event.position && overFavorites(event.position)) {
+        const drop = favoriteDrop(event.selection, dropMountOf(event.selection.mount));
+        if (event.phase === "over") {
+          setDropTarget({
+            folder: null,
+            favorites: true,
+            message: describeFavoriteDrop(drop),
+            refused: !drop.ok,
+          });
+          // Nothing to spring into: the section is a list, not a folder.
+          springLoad(null);
+          return;
+        }
+        endDrag(false);
+        if (drop.ok) void addDroppedFavorites(drop.paths);
+        else setProblem(drop.reason);
+        return;
+      }
+
       const target = targetUnder(event.position);
       if (!target) {
         endDrag(false);
@@ -1714,6 +1973,24 @@ export default function App(props: {
   const uriHost = () => named()?.uriHost ?? null;
   const share = () => named()?.share ?? null;
   const scheme = () => named()?.scheme ?? null;
+
+  /**
+   * The window's own name, kept in step with the title bar it draws.
+   *
+   * `TitleBar` paints the title into the webview because the design centres it
+   * over the toolbar, and the native one is hidden to make room. Nothing else
+   * then tells the platform anything, so every window stayed called
+   * "Excalibur" — and the macOS Window menu lists windows by exactly that
+   * name. Two windows were two entries reading the same word.
+   *
+   * Falls back to the app's name rather than to something like "No share":
+   * this string is read outside the app, in the Window menu and the app
+   * switcher, where a sentence about this app's state is noise.
+   */
+  createEffect(() => {
+    const named = share() !== null && host() !== null ? `${share()} — ${host()}` : "Excalibur";
+    void backend.setWindowTitle(named);
+  });
   const rootSegments = () => named()?.root ?? [];
   const segments = () => [...rootSegments(), ...nav.segments(path())];
   const mountPath = () => ["", ...segments()].join("/");
@@ -1938,6 +2215,10 @@ export default function App(props: {
           activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
           selectedId={selectedBookmark()}
           dropBookmark={dropTarget()?.bookmark ?? null}
+          favorites={shownFavorites()}
+          dropFavorites={dropTarget()?.favorites ?? false}
+          onOpenFavorite={openFavorite}
+          onFavoriteMenu={openFavoriteMenu}
           onNewConnection={() => setConnecting(true)}
           onSelect={setSelectedBookmark}
           onOpen={(id) => void mountBookmark(id)}

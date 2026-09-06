@@ -574,3 +574,67 @@ first paint, showing an empty window meanwhile. That is what was misread for a
 day as "the bundle renders nothing" (see the withdrawn note in `plan.md` at
 E22-S3). Worth knowing before anyone reaches the same conclusion again; worth
 measuring on a release bundle before treating it as a real startup cost.
+
+## A FAVORITES section in the sidebar *(E27-S1, 2026-09-06)*
+
+**The mock** draws two sidebar sections and no more: `MOUNTED` and `BOOKMARKS`,
+both of them lists of *shares*. Nothing in the handoff draws a folder on this
+machine in the sidebar, and §"Not yet designed" does not mention one.
+
+**The problem** is that E21-S2 made a folder on this machine a first-class
+mount, and then left the only route to one as: open the dialog, pick the Local
+tab, type or browse to an absolute path. Every file manager the app is being
+compared against puts Home, Documents and the rest one click away, and the
+sidebar is where they live.
+
+**What was built:** a `FAVORITES` section above `MOUNTED`, seeded on a first run
+with Finder's own set — Home, Applications, Desktop, Documents, Pictures and the
+platform's video folder — and added to from the file list's context menu (`Add
+to Favorites`, offered for one folder on a local mount) or by dropping folders
+onto the section. A favourite's own context menu offers `Remove from Favorites`.
+The list is JSON in the app's data directory beside `bookmarks.json`, and
+opening one goes through the same `mount` a local bookmark does.
+
+Seven judgement calls, in the order they will be argued about:
+
+1. **Single click opens a favourite**, where a bookmark needs a double. The two
+   rows are doing different things: a bookmark is *selected* first — the
+   sidebar footer's − and Edit act on the selection — and mounting a share over
+   the network is not something to do by brushing past a row. A favourite has
+   no selected state and opens a folder on this disk.
+2. **A favourite whose folder is missing is not drawn.** Clicking it could only
+   fail. It stays in the saved list, so an ejected disk coming back brings the
+   row back — hidden, never forgotten.
+3. **The video folder is labelled by the folder that is actually there**:
+   `Movies` on macOS, `Videos` (or whatever `XDG_VIDEOS_DIR` says) on Linux.
+   Labelling it "Videos" everywhere would name a folder a Mac does not have.
+   By the same rule Linux gets no `Applications` row at all, because it has no
+   such folder anyone browses.
+4. **Opening a favourite also leaves a bookmark behind.** The window's model is
+   one mount at a time and a mount is a bookmark, so a favourite that has been
+   opened appears under `MOUNTED` and afterwards under `BOOKMARKS`. The
+   alternative is a second way to hold a mount, and two answers to "what is
+   this window on".
+5. **A drop highlights the whole section**, not a row: the drop adds to a list
+   rather than landing in any one folder. The ring says `Add to Favorites` even
+   when the drag is carrying a file, because the pasteboard carries no kind
+   (see the E24-S2 entry above) — the filesystem is asked after the release,
+   files are skipped, and a toast says how many were.
+6. **A favourite row is one line**, name only, with the path as its tooltip.
+   The two-line sidebar row has a host or a protocol to put underneath; a
+   favourite has only its path, which is both too long for the column and the
+   thing least worth reading at a glance.
+7. **Removing a favourite has no undo**, where removing a bookmark does. The
+   bookmark's undo exists because a removal also forgets a keychain password;
+   a favourite is one path and can be dragged back.
+
+**For the designer:** the section itself needs sign-off before any of the
+above. Then: whether a favourite should be reorderable by dragging within the
+section (it is currently append-only, in seed order); whether the row wants an
+icon, which every other file manager gives it and which this sidebar has no
+vocabulary for; whether `Add to Favorites` belongs in the context menu, on a
+toolbar, or on ⌘T the way Finder has it; and whether removing should confirm,
+undo, or neither. Copy note: the section reads `Favorites` because that is what
+the platform calls it, while this repo's prose is otherwise British — if the UI
+should be `Favourites` everywhere, it is one string in `Shell.tsx` and two in
+`menu.ts`.

@@ -48,6 +48,16 @@ export interface Backend {
    */
   onListingChanged(handler: (mount: string) => void): () => void;
   /**
+   * Name this window to the platform.
+   *
+   * The title bar the design draws is painted by the webview (the native one
+   * is hidden), so without this the window's *real* title stays "Excalibur"
+   * forever — and the macOS Window menu, Mission Control and the app switcher
+   * all read that one. Two windows were two identical entries, which is no
+   * more use than no list at all.
+   */
+  setWindowTitle(title: string): Promise<void>;
+  /**
    * Open a second browser window on this window's mount, at `path` (⌘N).
    *
    * The label of the new window comes back, which is only of use to a test:
@@ -129,6 +139,16 @@ export interface Backend {
   clearFinishedTransfers(): Promise<void>;
   /** Where downloads land by default. */
   downloadFolder(): Promise<string>;
+  /** Where this platform keeps the folders FAVORITES is seeded from (E27-S1). */
+  userFolders(): Promise<UserFolders>;
+  /**
+   * Which of `paths` exist right now and are directories.
+   *
+   * One call for the whole list rather than one per path: the sidebar asks
+   * this every time it loads its favourites, and a round trip per row would
+   * make an eight-row sidebar eight round trips.
+   */
+  existingDirectories(paths: string[]): Promise<string[]>;
   /** Which destinations are taken, and what "Keep both" would call them. */
   checkConflicts(
     paths: string[],
@@ -183,6 +203,24 @@ export interface Backend {
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
   forgetHostKey(host: string, port: number): Promise<void>;
+}
+
+/**
+ * The platform's own folders, for the sidebar's FAVORITES section (E27-S1).
+ *
+ * Every field is an absolute path, or `""` where this platform has no such
+ * folder — Linux has no Applications directory a person browses, and a media
+ * folder the user never created has no path to give. The window drops the
+ * empty ones rather than seeding a row that cannot open.
+ */
+export interface UserFolders {
+  home: string;
+  applications: string;
+  desktop: string;
+  documents: string;
+  pictures: string;
+  /** `~/Movies` on macOS, `XDG_VIDEOS_DIR` on Linux. Named by its own leaf. */
+  videos: string;
 }
 
 /** One dragging message from another Excalibur window. */
@@ -412,6 +450,27 @@ export function fixtureBackend(
     async downloadFolder(): Promise<string> {
       return "~/Downloads";
     },
+    // The same argument `DEMO_BOOKMARKS` makes: a browser has no filesystem,
+    // and answering with nothing would leave FAVORITES empty in the preview —
+    // which is the one place the section's design can be looked at. The mock's
+    // own user is the one the rest of the handoff names.
+    async userFolders(): Promise<UserFolders> {
+      return {
+        home: "/Users/dorian",
+        applications: "/Applications",
+        desktop: "/Users/dorian/Desktop",
+        documents: "/Users/dorian/Documents",
+        pictures: "/Users/dorian/Pictures",
+        videos: "/Users/dorian/Movies",
+      };
+    },
+    // Nothing here can be checked, so nothing is refused. Claiming every
+    // favourite is missing would hide the section entirely; claiming they are
+    // all there shows the design and misleads nobody, because the preview
+    // cannot open one either way.
+    async existingDirectories(paths: string[]): Promise<string[]> {
+      return paths;
+    },
     async checkConflicts(): Promise<Conflict[]> {
       return [];
     },
@@ -430,6 +489,7 @@ export function fixtureBackend(
       throw new Error("not connected to the engine — run the desktop app");
     },
     // Nothing mutates in the preview, so nothing can have changed under it.
+    async setWindowTitle(): Promise<void> {},
     onListingChanged(): () => void {
       return () => undefined;
     },
@@ -531,6 +591,13 @@ function tauriBackend(): Backend {
         stop?.();
       };
     },
+    async setWindowTitle(title: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // Through this app's own command, not `getCurrentWindow().setTitle`:
+      // that needs `core:window:allow-set-title` in the capability, which
+      // grants the core window API to every page the webview ever loads.
+      return invoke<void>("set_window_title", { title });
+    },
     onListingChanged(handler: (mount: string) => void): () => void {
       let stop: (() => void) | null = null;
       let cancelled = false;
@@ -626,6 +693,14 @@ function tauriBackend(): Backend {
     async downloadFolder(): Promise<string> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<string>("download_folder");
+    },
+    async userFolders(): Promise<UserFolders> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<UserFolders>("user_folders");
+    },
+    async existingDirectories(paths: string[]): Promise<string[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string[]>("existing_directories", { paths });
     },
     async checkConflicts(
       paths: string[],

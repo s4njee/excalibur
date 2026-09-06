@@ -5,24 +5,13 @@
   "identifier": "dev.excalibur.browser",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:7188",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
     "withGlobalTauri": false,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Excalibur",
-        "width": 1060,
-        "height": 640,
-        "minWidth": 820,
-        "minHeight": 480,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: excalibur-stream: http://excalibur-stream.localhost; media-src 'self' excalibur-stream: http://excalibur-stream.localhost; font-src 'self'"
     }

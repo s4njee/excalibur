@@ -36,6 +36,7 @@ import {
 } from "../state/format";
 import { formatSize } from "../state/format";
 import { bookmarkSubtitle } from "../state/bookmarks";
+import type { Favorite } from "../state/favorites";
 
 /**
  * `<share> — <host>`, centred, as the design specifies.
@@ -395,6 +396,13 @@ export function Sidebar(props: {
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onEdit: (id: string) => void;
+  /** Folders on this machine, above MOUNTED (E27-S1). */
+  favorites: Favorite[];
+  /** Single click, unlike a bookmark: see the section's comment below. */
+  onOpenFavorite: (path: string) => void;
+  onFavoriteMenu: (path: string, at: { x: number; y: number }) => void;
+  /** Whether a drag is over the section, so the whole of it highlights. */
+  dropFavorites?: boolean;
 }) {
   const mounted = createMemo(() => props.bookmarks.filter((bookmark) => bookmark.mounted));
   const saved = createMemo(() => props.bookmarks.filter((bookmark) => !bookmark.mounted));
@@ -409,7 +417,52 @@ export function Sidebar(props: {
       class={`${styles.sidebar} ${props.collapsed ? styles.sidebarCollapsed : ""}`}
       onDragOver={(event) => event.stopPropagation()}
     >
-      <div class={styles.sectionHeader}>Mounted</div>
+      {/* FAVORITES (E27-S1). Folders on this machine, above the shares,
+          because that is where every file manager puts them and because it is
+          the section a user reaches for without thinking.
+
+          The header is drawn even with no rows: it is the drop target, and a
+          section that disappears when the last favourite is removed leaves
+          nowhere to put one back.
+
+          A single click opens, where a bookmark needs a double. The two rows
+          are doing different things: a bookmark is *selected* first — the
+          footer's − and Edit act on the selection — and mounting a share over
+          the network is not something to do by brushing past a row. A
+          favourite has no selected state and opens a folder on this disk. */}
+      <div
+        class={`${styles.favorites} ${props.dropFavorites ? styles.sectionDrop : ""}`}
+        // Hit-tested by the native drop target, which has a point and no
+        // element (E24-S2) — the section, not a row: a drop adds folders to
+        // the list rather than landing *in* any one of them.
+        data-favorites="true"
+      >
+        <div class={styles.sectionHeader}>Favorites</div>
+        <For each={props.favorites}>
+          {(favorite) => (
+            <div
+              class={styles.sidebarRow}
+              role="button"
+              tabindex="0"
+              // The path is the only thing that tells two `Documents` apart,
+              // and it is too long for a 220px row — so it is the tooltip
+              // rather than a second line.
+              title={favorite.path}
+              onClick={() => props.onOpenFavorite(favorite.path)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                props.onFavoriteMenu(favorite.path, { x: event.clientX, y: event.clientY });
+              }}
+            >
+              <div class={styles.sidebarText}>
+                <div class={styles.sidebarName}>{favorite.name}</div>
+              </div>
+            </div>
+          )}
+        </For>
+      </div>
+
+      <div class={`${styles.sectionHeader} ${styles.sectionHeaderSpaced}`}>Mounted</div>
       <For each={mounted()}>
         {(bookmark) => {
           const active = () => bookmark.id === props.activeId;

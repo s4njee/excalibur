@@ -224,6 +224,24 @@
   padding-top: 16px;
 }
 
+/* FAVORITES is a wrapper rather than a bare header and rows, because a drop
+   lands on the *section* and needs an element to be hit-tested against and to
+   draw a ring around (E27-S1). */
+.favorites {
+  /* A real box, not `display: contents`: it has to be hit-testable by
+     `elementFromPoint` and it has to have edges to draw the drop ring on. It
+     adds no metrics of its own — the rows inside carry the sidebar's. */
+  flex: none;
+}
+
+/* The same ring a share row draws for a drop (E24-S2), around the whole
+   section: there is no row to land on, so highlighting one would point at a
+   folder the drop is not going into. */
+.sectionDrop {
+  background: var(--selection-soft-bg);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 .sidebarRow {
   display: flex;
   align-items: center;
