@@ -550,11 +550,17 @@ move the window to it at all, or open it alongside and leave the window where it
 is; the current behaviour is halfway between the two and reads as a bug either
 way.
 
-**2. A completed transfer does not refresh the destination listing.** A file
+**2. A completed transfer does not refresh the destination listing.** ~~A file
 dropped into the folder a window is showing lands on disk and reaches `done` in
-the queue, but the window keeps the listing it had; the file appears only on a
-manual refresh or a re-navigation. `listing://changed` exists and is addressed
-to the right window — nothing emits it when a transfer finishes.
+the queue, but the window keeps the listing it had.~~ **Fixed 2026-09-06.** The
+window now relists when a transfer reaches `done` on the mount it is showing,
+through the same coalescer a local mutation uses, so twenty dropped files are
+one relist. The mount is checked because queue progress is a deliberate
+broadcast — every window hears about every transfer — and relisting on all of
+them would be each window refreshing for shares it is not showing. A *running*
+transfer deliberately does not relist: those arrive per chunk, and a listing
+round trip behind every progress update would be aimed at the share already busy
+moving the bytes.
 
 **3. The Window menu has no window list.** It offers Minimize, Zoom and Close
 only. Every macOS app with more than one window lists the open windows there and

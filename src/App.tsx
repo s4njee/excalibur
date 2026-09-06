@@ -1130,6 +1130,20 @@ export default function App(props: {
         next[index] = changed;
         return next;
       });
+      // A transfer that landed changed the share it landed on, and nothing
+      // else tells the window: `listing://changed` is emitted for this app's
+      // own mutations — a rename, a delete, a new folder — and the queue is
+      // not one of them. Without this a file dragged in from Finder copies
+      // successfully and simply never appears (reported 2026-09-06).
+      //
+      // Through the coalescer rather than straight to `load`: dropping twenty
+      // files finishes twenty transfers, and that is one relist, not twenty.
+      // The mount is checked because the queue event is a broadcast — every
+      // window hears about every transfer, and relisting on someone else's
+      // would be this window refreshing for a share it is not showing.
+      if (changed.status === "done" && changed.mount === activeMountId()) {
+        refresh.request();
+      }
     });
     onCleanup(stop);
   });
@@ -1750,6 +1764,7 @@ export default function App(props: {
         onBack={() => setHistory(nav.back)}
         onForward={() => setHistory(nav.forward)}
         onAscend={ascend}
+        onRefresh={() => listingState.load(path())}
         onCrumb={onCrumb}
         filterRef={(element) => (filterInput = element)}
         onQuickLook={toggleQuickLook}

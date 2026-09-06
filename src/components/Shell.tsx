@@ -227,6 +227,8 @@ export function Toolbar(props: {
   onBack: () => void;
   onForward: () => void;
   onAscend: () => void;
+  /** Relist the folder now. The same verb ⌘R runs, uncoalesced. */
+  onRefresh: () => void;
   onCrumb: (depth: number) => void;
   onQuickLook?: () => void;
   onEdit?: () => void;
@@ -297,6 +299,20 @@ export function Toolbar(props: {
         onClick={props.onAscend}
       >
         ↑
+      </button>
+      {/* ⌘R has existed since E16-S1 with nothing on screen to say so, and a
+          listing can go stale for reasons this app never hears about — another
+          machine writing to the share, a transfer landing somewhere it is not
+          watching. Disabled from `mount` rather than a `can` prop: relisting
+          is not a permission, it is only meaningless with nothing mounted. */}
+      <button
+        class={styles.button}
+        disabled={props.mount === undefined}
+        aria-label="Refresh"
+        title={shortcuts.tooltip("refresh")}
+        onClick={props.onRefresh}
+      >
+        ⟳
       </button>
       {/* An empty field rather than `://` over a blank crumb: with nothing
           mounted there is no path, and half a URI would read as one that
