@@ -45,6 +45,70 @@ impl Drop for Server {
     }
 }
 
+/// How many ports to try before giving up on finding one nobody else takes.
+const PORT_ATTEMPTS: u8 = 8;
+
+/// A port the kernel picked and then released.
+///
+/// Deriving it from the process id gave every test in the run the same number.
+/// This is better and still not airtight — see [`claim`], which is what makes
+/// it safe.
+fn free_port() -> u16 {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let port = probe.local_addr().expect("addr").port();
+    drop(probe);
+    port
+}
+
+/// What is listening on a port we were given.
+enum Claim {
+    /// Our `sshd`: it answered with the host key we generated for it.
+    Ours,
+    /// Somebody else's, or ours died trying to bind. Take another number.
+    Lost,
+    /// Nothing came up at all, or `ssh-keyscan` is not installed.
+    Missing,
+}
+
+/// Wait until the server on `port` proves it is the one we started.
+///
+/// Identity rather than liveness, and the difference is the whole point. A
+/// successful connection proves only that *someone* is listening, and a child
+/// that has not exited proves only that it has not exited *yet* — a freshly
+/// spawned `sshd` has bound nothing for its first hundred milliseconds or so,
+/// so both of those checks pass while the port still belongs to another test's
+/// server. Asking for the host key is the one question whose answer cannot
+/// come from another process.
+fn claim(child: &mut Child, port: u16, expected: &str) -> Claim {
+    for _ in 0..50 {
+        // Exited rather than served, which is what losing the bind looks like.
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Claim::Lost;
+        }
+        let Ok(scan) = Command::new("ssh-keyscan")
+            .args(["-T", "1", "-p", &port.to_string(), "127.0.0.1"])
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return Claim::Missing;
+        };
+        // `host keytype base64`, with comment lines the scanner adds itself.
+        if let Some(found) = String::from_utf8_lossy(&scan.stdout)
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .find_map(|line| line.split_whitespace().nth(2).map(str::to_owned))
+        {
+            return if found == expected {
+                Claim::Ours
+            } else {
+                Claim::Lost
+            };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Claim::Missing
+}
+
 /// Start an `sshd` serving `root`, or `None` when the tools are missing.
 fn start(root: tempfile::TempDir) -> Option<Server> {
     let (Some(sshd), Some(subsystem)) = (sshd(), sftp_server()) else {
@@ -71,76 +135,83 @@ fn start(root: tempfile::TempDir) -> Option<Server> {
     permit_owner_only(&authorized);
     permit_owner_only(&host_key);
 
-    // A port the kernel picked and then released. Deriving it from the process
-    // id gave every test in the run the same number, so each started an sshd
-    // with its own host key on one port and they connected to each other's —
-    // which showed up as `HostKeyChanged`, alarmingly and correctly.
-    let port = {
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-        let port = probe.local_addr().expect("addr").port();
-        drop(probe);
-        port
-    };
-    // sshd told to keep to itself: no PAM, no host-based anything, and only
-    // the one key that was just made.
-    let config = config_dir.join("sshd_config");
-    std::fs::write(
-        &config,
-        format!(
-            "Port {port}\n\
-             ListenAddress 127.0.0.1\n\
-             HostKey {}\n\
-             AuthorizedKeysFile {}\n\
-             PubkeyAuthentication yes\n\
-             PasswordAuthentication no\n\
-             KbdInteractiveAuthentication no\n\
-             UsePAM no\n\
-             StrictModes no\n\
-             PidFile none\n\
-             Subsystem sftp {}\n",
-            host_key.display(),
-            authorized.display(),
-            subsystem.display(),
-        ),
-    )
-    .expect("sshd_config");
-
-    let child = Command::new(sshd)
-        .arg("-D")
-        .arg("-f")
-        .arg(&config)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-
     // The host key as `known_hosts` records it, so the trust store can be
-    // seeded without a prompt.
+    // seeded without a prompt — and so `claim` has something to compare.
     let public = std::fs::read_to_string(host_key.with_extension("pub")).expect("host pub");
     let mut fields = public.split_whitespace();
     let algorithm = fields.next().expect("algorithm").to_owned();
     let blob = fields.next().expect("key").to_owned();
 
-    let server = Server {
-        child,
-        port,
-        key_path: client_key,
-        host_key: HostKey {
-            host: "127.0.0.1".to_owned(),
-            port,
-            algorithm,
-            key: blob,
-        },
-        root,
-    };
-    // sshd takes a moment to bind. Polling beats a fixed sleep.
-    for _ in 0..50 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Some(server);
+    // Retried rather than locked, because the race crosses processes: cargo
+    // runs each test binary as its own, so a mutex here would only order the
+    // threads that already agree. Two tests handed the same number both start
+    // an `sshd`; one wins the bind, and the other has to notice and move on.
+    for _ in 0..PORT_ATTEMPTS {
+        let port = free_port();
+        // sshd told to keep to itself: no PAM, no host-based anything, and
+        // only the one key that was just made.
+        let config = config_dir.join("sshd_config");
+        std::fs::write(
+            &config,
+            format!(
+                "Port {port}\n\
+                 ListenAddress 127.0.0.1\n\
+                 HostKey {}\n\
+                 AuthorizedKeysFile {}\n\
+                 PubkeyAuthentication yes\n\
+                 PasswordAuthentication no\n\
+                 KbdInteractiveAuthentication no\n\
+                 UsePAM no\n\
+                 StrictModes no\n\
+                 PidFile none\n\
+                 Subsystem sftp {}\n",
+                host_key.display(),
+                authorized.display(),
+                subsystem.display(),
+            ),
+        )
+        .expect("sshd_config");
+
+        let mut child = Command::new(&sshd)
+            .arg("-D")
+            .arg("-f")
+            .arg(&config)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+
+        match claim(&mut child, port, &blob) {
+            Claim::Ours => {
+                return Some(Server {
+                    child,
+                    port,
+                    key_path: client_key,
+                    host_key: HostKey {
+                        host: "127.0.0.1".to_owned(),
+                        port,
+                        algorithm,
+                        key: blob,
+                    },
+                    root,
+                })
+            }
+            // Ours is not the server on that port, so it must not outlive this
+            // attempt: left running it would be the next test's collision.
+            Claim::Lost => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Claim::Missing => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("skipping: no sshd answered on {port}");
+                return None;
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    eprintln!("skipping: sshd did not come up on {port}");
+
+    eprintln!("skipping: no port survived {PORT_ATTEMPTS} attempts");
     None
 }
 
