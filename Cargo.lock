@@ -1515,6 +1515,7 @@ dependencies = [
  "trash",
  "xsync-client",
  "xsync-core",
+ "xsync-endpoint",
  "zeroize",
 ]
 

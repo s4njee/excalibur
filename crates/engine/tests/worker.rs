@@ -54,10 +54,42 @@ fn mock() -> Arc<dyn ShareBackend> {
     Arc::new(MockBackend::media_share())
 }
 
+/// The media share, with `path` actually holding the bytes it claims.
+///
+/// `media_share` is the **listing** fixture: its rows carry the design's sizes
+/// — `Arrival.2016.mkv` is 48 GB — and no contents at all. The chunk loop this
+/// story deleted could not tell that apart from a real file, because it read
+/// until a short answer and called that the end; so a "download" of a file with
+/// no bytes in it published an empty file and reported success. xsync's planner
+/// asks for the range it was promised and refuses what comes back short, which
+/// is the stricter and the correct behaviour. A test that moves bytes therefore
+/// has to seed them.
+async fn seeded(path: &str, bytes: &[u8]) -> Arc<dyn ShareBackend> {
+    let share = mock();
+    share
+        .write_range(path, excalibur_engine::WriteMode::Create, bytes)
+        .await
+        .expect("seed the share");
+    share
+}
+
+/// Bytes whose value depends on their offset.
+///
+/// A pattern rather than a fill: several of these tests are about the *order*
+/// bytes land in, and a file of identical bytes cannot tell a correct copy from
+/// a shuffled one.
+fn patterned_bytes(size: usize) -> Vec<u8> {
+    (0..size)
+        .map(|index| u8::try_from(index % 251).unwrap_or(0))
+        .collect()
+}
+
 #[tokio::test]
-async fn a_download_lands_whole_and_leaves_no_partial() {
+async fn a_download_lands_whole_and_leaves_nothing_beside_it() {
     let directory = tempfile::tempdir().expect("temp dir");
     let destination = directory.path().join("Arrival.2016.mkv");
+    let payload = patterned_bytes(3 * 1024 * 1024);
+    let share = seeded("Arrival.2016.mkv", &payload).await;
     let queue = Arc::new(TransferQueue::in_memory());
     queue
         .add(Transfer::new(
@@ -69,74 +101,77 @@ async fn a_download_lands_whole_and_leaves_no_partial() {
         ))
         .await;
 
-    worker(&queue, Arc::new(Fixed(mock()))).drain().await;
+    worker(&queue, Arc::new(Fixed(share))).drain().await;
 
     let done = &queue.all().await[0];
     assert_eq!(done.status, Status::Done, "{:?}", done.error);
-    assert!(destination.exists(), "the file was not published");
-    // The partial is consumed by the rename, not left beside the result.
-    assert!(!directory.path().join("Arrival.2016.mkv.part").exists());
     assert_eq!(
-        done.bytes_done,
-        std::fs::metadata(&destination).unwrap().len()
+        std::fs::read(&destination).expect("read result"),
+        payload,
+        "the published file is not what the share held"
     );
+    assert_eq!(done.bytes_done, payload.len() as u64);
+    // The stage is consumed by the rename, not left beside the result. Only
+    // the file the user asked for is in the folder.
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
 #[tokio::test]
-async fn a_resumed_download_discards_bytes_the_queue_cannot_vouch_for() {
+async fn a_stranger_s_partial_beside_the_destination_contributes_nothing() {
     // The bug this exists to prevent, and the one the sibling engine has: a
-    // `.part` left by a *different* cancelled transfer to the same
-    // destination. Trusting its length appends real bytes onto a stranger's
-    // and produces a file that passes every length check and is wrong.
+    // leftover partial from a *different* cancelled transfer to the same
+    // destination. Kestrel trusts its length and appends real bytes onto a
+    // stranger's, producing a file that passes every length check and is wrong.
+    //
+    // The E13 worker answered that with a byte count this queue recorded. The
+    // staged write path answers it with a stage of its own naming, a per-range
+    // journal keyed on the source's identity, and a length check before the
+    // publishing rename — so a file left under the old `.part` name is now
+    // simply not part of the transfer at all.
     let directory = tempfile::tempdir().expect("temp dir");
     let destination = directory.path().join("Arrival.2016.srt");
     let partial = directory.path().join("Arrival.2016.srt.part");
     std::fs::write(&partial, b"bytes from something else entirely").expect("write");
 
+    let payload = patterned_bytes(74_216);
+    let share = seeded("Arrival.2016.srt", &payload).await;
     let queue = Arc::new(TransferQueue::in_memory());
-    let mut transfer = Transfer::new(
-        "one",
-        Direction::Down,
-        "Arrival.2016.srt",
-        destination.to_str().expect("utf-8"),
-        0,
-    );
-    // The queue never recorded any progress for this transfer.
-    transfer.bytes_done = 0;
-    queue.add(transfer).await;
+    queue
+        .add(Transfer::new(
+            "one",
+            Direction::Down,
+            "Arrival.2016.srt",
+            destination.to_str().expect("utf-8"),
+            0,
+        ))
+        .await;
 
-    worker(&queue, Arc::new(Fixed(mock()))).drain().await;
+    worker(&queue, Arc::new(Fixed(share))).drain().await;
 
-    let expected = mock()
-        .read_range("Arrival.2016.srt", 0, 1 << 20)
-        .await
-        .expect("read");
     assert_eq!(
         std::fs::read(&destination).expect("read result"),
-        expected,
+        payload,
         "the stale partial contributed bytes"
+    );
+    // And it is still exactly where it was: this transfer never claimed it.
+    assert_eq!(
+        std::fs::read(&partial).expect("read partial"),
+        b"bytes from something else entirely"
     );
 }
 
 #[tokio::test]
-async fn a_resume_continues_from_what_the_queue_recorded() {
+async fn a_transfer_resumed_after_an_interruption_still_lands_the_whole_file() {
+    // `bytes_done` used to be the resume point: the worker seeked a `.part` to
+    // it and carried on. It is now only what the row last showed, and the
+    // resume point is the stage plus the journal — so a row restored from a
+    // queue that recorded a partial byte count must still produce the whole
+    // file rather than a file missing its head.
     let directory = tempfile::tempdir().expect("temp dir");
     let destination = directory.path().join("resumed.txt");
-    let partial = directory.path().join("resumed.txt.part");
 
-    // Put a known payload on the share rather than relying on fixture
-    // contents, so the assertion is about resume and nothing else.
-    let backend = mock();
-    let full: Vec<u8> = (0..4096_u32)
-        .map(|byte| u8::try_from(byte % 251).unwrap_or(0))
-        .collect();
-    backend
-        .write_range("resumed.txt", excalibur_engine::WriteMode::Create, &full)
-        .await
-        .expect("seed");
-
-    let head = &full[..1000];
-    std::fs::write(&partial, head).expect("write");
+    let full = patterned_bytes(4096);
+    let share = seeded("resumed.txt", &full).await;
 
     let queue = Arc::new(TransferQueue::in_memory());
     let mut transfer = Transfer::new(
@@ -146,12 +181,13 @@ async fn a_resume_continues_from_what_the_queue_recorded() {
         destination.to_str().expect("utf-8"),
         full.len() as u64,
     );
-    // The queue vouches for exactly those bytes, so they are kept.
-    transfer.bytes_done = head.len() as u64;
+    transfer.bytes_done = 1000;
     queue.add(transfer).await;
 
-    worker(&queue, Arc::new(Fixed(backend))).drain().await;
+    worker(&queue, Arc::new(Fixed(share))).drain().await;
 
+    let done = &queue.all().await[0];
+    assert_eq!(done.status, Status::Done, "{:?}", done.error);
     assert_eq!(std::fs::read(&destination).expect("read"), full);
 }
 
@@ -169,7 +205,7 @@ async fn a_transient_failure_is_retried_and_a_fatal_one_is_not() {
         ))
         .await;
     let source = Arc::new(FlakySource {
-        inner: mock(),
+        inner: seeded("Arrival.2016.srt", b"subtitles").await,
         remaining: AtomicU32::new(2),
         transient: true,
     });
@@ -187,7 +223,7 @@ async fn a_transient_failure_is_retried_and_a_fatal_one_is_not() {
         ))
         .await;
     let source = Arc::new(FlakySource {
-        inner: mock(),
+        inner: seeded("Arrival.2016.srt", b"subtitles").await,
         remaining: AtomicU32::new(1),
         transient: false,
     });
@@ -328,7 +364,12 @@ async fn several_transfers_all_finish() {
             .await;
     }
 
-    worker(&queue, Arc::new(Fixed(mock()))).drain().await;
+    worker(
+        &queue,
+        Arc::new(Fixed(seeded("Arrival.2016.srt", b"subtitles").await)),
+    )
+    .drain()
+    .await;
 
     for transfer in queue.all().await {
         assert_eq!(
@@ -384,7 +425,10 @@ async fn lowering_the_limit_still_runs_everything() {
             .await;
     }
 
-    let worker = worker(&queue, Arc::new(Fixed(mock())));
+    let worker = worker(
+        &queue,
+        Arc::new(Fixed(seeded("Arrival.2016.srt", b"subtitles").await)),
+    );
     worker.set_concurrency(1);
     worker.drain().await;
 
@@ -403,7 +447,10 @@ async fn raising_after_lowering_nets_out() {
     // its own stated limit.
     let directory = tempfile::tempdir().expect("temp dir");
     let queue = Arc::new(TransferQueue::open(directory.path().join("q.json")));
-    let worker = worker(&queue, Arc::new(Fixed(mock())));
+    let worker = worker(
+        &queue,
+        Arc::new(Fixed(seeded("Arrival.2016.srt", b"subtitles").await)),
+    );
 
     worker.set_concurrency(1);
     worker.set_concurrency(3);
@@ -554,12 +601,18 @@ async fn patterned(size: usize) -> (Arc<Handed>, Vec<u8>) {
 }
 
 #[tokio::test]
-async fn a_download_opens_once_and_keeps_several_reads_in_flight() {
-    // E13-S7. One open per transfer rather than per chunk, and the chunks
-    // overlap — which is the whole reason the handle exists.
+async fn a_download_opens_one_handle_per_worker_and_keeps_several_reads_in_flight() {
+    // E13-S7's property, restated for E22-S2. The old chunk loop opened one
+    // handle per transfer and issued `depth` reads down it. xsync's engine
+    // opens one **per segment worker** and hands each worker a contiguous
+    // region, which is what `Source::open_region` is for. The number moved;
+    // what has not moved is the point of the story — the handle is opened once
+    // per reader rather than once per chunk, and the chunks overlap.
     let directory = tempfile::tempdir().expect("temp dir");
     let destination = directory.path().join("big.bin");
-    let (share, payload) = patterned(8 * 1024 * 1024).await;
+    // Sixteen chunks of the handle's 1 MiB, so "one open per chunk" and "one
+    // open per worker" are far apart and the assertion below means something.
+    let (share, payload) = patterned(16 * 1024 * 1024).await;
 
     let queue = Arc::new(TransferQueue::in_memory());
     queue
@@ -581,9 +634,14 @@ async fn a_download_opens_once_and_keeps_several_reads_in_flight() {
 
     let done = &queue.all().await[0];
     assert_eq!(done.status, Status::Done, "{:?}", done.error);
-    // Eight chunks through one handle, not eight opens and eight closes.
-    assert_eq!(share.opens.load(Ordering::SeqCst), 1);
-    assert_eq!(share.closes.load(Ordering::SeqCst), 1);
+    let opens = share.opens.load(Ordering::SeqCst);
+    assert!(
+        opens <= 5,
+        "{opens} opens for sixteen chunks: the handle is being reopened per read"
+    );
+    // Every handle is released. One leaked per failed file exhausts a
+    // session's table long before the queue empties.
+    assert_eq!(share.closes.load(Ordering::SeqCst), opens);
     assert_eq!(
         share.peak.load(Ordering::SeqCst),
         4,

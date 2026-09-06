@@ -575,6 +575,40 @@ day as "the bundle renders nothing" (see the withdrawn note in `plan.md` at
 E22-S3). Worth knowing before anyone reaches the same conclusion again; worth
 measuring on a release bundle before treating it as a real startup cost.
 
+## A folder is one transfer row *(E22-S2, 2026-09-06)*
+
+**The mock** (§Screens/4) draws the transfers panel as a list of files: a name,
+a size, a bar and a rate on each row. Every row in it is a file.
+
+**What was built:** a folder dropped onto a share, or dragged out of one onto
+another window, is **one row** that names the folder. Its bar fills as the
+whole tree moves and its rate is the tree's rate; the files inside it never
+appear.
+
+This is not a preference. Since E22-S2 every transfer runs xsync's planner, and
+the planner is the thing that walks the tree — it is what turned a dropped
+folder from an `EISDIR` failure into a working copy. Pre-walking the folder here
+to make per-file rows would mean statting every file over the browse session
+before the transfer had sent a byte, and then having the planner walk it again;
+the size, the rate and the resume point on those rows would all be this app's
+guesses rather than the engine's answers. A download of a folder *selected in
+the list* still expands to one row per file, because that walk (E13-S4) already
+existed and reports a subdirectory it could not read as a failed row, which is
+worth keeping until there is somewhere better to put it.
+
+So the panel currently shows two shapes at once, and that is the honest
+description of a half-migrated queue rather than a design decision.
+
+**For the designer:** E22-S3 is where this is meant to settle — its AC says "a
+directory row stops being one row". The question worth answering before then is
+what a folder row *should* look like while it is running. Three candidates: one
+row that says `Show — 412 files, 8.1 GB` and expands on click; one row per file
+as the mock draws, with the folder as a group header; or the folder row plus a
+single "current file" line underneath it, which is what most file managers do
+and which the panel has no vocabulary for. The engine can supply any of the
+three — the planner names and sizes every file before the first byte moves —
+so this is a drawing question, not a plumbing one.
+
 ## A FAVORITES section in the sidebar *(E27-S1, 2026-09-06)*
 
 **The mock** draws two sidebar sections and no more: `MOUNTED` and `BOOKMARKS`,

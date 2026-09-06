@@ -14,6 +14,7 @@
 //! [`Progress`], which decides whether the window is told.
 
 pub mod conflict;
+pub mod endpoint;
 pub mod plan;
 pub mod queue;
 pub mod rate;

@@ -1,18 +1,30 @@
-//! The worker: what actually moves the bytes.
+//! The worker: what schedules transfers and what settles their rows.
 //!
-//! Modelled on the sibling Kestrel engine's worker, with four of its known
-//! sharp edges designed out rather than inherited:
+//! It no longer moves any bytes. Until E22-S2 this file held a chunk loop —
+//! `download`, `stream` and `upload` — modelled on the sibling Kestrel engine's
+//! worker. Every transfer now runs xsync's planner instead, through one of two
+//! adapters ([`super::xsync_engine`] and [`super::endpoint`]), and what is left
+//! here is the part that was always this file's own: the queue, the permit, the
+//! retry, and the rule about who is allowed to write a row's status.
 //!
-//! - **Transferred data is fsynced before the rename.** Kestrel flushes and
-//!   renames, so a download survives a crash of the app but not a power loss —
-//!   the rename can land before the content does, leaving a file of zeroes
-//!   with the right name.
-//! - **A resumed download truncates to the length this queue recorded.**
-//!   Kestrel trusts whatever `<dest>.part` happens to be, and keeps that file
-//!   when a transfer is *cancelled*, so a later transfer to the same
-//!   destination silently appends to a stranger's bytes. Cancelling here
-//!   removes the partial, and resuming discards anything past the byte count
-//!   this queue is prepared to vouch for.
+//! Two of Kestrel's sharp edges were designed out here and are worth keeping
+//! written down, because they are now *xsync's* to keep rather than this file's
+//! and both are kept more strongly than they were:
+//!
+//! - **Nothing appears under its final name until every byte is there, and the
+//!   bytes are checked.** Kestrel flushes and renames, so a download survives a
+//!   crash of the app but not a power loss. The staged write path verifies each
+//!   range against the source's own BLAKE3 before it lands and syncs the stage
+//!   before it publishes.
+//! - **A resumed transfer never appends to bytes it cannot account for.**
+//!   Kestrel trusts whatever `<dest>.part` happens to be, so a later transfer to
+//!   the same destination silently appends to a stranger's. This queue used to
+//!   answer that with a recorded byte count; the resume journal answers it with
+//!   a per-range record keyed on the source's identity, and refuses to reuse
+//!   anything it cannot prove.
+//!
+//! The two that are still this file's:
+//!
 //! - **State changes go through the queue's closure-under-lock**, so a worker
 //!   reporting progress cannot overwrite a status the user set while a chunk
 //!   was in flight. Kestrel's check-then-act on a `Mutex<State>` loses that
@@ -21,9 +33,7 @@
 //!   channel whose lag is silent, so there has to be a way back to the truth;
 //!   Kestrel has none and its UI can desync permanently.
 
-use std::collections::{HashMap, VecDeque};
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,20 +43,12 @@ use tokio::sync::{RwLock, Semaphore};
 
 use super::queue::TransferQueue;
 use super::rate::{backoff, Progress};
-use super::xsync_engine::XsyncRoute;
+use super::xsync_engine::{Settled, XsyncRoute};
 use super::{Direction, Status, Transfer};
-use crate::backend::{read_handle, ReadHandle, ShareBackend, WriteMode};
-use crate::error::{EngineError, Result};
+use crate::backend::ShareBackend;
+use crate::error::Result;
 
-/// Bytes moved per round trip.
-///
-/// Large enough that a fast link is not dominated by round trips, small enough
-/// that pause and cancel take effect promptly. It is capped by the handle's
-/// own `max_read` where that is smaller — xsync's mount says 1 MiB, and a
-/// larger read would be refused rather than split.
-const CHUNK: u32 = 1024 * 1024;
-
-/// How many reads a download keeps in flight (E13-S7).
+/// How many ranged reads a transfer keeps in flight against one file (E13-S7).
 ///
 /// One chunk at a time makes a transfer round-trip bound: the link is idle
 /// from the moment a chunk arrives until the next request reaches the server,
@@ -88,15 +90,15 @@ pub trait BackendSource: Send + Sync {
     /// How to reach `mount` as an xsync export, when it is one (E22-S1).
     ///
     /// `Some` is what routes a transfer through xsync's own engine instead of
-    /// this worker's chunk loop. It is a separate question from
+    /// the endpoint adapter. It is a separate question from
     /// [`Self::backend_for`] because the answers are different objects: the
     /// backend is a live v3 browse session, and a transfer needs a *second*
     /// process speaking the v1/v2 sync grammar — one `xs --server` serves one
     /// session and the role is fixed at the handshake.
     ///
     /// The default is `None`, so a caller with no session manager behind it —
-    /// the worker's own tests, a mock — keeps the byte-moving it already had
-    /// without having to say anything about xsync.
+    /// the worker's own tests, a mock — takes the endpoint adapter without
+    /// having to say anything about xsync.
     async fn xsync_route(&self, mount: Option<&str>) -> Option<XsyncRoute> {
         let _ = mount;
         None
@@ -107,7 +109,7 @@ pub trait BackendSource: Send + Sync {
 pub struct Worker {
     queue: Arc<TransferQueue>,
     backends: Arc<dyn BackendSource>,
-    /// Set when a transfer should stop; read between chunks.
+    /// Set when a transfer should stop; turned into the engine's cancel token.
     stopping: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     limit: Arc<Semaphore>,
     /// What the limit is *meant* to be, which the semaphore may not have
@@ -120,11 +122,12 @@ pub struct Worker {
     /// acquisition time is what makes the new limit real without interrupting
     /// a transfer the user did not ask to stop.
     debt: Arc<AtomicUsize>,
-    /// Reads in flight per download (E13-S7).
+    /// Ranged reads in flight per transfer (E13-S7).
     ///
-    /// Per download rather than per worker: the point is to keep one file's
+    /// Per transfer rather than per worker: the point is to keep one file's
     /// link full, and a queue running three transfers already has three of
-    /// these going at once.
+    /// these going at once. It reaches the engine as the source's
+    /// `read_concurrency`, which is where the depth is now spent.
     read_depth: Arc<AtomicUsize>,
 }
 
@@ -152,10 +155,10 @@ impl Worker {
         }
     }
 
-    /// Change how many reads a download keeps in flight.
+    /// Change how many ranged reads a transfer keeps in flight.
     ///
-    /// Applies to transfers that start after it, not to one already streaming:
-    /// the depth is read once when a download begins, so a change mid-file
+    /// Applies to transfers that start after it, not to one already running:
+    /// the depth is read once when a session begins, so a change mid-file
     /// cannot leave the in-flight window inconsistent with the plan that built
     /// it. Zero would mean scheduling nothing, so it is clamped to one — which
     /// is also how a caller asks for the old serial behaviour.
@@ -163,7 +166,7 @@ impl Worker {
         self.read_depth.store(depth.max(1), Ordering::SeqCst);
     }
 
-    /// Reads in flight per download, as it stands.
+    /// Ranged reads in flight per transfer, as it stands.
     #[must_use]
     pub fn read_depth(&self) -> usize {
         self.read_depth.load(Ordering::SeqCst).max(1)
@@ -339,58 +342,83 @@ impl Worker {
 
     /// Move one transfer once, by whichever route its pair calls for.
     ///
-    /// **The routing rule, and the whole of it (E22-S1):** a transfer whose
-    /// share end is an xsync mount and whose other end is a folder on this
-    /// machine goes through xsync's engine — with one carve-out, below. Every
-    /// other pair — NFS, SMB, SFTP, a local folder, and any pair where the
-    /// share cannot answer [`BackendSource::xsync_route`] — keeps the
-    /// `download`/`upload` this worker has always run.
+    /// **Every transfer runs xsync's planner now (E22-S2).** What the routing
+    /// rule decides is only *which* of the two adapters carries the bytes:
     ///
-    /// There is no fallback *between* the two once a route is chosen: an xsync
-    /// session that fails reports its failure rather than quietly re-running
-    /// the transfer a slower way, because a transfer that succeeded by a route
-    /// the user was not told about is a transfer whose progress, resume and
+    /// - a share that is an xsync export, paired with a folder on this machine,
+    ///   goes through [`super::xsync_engine`] — xsync's own wire protocol to a
+    ///   second `xs --server`, with its compression and its multi-stream push;
+    /// - everything else — NFS, SMB, SFTP, a local folder browsed as a mount,
+    ///   and an xsync export whose engine could not be reached — goes through
+    ///   [`super::endpoint`], which is `ShareBackend` implementing xsync's
+    ///   `Source` and `Sink`.
+    ///
+    /// There is no fallback *between* the two once a route is chosen: a session
+    /// that fails reports its failure rather than quietly re-running the
+    /// transfer a slower way, because a transfer that succeeded by a route the
+    /// user was not told about is a transfer whose progress, resume and
     /// verification claims were all about something else.
     ///
-    /// **The carve-out: pulling one file.** A session's root is the `--server`
-    /// argument, and for a single file that root is the file. `xs --server`
-    /// cannot serve a *file* as the source of a pull: the scan advertises the
-    /// entry, the read resolves it against the root again — the `<file>/<file>`
-    /// mistake xsync already fixed on its multi-stream push — and the session
-    /// either ends having moved nothing or hangs until the peer drops. Both
-    /// were reproduced against the current `xs`; the second cost half a minute
-    /// and the first reported success. So a one-file pull takes `download`,
-    /// which is measured, verified per chunk by the v3 protocol, and works.
-    /// Pushes of single files are unaffected — the root there is the
-    /// destination *directory* — and trees go through the planner in both
-    /// directions, which is what the AC is about.
-    ///
-    /// E22-S2 collapses all of this: once `ShareBackend` is an xsync endpoint,
-    /// every pair takes the top branch and `download`/`upload` are deleted.
+    /// E22-S1's carve-out for pulling a single file is gone, and this is where
+    /// it went. `xs --server` cannot serve a *file* as the source of a pull —
+    /// the scan advertises the entry and the read resolves it against the root
+    /// again — so that pull used to fall back to a chunk loop that hashed
+    /// nothing. It now takes the endpoint route instead, which is the same
+    /// planner, the same verified write path and the same events as every other
+    /// pair.
     async fn attempt(&self, transfer: &Transfer, stop: &AtomicBool) -> Result<()> {
+        let flag = self.flag_for(transfer, stop).await;
         if let Some(route) = self.backends.xsync_route(transfer.mount.as_deref()).await {
             if let Some(remote_is_dir) = self.routable(transfer).await {
                 return self
-                    .through_xsync(transfer, &route, remote_is_dir, stop)
+                    .settle_session(
+                        transfer,
+                        super::xsync_engine::run(
+                            &route,
+                            transfer,
+                            remote_is_dir,
+                            Arc::clone(&flag),
+                            self.pump(transfer),
+                        ),
+                    )
                     .await;
             }
         }
         let backend = self.backends.backend_for(transfer.mount.as_deref()).await?;
-        match transfer.direction {
-            Direction::Down => self.download(transfer, &backend, stop).await,
-            Direction::Up => self.upload(transfer, &backend, stop).await,
-        }
+        let depth = self.read_depth();
+        self.settle_session(
+            transfer,
+            super::endpoint::run(
+                &backend,
+                transfer,
+                depth,
+                Arc::clone(&flag),
+                self.pump(transfer),
+            ),
+        )
+        .await
+    }
+
+    /// The stop flag this transfer is already being watched through.
+    ///
+    /// `Worker::stop` sets it and nothing here needs a second channel; the
+    /// fallback covers a caller that never registered one, which is only the
+    /// case in a test that drives `attempt` directly.
+    async fn flag_for(&self, transfer: &Transfer, stop: &AtomicBool) -> Arc<AtomicBool> {
+        self.stopping.read().await.get(&transfer.id).map_or_else(
+            || Arc::new(AtomicBool::new(stop.load(Ordering::SeqCst))),
+            Arc::clone,
+        )
     }
 
     /// Whether the xsync route can take this transfer, and what its far end is.
     ///
-    /// `Some(remote_is_dir)` routes it; `None` sends it to the chunk loop. The
-    /// question is only ever asked of a pair that already has a route, so the
-    /// one `None` it returns is the single-file pull described on
-    /// [`Self::attempt`].
+    /// `Some(remote_is_dir)` routes it through xsync's own engine; `None` sends
+    /// it to the endpoint adapter. The one `None` is the single-file pull
+    /// described on [`Self::attempt`].
     ///
     /// A `stat` that fails is treated as "not a directory", which sends a pull
-    /// to `download` — the path that will produce a real error for whatever is
+    /// to the adapter — the path that will produce a real error for whatever is
     /// actually wrong with that file.
     async fn routable(&self, transfer: &Transfer) -> Option<bool> {
         if transfer.direction == Direction::Up {
@@ -410,35 +438,17 @@ impl Worker {
         is_dir.then_some(true)
     }
 
-    /// Run one transfer through xsync's push/pull engine (E22-S1).
+    /// A progress sink for one session, draining onto the row.
     ///
-    /// The queue is not pre-walked for this pair: a selected directory is one
-    /// row, and xsync's planner does the walk. That is the AC, and it is also
-    /// the only way the numbers mean anything — a walk this side would stat
-    /// every file over the browse session before the transfer session had sent
-    /// a byte, and then the planner would walk it again.
-    async fn through_xsync(
-        &self,
-        transfer: &Transfer,
-        route: &super::xsync_engine::XsyncRoute,
-        remote_is_dir: bool,
-        stop: &AtomicBool,
-    ) -> Result<()> {
-        // The stop flag the worker already owns, shared with the session so a
-        // cancel reaches the `ssh` child. `Worker::stop` sets it; nothing here
-        // needs a second channel.
-        let flag = self.stopping.read().await.get(&transfer.id).map_or_else(
-            || Arc::new(AtomicBool::new(stop.load(Ordering::SeqCst))),
-            Arc::clone,
-        );
-
-        // Progress arrives on the engine's own schedule and is already
-        // throttled by the session; this only writes it down.
+    /// Both routes report bytes on their own schedule and are already throttled
+    /// by the session; this only writes it down, on a task so that the engine's
+    /// thread never waits for the queue's lock.
+    fn pump(&self, transfer: &Transfer) -> impl FnMut(u64, Option<u64>) + Send + 'static {
         let queue = Arc::clone(&self.queue);
         let id = transfer.id.clone();
-        let mut rate = Progress::new();
         let (updates, mut written) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
-        let pump = tokio::spawn(async move {
+        tokio::spawn(async move {
+            let mut rate = Progress::new();
             while let Some((done, total)) = written.recv().await {
                 let now = Instant::now();
                 rate.sample(done, now);
@@ -465,17 +475,18 @@ impl Worker {
                     .await;
             }
         });
+        move |done, total| {
+            let _ = updates.send((done, total));
+        }
+    }
 
-        let settled =
-            super::xsync_engine::run(route, transfer, remote_is_dir, flag, move |done, total| {
-                let _ = updates.send((done, total));
-            })
-            .await;
-        // Dropped by the closure going out of scope with `run`; awaiting the
-        // pump here is what makes the last update land before the row settles.
-        let _ = pump.await;
-
-        let settled = settled?;
+    /// Await one session and write what it settled onto the row.
+    async fn settle_session(
+        &self,
+        transfer: &Transfer,
+        session: impl std::future::Future<Output = Result<Settled>>,
+    ) -> Result<()> {
+        let settled = session.await?;
         if settled.stopped {
             // Paused or cancelled. The row's status is the user's and this
             // must not overwrite it.
@@ -493,319 +504,4 @@ impl Worker {
             .await;
         Ok(())
     }
-
-    /// Share to disk: `<dest>.part`, fsync, rename.
-    async fn download(
-        &self,
-        transfer: &Transfer,
-        backend: &Arc<dyn ShareBackend>,
-        stop: &AtomicBool,
-    ) -> Result<()> {
-        let destination = PathBuf::from(&transfer.dest_path);
-        let partial = partial_path(&destination);
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                EngineError::Io(format!("create {}: {error}", parent.display()))
-            })?;
-        }
-
-        // Resume only as far as this queue is prepared to vouch for. Anything
-        // beyond `bytes_done` in that file was written by something whose
-        // record we do not have, and appending to it would corrupt the result.
-        let mut offset = resume_offset(&partial, transfer.bytes_done)?;
-        // A size is what lets reads be scheduled ahead of the writes, so a row
-        // enqueued without one asks now. A stat that fails is not a failure —
-        // the stream falls back to reading until the file ends, which is what
-        // it did before there was a plan at all.
-        let total = if transfer.bytes_total > 0 {
-            transfer.bytes_total
-        } else {
-            let size = backend
-                .stat(&transfer.source_path)
-                .await
-                .map_or(0, |attrs| attrs.size);
-            // Told to the queue as well, so the row that had an indeterminate
-            // bar gets a real one rather than the worker keeping a better
-            // number to itself.
-            if size > 0 {
-                self.queue
-                    .update(&transfer.id, |item| {
-                        if item.bytes_total == 0 {
-                            item.bytes_total = size;
-                        }
-                    })
-                    .await;
-            }
-            size
-        };
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&partial)
-            .map_err(|error| EngineError::Io(format!("open {}: {error}", partial.display())))?;
-        file.set_len(offset)
-            .map_err(|error| EngineError::Io(format!("truncate {}: {error}", partial.display())))?;
-        seek_to(&mut file, offset, &partial)?;
-
-        // One open for the whole file, rather than one per chunk (E13-S7).
-        let handle = read_handle(backend, &transfer.source_path).await?;
-        let streamed = self
-            .stream(&handle, &mut file, transfer, offset, total, stop)
-            .await;
-        // Closed whether or not the transfer worked, and before the result is
-        // unwrapped: a handle leaked per failed attempt would exhaust the
-        // session's table after five retries of a flaky file.
-        let closed = handle.close().await;
-        let Some(end) = streamed? else {
-            // Paused or cancelled. The partial stays where it is; whether it
-            // survives is `stop`'s decision, not this one.
-            return Ok(());
-        };
-        closed?;
-        offset = end;
-
-        // Before the rename, not after: a rename that lands before the content
-        // leaves a correctly named file full of zeroes.
-        file.sync_all()
-            .map_err(|error| EngineError::Io(format!("sync {}: {error}", partial.display())))?;
-        drop(file);
-        std::fs::rename(&partial, &destination).map_err(|error| {
-            EngineError::Io(format!("publish {}: {error}", destination.display()))
-        })?;
-        self.settle(transfer, offset).await;
-        Ok(())
-    }
-
-    /// Read a file into `file` with several reads in flight (E13-S7).
-    ///
-    /// Reads are scheduled ahead and **written strictly in order**: the window
-    /// is a queue, and the front of it is awaited before the bytes behind it
-    /// are looked at. Writing them as they arrive would need seeks and would
-    /// leave a `.part` with holes in it, which is exactly the file the resume
-    /// rule cannot tell from a good one.
-    ///
-    /// `Ok(None)` means the user paused or cancelled; the caller must not
-    /// publish. `Ok(Some(end))` is the offset one past the last byte written.
-    ///
-    /// Stopping is checked once per chunk written, as before. What has already
-    /// been scheduled is still awaited rather than aborted — those requests are
-    /// on the wire either way, and dropping the tasks would leave the
-    /// connection reading answers nobody is waiting for.
-    async fn stream(
-        &self,
-        handle: &Arc<dyn ReadHandle>,
-        file: &mut std::fs::File,
-        transfer: &Transfer,
-        start: u64,
-        total: u64,
-        stop: &AtomicBool,
-    ) -> Result<Option<u64>> {
-        let chunk = CHUNK.min(handle.max_read()).max(1);
-        let depth = self.read_depth();
-        let mut progress = Progress::new();
-        progress.sample(start, Instant::now());
-
-        if stop.load(Ordering::SeqCst) {
-            return Ok(None);
-        }
-
-        // (bytes asked for, the read). The length is kept because a read that
-        // comes back short is the end of the file, and only the request knows
-        // what short means.
-        let mut window: VecDeque<(u32, tokio::task::JoinHandle<Result<Vec<u8>>>)> =
-            VecDeque::with_capacity(depth);
-        let mut scheduled = start;
-        let mut written = start;
-
-        loop {
-            while window.len() < depth {
-                let want = if total == 0 {
-                    chunk
-                } else if scheduled >= total {
-                    break;
-                } else {
-                    u32::try_from((total - scheduled).min(u64::from(chunk))).unwrap_or(chunk)
-                };
-                let reader = Arc::clone(handle);
-                let at = scheduled;
-                window.push_back((
-                    want,
-                    tokio::spawn(async move { reader.read_at(at, want).await }),
-                ));
-                scheduled += u64::from(want);
-            }
-
-            let Some((want, read)) = window.pop_front() else {
-                break;
-            };
-            let bytes = match read.await {
-                Ok(bytes) => bytes,
-                // The read task itself died — a panic, or a runtime shutting
-                // down. Neither is transient, and neither is the file's fault.
-                Err(error) => Err(EngineError::Io(format!("read task: {error}"))),
-            };
-            let bytes = match bytes {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    discard(window).await;
-                    return Err(error);
-                }
-            };
-            if bytes.is_empty() {
-                break;
-            }
-            if let Err(error) = file.write_all(&bytes) {
-                discard(window).await;
-                // `.part` is what `partial_path` appends, so this names the
-                // file that actually failed rather than the destination it
-                // would have been promoted to.
-                return Err(EngineError::Io(format!(
-                    "write {}.part: {error}",
-                    transfer.dest_path
-                )));
-            }
-            written += bytes.len() as u64;
-            self.publish(transfer, &mut progress, written, total).await;
-            // Short means the file ended here. Every backend in the tree fills
-            // a read that is not at the end, so this cannot be a partial answer
-            // to a request that had more to give — and anything still in flight
-            // is past the end and has nothing to add.
-            if bytes.len() < want as usize {
-                break;
-            }
-            if stop.load(Ordering::SeqCst) {
-                discard(window).await;
-                return Ok(None);
-            }
-        }
-
-        discard(window).await;
-        Ok(Some(written))
-    }
-
-    /// Disk to share.
-    async fn upload(
-        &self,
-        transfer: &Transfer,
-        backend: &Arc<dyn ShareBackend>,
-        stop: &AtomicBool,
-    ) -> Result<()> {
-        let source = PathBuf::from(&transfer.source_path);
-        let contents = std::fs::read(&source)
-            .map_err(|error| EngineError::Io(format!("read {}: {error}", source.display())))?;
-        let total = contents.len() as u64;
-
-        // Resume where the backend supports it; otherwise start over rather
-        // than assume the remote holds what we last sent.
-        let resumable = backend.caps().resume_write;
-        let mut offset = if resumable {
-            transfer.bytes_done.min(total)
-        } else {
-            0
-        };
-
-        let mut progress = Progress::new();
-        progress.sample(offset, Instant::now());
-        let mut first = true;
-        while offset < total || first {
-            if stop.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            let end = total.min(offset + u64::from(CHUNK));
-            let slice = &contents[usize::try_from(offset).unwrap_or(0)
-                ..usize::try_from(end).unwrap_or(contents.len())];
-            // The first write truncates; every later one continues. An upload
-            // that resumed with `Create` would discard what it was resuming.
-            let mode = if first && offset == 0 {
-                WriteMode::Create
-            } else {
-                WriteMode::Resume { offset }
-            };
-            backend
-                .write_range(&transfer.dest_path, mode, slice)
-                .await?;
-            offset = end;
-            first = false;
-            self.publish(transfer, &mut progress, offset, total).await;
-        }
-        self.settle(transfer, offset).await;
-        Ok(())
-    }
-
-    /// Record progress, at most ten times a second per transfer.
-    async fn publish(&self, transfer: &Transfer, progress: &mut Progress, done: u64, total: u64) {
-        if !progress.sample(done, Instant::now()) {
-            return;
-        }
-        let rate = progress.rate();
-        let eta = progress.eta_seconds(done, total);
-        self.queue
-            .update(&transfer.id, |item| {
-                if item.status != Status::Running {
-                    return;
-                }
-                item.bytes_done = done;
-                item.rate = rate;
-                item.eta_seconds = eta;
-            })
-            .await;
-    }
-
-    /// Record the final byte count, whatever the throttle last published.
-    async fn settle(&self, transfer: &Transfer, done: u64) {
-        self.queue
-            .update(&transfer.id, |item| {
-                if item.status == Status::Running {
-                    item.bytes_done = done;
-                }
-            })
-            .await;
-    }
-}
-
-/// Wait for reads that are no longer wanted, and throw the bytes away.
-///
-/// Awaited rather than aborted. The requests are already on the wire, and a
-/// client that stops reading answers leaves the connection with replies queued
-/// against handles nobody will claim; waiting for at most one window's worth
-/// costs a fraction of a second and keeps the session in a state the next
-/// transfer can use.
-async fn discard(window: VecDeque<(u32, tokio::task::JoinHandle<Result<Vec<u8>>>)>) {
-    for (_, read) in window {
-        let _ = read.await;
-    }
-}
-
-/// The partial a download accumulates in.
-fn partial_path(destination: &Path) -> PathBuf {
-    let mut name = destination.file_name().unwrap_or_default().to_os_string();
-    name.push(".part");
-    destination.with_file_name(name)
-}
-
-/// How far a download may resume, given what the queue recorded.
-///
-/// Never past `recorded`. A `.part` longer than the queue's own record was
-/// written by something whose bytes we cannot account for — a cancelled
-/// transfer to the same destination, or a different file entirely — and
-/// appending to it produces a file that passes every length check and is
-/// wrong. Kestrel trusts the file's length here; that is its bug 3.
-fn resume_offset(partial: &Path, recorded: u64) -> Result<u64> {
-    match std::fs::metadata(partial) {
-        Ok(metadata) => Ok(metadata.len().min(recorded)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(error) => Err(EngineError::Io(format!(
-            "inspect {}: {error}",
-            partial.display()
-        ))),
-    }
-}
-
-fn seek_to(file: &mut std::fs::File, offset: u64, path: &Path) -> Result<()> {
-    use std::io::Seek as _;
-    file.seek(std::io::SeekFrom::Start(offset))
-        .map(|_| ())
-        .map_err(|error| EngineError::Io(format!("seek {}: {error}", path.display())))
 }

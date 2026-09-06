@@ -193,6 +193,7 @@ reconstruct it from git history.
 | **M7** | E23-S1 — More than one browser window | **Done** 2026-09-06 |
 | **M7** | E26-S2 — Keyboard navigation | **Done** 2026-09-06 |
 | **M7** | E22-S1 — Local↔xsync through xsync's engine | **Done** 2026-09-06 (congress 40× faster; one 1 GiB file 20% slower) |
+| **M7** | E22-S2 — `ShareBackend` as an xsync endpoint | **Done** 2026-09-06 (folder drop fixed; remote↔remote and the hash-cache key deferred to E22-S3 / xsync) |
 | **M7** | E24-S2 — Drag between our own windows | **Done** 2026-09-06 (drag out to Finder is E24-S1) |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
@@ -4378,7 +4379,8 @@ Three things to raise, none editable from here:
 **Next steps**
 
 - **E22-S2** deletes `download`/`upload`, the single-file-pull carve-out and the
-  Keep-both staging, once `ShareBackend` is an xsync endpoint.
+  Keep-both staging, once `ShareBackend` is an xsync endpoint. *(Done 2026-09-06 —
+  all three deleted.)*
 - **E22-S3** is where `paranoid` and a conflict policy get somewhere to live,
   and where a directory row stops being one row.
 - Re-measure when orion (or `gentoo-rpi5.local`, whose host key changed and was
@@ -4388,21 +4390,190 @@ Three things to raise, none editable from here:
 - The 20% deficit on one large file over SSH is the v1/v2 route being
   single-stream by construction. Worth a look if E22-S2 does not settle it.
 
-#### E22-S2 — `ShareBackend` as an xsync endpoint *(needs E22-S0)*
+#### E22-S2 — `ShareBackend` as an xsync endpoint — **Partly done (the seam and every pair; three ACs blocked elsewhere)**
+
+*2026-09-06.*
+
 **AC**
-- `crates/engine/src/transfer/endpoint.rs` implements xsync's `Source` and `Sink` over
+- [x] `crates/engine/src/transfer/endpoint.rs` implements xsync's `Source` and `Sink` over
   `ShareBackend`: `Source` from `list_dir`/`stat`/`open_read`; `Sink` from
   `write_range`/`rename`/`mkdir`, using the backend's own staging where it has one
   (xsync's `Stage*`, SFTP's temp+`posix-rename`) and temp-then-rename elsewhere, so a
   half-written file never appears under its final name on any backend.
-- Every pair not covered by E22-S1 — NFS, SMB, SFTP, local↔local, and remote↔remote
-  with Excalibur relaying — runs through xsync's planner, scheduler, hash cache and
-  resume journal via those adapters. The E13 worker's `download`/`upload` are deleted,
-  not kept as a fallback.
-- The hash cache (`hash_cache.rs`, redb) is keyed by mount id + path so a file re-copied
-  from the same share is not re-read to decide it is unchanged.
-- The conformance suite (E19-S1) gains "copy a tree between every pair of backends"
-  over the Docker fixtures, verified by digest on both sides.
+  *Met, with one substitution stated rather than hidden: **xsync's `Stage*` is not
+  reached, and does not need to be**. SFTP's staging **is** what the AC asks for —
+  temp-then-`posix-rename` is exactly what `ShareBackend::rename(replace: true)`
+  already dispatches to, and the same call is atomic on xsync (v3 `Rename` with
+  `Replace`, served by `renameat2`/`renamex_np`). Reaching `StageOpen`/`StageCommit`
+  instead would mean a new optional staging seam on `ShareBackend` and a resume-token
+  to carry across `stage_open` calls, for a code path that is only ever entered when
+  an xsync mount's **own** engine could not be reached — because E22-S1's route still
+  takes that pair. The guarantee the AC is actually about is kept on every backend,
+  and is tested (`nothing_appears_under_its_final_name_until_every_byte_is_there`).*
+- [x] Every pair not covered by E22-S1 — NFS, SMB, SFTP, local↔local — runs through
+  xsync's planner, scheduler and resume journal via those adapters. The E13 worker's
+  `download`/`upload` are deleted, not kept as a fallback.
+- [ ] **remote↔remote with Excalibur relaying.** Not reachable in this story's data
+  model, and not for want of an adapter: `Transfer` still carries `Direction::{Up, Down}`
+  and a single `mount`, so a row cannot *name* two shares. Two `ShareSource`/`ShareSink`
+  instances handed to `sync_endpoints` would relay today — that is the whole point of the
+  seam — and what is missing is the row. **E22-S3's first AC is exactly this change**
+  (`from: Endpoint` / `to: Endpoint`), so it is left there rather than half-built here.
+- [ ] **The hash cache keyed by mount id + path.** Not doable without changing xsync,
+  which is out of bounds for this story. `hash_cache.rs` is keyed on **device + inode**
+  and `HashCache::hash_file` takes a `&Path` it opens with `std::fs` — there is no
+  protocol path through it. `xsync-core` knows this and says so at `local.rs:1802`:
+  *"The hash cache is `std::fs`-only: it is keyed on device and inode, which no protocol
+  here reports."* It gates the cache on `Source::supports_hash_cache() &&
+  Sink::supports_hash_cache()` and falls back to `classify_by_endpoint_digest`, which
+  reads and hashes both sides — *"slower, identical answer"*. Both adapters therefore
+  answer `false`, honestly. Meeting this needs an endpoint-supplied cache key in
+  `xsync-core`; raised below.
+  *In practice nothing is re-read to decide a file is unchanged, because `checksum` is
+  off (E22-S1's reasoning, unchanged) and classification is by size and mtime. The cache
+  is only consulted under `--checksum`.*
+- [ ] **The conformance suite gains "copy a tree between every pair of backends".**
+  Not built. The pairwise matrix needs the Docker fixtures (E19-S1) and, for the
+  interesting half of it, the remote↔remote row above. What is tested instead is the
+  seam itself, over the two backends that need no fixture: `MockBackend`, which is
+  what an NFS/SMB/SFTP mount looks like to this code — no `local_root`, no reflink,
+  no hash cache — and `LocalBackend`, which is a real directory and the local↔local
+  pair. Nine cases in `crates/engine/tests/endpoint.rs`.
+
+**Results**
+
+`crates/engine/src/transfer/endpoint.rs` (≈1,300 lines) is `ShareBackend` seen as
+xsync's `Source` and `Sink`, and `Worker::attempt` is now three lines of routing over
+two adapters: an xsync export paired with a local folder takes E22-S1's wire protocol,
+everything else takes this one. `download`, `stream`, `upload` and their helpers
+(`discard`, `partial_path`, `resume_offset`, `seek_to`, the `.part` convention) are
+gone; the worker moves no bytes at all any more. E22-S1's single-file-pull carve-out is
+gone with them — that pull now takes the endpoint adapter, which is the same planner and
+the same verified write path as everything else, rather than a chunk loop that hashed
+nothing. So is E22-S1's hard-link `Staging` for "Keep both": the seam says the
+destination name outright (`Source::destination_path`), so there is nothing to scaffold.
+
+**The live bug is fixed.** A folder dragged from Finder into a share failed — there was
+no upload planner, so the worker read a directory with one `std::fs::read`. Reproduced
+against the committed tree before touching it (`io: read …/Show: Is a directory (os
+error 21)`; the same bug reaches an xsync destination as `IsDirectory: path is a
+directory; open it with the DIRECTORY flag`), then fixed. A folder is now **one row** and
+xsync's planner walks it — including the empty subdirectory nothing inside it would have
+created. Recorded in `docs/design-gaps.md`, because the mock draws per-file rows.
+
+*The async→sync bridge*
+
+xsync's traits are synchronous and `ShareBackend` is `async_trait`. The session runs on
+`spawn_blocking` as E22-S1's does, but the bridge inside it is **spawn-and-wait**, not
+`Handle::block_on`, and that was not a preference. The engine calls the seam from worker
+threads it spawns itself with `thread::scope` — those have no tokio context — and the
+runtime under `#[tokio::test]` is a current-thread one, where a second `block_on` from
+another thread waits on the first forever. Pushing the future onto the runtime and
+blocking on a `sync_channel` works from any thread and on either flavour, because the
+thread that waits is never the thread that has to make progress.
+
+*Staging, per backend*
+
+One mechanism, because `ShareBackend::rename` is already where each backend decided how
+it renames. The stage is `.excalibur-stage-<16 hex of BLAKE3(path)>` **in the
+destination's own directory** — same directory so the rename cannot cross a filesystem,
+dotted so a listing taken mid-transfer shows no scaffolding, deterministic so the next
+run finds it. `stage_open` keeps a stage no longer than the file and discards anything
+else; `stage_write` is `write_range(Resume { offset })`, never `Create`, so a resume
+cannot truncate what it is resuming; `stage_commit` checks the staged length against the
+declared size and renames with `replace: true`. Atomic on xsync and on SFTP with
+`posix-rename@openssh.com`, best-effort where `Caps::atomic_rename` is false — which is
+the same promise those backends already made everywhere else.
+
+*The resume journal is off for uploads, deliberately*
+
+xsync asks a sink whether its stage survived, and answers **yes** for any sink with no
+local path — *"only it can know"* — but it asks before `stage_open` is called, so a share
+sink has no moment at which it could say the stage is gone. A journal record outliving
+its stage would then make the engine skip ranges the destination does not hold and
+publish a file with holes in it, at the right length and under the right name. Silent
+corruption is not worth a head start, so `journal_root` is `None` for a share
+destination, which makes `StageJournal::name` open no journal at all. A **download**
+keeps the journal — its sink is xsync's own local one, which really can check — and gets
+a directory under the user's cache rather than `std::env::temp_dir`, so a transfer
+resumed after a reboot still finds its record. An upload keeps its stage and its
+all-or-nothing publication; what it does not keep is a cross-restart head start.
+
+*Two limitations, both visible in tests rather than in a comment*
+
+1. **A file copied *onto* a share is sent again on the next run.** The planner classifies
+   an unchanged file by size and mtime, and `ShareBackend` has no `utimes` — nor a
+   `chmod`. So the destination carries the server's write time, the next run sees a
+   different mtime, and the bytes go again. Asserted by
+   `a_file_already_on_the_share_is_sent_again_because_its_mtime_cannot_be_restored`,
+   which says in its own comment to delete it once the sink has an mtime to apply.
+   Pulling *off* a share does skip correctly
+   (`a_file_already_on_this_machine_is_not_pulled_again`).
+2. **Symlinks are reported, not created.** `ShareBackend` reads a link target and cannot
+   write one, so `Sink::create_symlink` answers `Unsupported` — which makes a symlink one
+   reported entry rather than a silently missing one.
+
+*One adapter bug the tests caught*
+
+`Attrs::mode` is the whole `st_mode`, file-type bits and all; xsync's `FileEntry::mode`
+is masked to `0o7777`. Passing it through unmasked made the planner classify **every**
+file as mode-drift on every run — never `unchanged`, so a copy with nothing to do
+reported neither a transfer nor a skip. Masked, with the reason written beside it.
+
+*What the old tests were propping up*
+
+Six worker tests broke, and all six for one reason worth recording: `MockBackend::
+media_share` is the **listing** fixture — its rows carry the design's sizes
+(`Arrival.2016.mkv` is 48 GB) and **no contents at all**. The chunk loop could not tell
+that apart from a real file, because it read until a short answer and called that the
+end, so a "download" of a file with no bytes published an empty file and reported
+success. xsync's planner asks for the range it was promised and refuses what comes back
+short. The tests now seed the bytes they move.
+
+E13-S7's read-depth test moved too. The engine opens one handle **per segment worker**
+(`Source::open_region`), not one per transfer, so `opens == 1` became `opens <= 5` for a
+sixteen-chunk file — the property is unchanged (opened per reader, not per chunk; every
+handle closed; reads overlapping to the configured depth; bytes in order) and the
+assertion now says that instead of a number that no longer means it.
+
+*Gates*
+
+`cargo test --workspace` 222 passed, 0 failed (1 ignored). `cargo clippy --workspace --all-targets`
+clean under `-W clippy::pedantic`. `cargo fmt -p excalibur-engine -p excalibur-cli
+-p excalibur` clean. `npx tsc --noEmit` clean; `npx vitest run` 483 passed. And
+**`cargo deny check` is green — `advisories ok, bans ok, licenses ok, sources ok`**: the
+red `bans` gate E22-S1 left standing is fixed, because the sibling repo took the one-word
+change and `crates/xsync-core/Cargo.toml:48` now reads `version = "0.1.0"` beside its
+path. `xsync-endpoint` is added as a direct dependency written the same way, and it adds
+**no package** — `Cargo.lock`'s entire diff is one line. `docs/supply-chain.md` records
+the dependency and retires the red-gate note.
+
+**Next steps**
+
+- **E22-S3 is what unblocks the two unticked ACs above.** `from: Endpoint` /
+  `to: Endpoint` makes a remote↔remote row expressible, and the adapters already relay
+  once a row can name two shares — `sync_endpoints(&ShareSource, &ShareSink, …)` is the
+  whole of it. The pairwise conformance matrix wants that plus E19-S1's fixtures.
+- **`enqueue_downloads` still pre-walks a selection into one row per file** (E13-S4),
+  while `enqueue_uploads` no longer does. The panel therefore shows two shapes at once,
+  which is the honest state of a half-migrated queue and is written up in
+  `docs/design-gaps.md`. E22-S3's "a directory row stops being one row" is where the two
+  should meet.
+- **For whoever owns xsync**, three things, none editable from here:
+  - `hash_cache.rs` cannot be reached by a protocol endpoint. Keying it on a
+    `Source`-supplied key — mount id plus path, with the size and mtime it already
+    folds in — is what this story's fourth AC asks for and is a change in `xsync-core`.
+  - `stage_survived` asks a sink with no `local_root` nothing and trusts it. A
+    `Sink::stage_survived(&self, entry) -> Result<bool>`, defaulting to today's answer,
+    would let a share sink say "the stage is gone" and would let uploads keep the resume
+    journal safely.
+  - E22-S1's two open items are unchanged: `checksum: true` still breaks a push of any
+    file over ~8 MiB, and `xs --server <file>` still cannot serve a pull of that file.
+    The second no longer costs anything here — that pull takes the endpoint adapter now —
+    but it is still a bug on the other side.
+- **Re-measure.** No benchmark was taken for this route; `docs/benchmarks.md` is
+  unchanged. The interesting number is a tree over SFTP or NFS through the planner
+  against the chunk loop's, and it wants orion back on a wired link.
 
 #### E22-S3 — One queue, any pair
 **AC**

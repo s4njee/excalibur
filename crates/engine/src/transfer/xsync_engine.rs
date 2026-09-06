@@ -615,8 +615,12 @@ fn kill(child: &Mutex<Option<std::process::Child>>) {
 }
 
 /// Everything one session's events add up to.
+///
+/// Shared with [`super::endpoint`] rather than written twice: the two routes
+/// speak the same event stream, and a row must mean the same thing whichever
+/// of them moved the bytes.
 #[derive(Default)]
-struct Tally {
+pub(super) struct Tally {
     /// Bytes of files the engine has finished with, published or skipped.
     settled: u64,
     /// Bytes in flight, per path, from `Progress`.
@@ -633,19 +637,36 @@ struct Tally {
 }
 
 impl Tally {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             every_file_verified: true,
             ..Self::default()
         }
     }
 
-    fn moved(&self) -> u64 {
+    pub(super) fn moved(&self) -> u64 {
         self.settled + self.in_flight.values().sum::<u64>()
     }
 
+    /// How big the planner said the job was, once it has said.
+    pub(super) fn planned_bytes(&self) -> Option<u64> {
+        self.planned_bytes
+    }
+
+    /// How many entries failed.
+    pub(super) fn failed(&self) -> usize {
+        self.failed
+    }
+
+    /// The first per-entry failure, which is the one worth showing.
+    pub(super) fn first_failure(&self) -> String {
+        self.first_failure
+            .clone()
+            .unwrap_or_else(|| "the reason was not reported".to_owned())
+    }
+
     /// Fold one event in. Returns true when the row should be redrawn.
-    fn absorb(&mut self, event: &LocalEvent) -> bool {
+    pub(super) fn absorb(&mut self, event: &LocalEvent) -> bool {
         match event {
             LocalEvent::Planned { bytes, .. } => {
                 self.planned_bytes = Some(*bytes);
@@ -710,7 +731,7 @@ impl Tally {
     ///
     /// It is deliberately **not** derived from `LocalSyncOptions::checksum`.
     /// That flag decides which files are *selected*; it verifies nothing.
-    fn settle(&self, report: &LocalSyncReport) -> Settled {
+    pub(super) fn settle(&self, report: &LocalSyncReport) -> Settled {
         // The report and the `Finished` event are two views of one run, so the
         // report is the one read here and the counts above are only what the
         // row showed on the way.

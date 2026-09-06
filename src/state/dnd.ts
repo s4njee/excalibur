@@ -91,8 +91,11 @@ export type DropPlan =
        * `download` reads the share and writes the local filesystem, so it is
        * chosen whenever the *destination* is local — including for a copy
        * within one local share, and including local→local across two of them.
-       * It is also the only one of the two that walks a folder
-       * (`plan_downloads`), which is a second reason to prefer it.
+       *
+       * It used to be the only one of the two that walked a folder, which was
+       * a second reason to prefer it. Since E22-S2 both do: an upload is
+       * planned by xsync rather than pre-walked here, so a dropped folder is
+       * one row and the planner descends it.
        */
       direction: "download" | "upload";
       /** The share the bytes come from. */

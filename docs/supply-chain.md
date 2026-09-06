@@ -113,6 +113,7 @@ as a transitive dependency of these.
 | `tauri`, `tauri-build`, `tauri-plugin-store` | `src-tauri` | The shell: window, IPC, and persisted bookmarks. |
 | `xsync-client` | engine | The xsync v3 backend. Path dependency on the sibling repo until its `v3` branch is pushed (E7-S0). |
 | `xsync-core` | engine | E22-S1. `run_client_push` / `run_client_pull` — the transfer engine itself, driven over an `ssh` session Excalibur spawns and whose host-key policy Excalibur keeps. **Already in the tree**: `xsync-client` depends on it, so naming it directly promotes a transitive dependency and adds no package and no licence. See the note below for what a path dependency on an uncommitted tree costs. |
+| `xsync-endpoint` | engine | E22-S2. The `Source`/`Sink` seam itself, so `ShareBackend` can *be* an xsync endpoint and NFS, SMB, SFTP and a local folder reach the same planner. `xsync-core` does not re-export the traits, and this crate exists to be depended on directly — its own module comment says a consumer implementing the seam "must not have to take the engine as a dependency to do it", and names Excalibur. **Already in the tree**: `xsync-core` depends on it, so this adds no package and no licence. Two dependencies of its own, `blake3` and `thiserror`, both already resolved. |
 | `tokio` | engine | Async runtime the backends and session manager are written against. |
 | `async-trait` | engine, cli | `ShareBackend`/`Connector` need async methods on an object-safe trait. The CLI took it too for `xcal get`, which implements the worker's `BackendSource` (E13-S7); nothing new entered the tree. |
 | `serde`, `serde_json` | both | DTOs across IPC, and the CLI's fixture output. |
@@ -133,26 +134,27 @@ as a transitive dependency of these.
 | `objc2`, `objc2-app-kit`, `objc2-foundation` | engine *(macOS only)* | E24-S2. Apple's drag and drop, for the one FFI module. Vetted bindings rather than hand-written `extern` blocks — the middle step of the preference order in "Decisions taken". All three were **already in the lock file** via Tauri, wry and `trash`, at the same versions, so this adds no package and no licence to the audit. See the note below. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync and SFTP integration tests. |
 
-### On `xsync-core`, and one red gate
+### On the xsync path dependencies, and the gate that was red
 
-`xsync-core` is `MIT OR Apache-2.0`, like `xsync-client`, and its twenty
-dependencies — `blake3`, `zstd`, `redb`, `ignore`, `rustix`, `filetime`,
-`globset` and the rest — were **every one of them already resolved in
-`Cargo.lock`** before this story, because `xsync-client` depends on the same
-crate. The package count does not move.
+`xsync-client`, `xsync-core` and `xsync-endpoint` are all `MIT OR Apache-2.0`,
+and every one of their dependencies — `blake3`, `zstd`, `redb`, `ignore`,
+`rustix`, `filetime`, `globset` and the rest — was **already resolved in
+`Cargo.lock`** before any of the three was named directly, because
+`xsync-client` pulls the same tree. Naming `xsync-core` (E22-S1) and
+`xsync-endpoint` (E22-S2) promoted transitive dependencies; the package count
+did not move for either, and E22-S2's whole change to `Cargo.lock` is one line
+adding `xsync-endpoint` to `excalibur-engine`'s dependency list.
 
-Two things about it are worth writing down rather than leaving to be
-rediscovered.
+Two things about the arrangement are worth writing down rather than leaving to
+be rediscovered.
 
-**The tree it points at is not committed.** `xsync-client`'s row says "until its
-`v3` branch is pushed", which understates it: `xsync-core` currently depends on
-`xsync-endpoint`, a crate that is *untracked* in the xsync repository. So a
-build of Excalibur today depends on files that exist on one machine and in no
-history. That is a property of the sibling-repo arrangement E7-S0 exists to end,
-not something E22-S1 introduced, but E22-S1 is the story that made the
-dependency direct and it should be said plainly here.
+**The tree they point at is a working copy on one machine.** A build of
+Excalibur depends on files whose history lives in a sibling repository rather
+than in this one, and `Cargo.lock` records no revision for them. That is a
+property of the sibling-repo arrangement E7-S0 exists to end, not something
+E22-S1 or E22-S2 introduced, but it should be said plainly here.
 
-**`cargo deny check` fails on `bans`, and did before this change.**
+**`cargo deny check`'s `bans` gate was red, and is now green.** The failure was:
 
 ```
 error[wildcard]: found 1 wildcard dependency for crate 'xsync-core'.
@@ -163,18 +165,17 @@ crates.io disallows path dependencies.
 ```
 
 `allow-wildcard-paths` excuses a versionless path dependency only on a crate
-that is not publishable. `xsync-core` and `xsync-endpoint` both lack
-`publish = false`, so cargo-deny treats `xsync-core` as public and refuses the
-line. It reaches Excalibur through `xsync-client`, and removing the direct
-`xsync-core` dependency does not clear it — that was checked, not assumed.
+that is not publishable, and neither `xsync-core` nor `xsync-endpoint` declares
+`publish = false`, so cargo-deny read `xsync-core` as public and refused the
+line. E22-S1 deliberately **did not** paper over it with a `skip` here, on the
+grounds that the check was catching exactly the case its own comment says it is
+for, and left the gate red until the sibling repo took the one-word fix.
 
-It is deliberately **not** papered over here. The fix is one word in the sibling
-repo — `version = "0.1.0"` beside that path, which is exactly what
-`xsync-client` already writes for its own dependency on `xsync-core` — or
-`publish = false` on the two crates. The alternative, a `skip` in this repo's
-`deny.toml`, would switch off the check whose stated purpose is "to catch a
-wildcard on a *published* crate", which is precisely the case it is now
-catching. So the gate stays red and honest until xsync takes the one-word fix.
+It has. That line now reads
+`xsync-endpoint = { path = "../xsync-endpoint", version = "0.1.0" }`, and
+`cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`.
+E22-S2's own new dependency is written the same way — `version` beside `path` —
+so it cannot reintroduce the failure from this side.
 
 ### The one `unsafe` module
 

@@ -47,6 +47,15 @@ xsync-client = { path = "../../../xsync/crates/xsync-client" }
 # on it — so this promotes a transitive dependency to a named one and adds no
 # packages. See `../xsync/docs/library.md` and docs/supply-chain.md.
 xsync-core = { path = "../../../xsync/crates/xsync-core" }
+# The `Source`/`Sink` seam itself (E22-S2). `xsync-core` does not re-export the
+# traits, and a crate that *implements* them is exactly the consumer this crate
+# was split out for — its own doc comment names Excalibur. Already in the tree
+# via `xsync-core`, so this adds no package.
+#
+# `version` beside `path` on purpose: cargo-deny's `bans` reads a bare path
+# dependency of a crate it considers public as a wildcard, and this repo has
+# already been bitten by that (docs/supply-chain.md, "one red gate").
+xsync-endpoint = { version = "0.1.0", path = "../../../xsync/crates/xsync-endpoint" }
 serde = { workspace = true }
 # The transfer queue is persisted as JSON (E13-S1), so it survives a restart.
 serde_json = { workspace = true }

@@ -825,6 +825,13 @@ async fn report_problem(
 /// another window (E24-S2). It is recorded on every row rather than resolved
 /// when the worker gets there, because between the enqueue and the start the
 /// user can put a different share in front of themselves.
+///
+/// A **folder is one row**, and there is deliberately no walk here to match
+/// [`enqueue_downloads`]'s. Since E22-S2 the transfer runs xsync's planner,
+/// which does the walk itself — and doing it twice would stat every file over
+/// the browse session before the transfer had sent a byte, then have the
+/// planner stat them all again. Before E22-S2 there was no walk on this route
+/// at all, which is why a dropped folder failed with `EISDIR`.
 #[tauri::command]
 async fn enqueue_uploads(
     window: tauri::Window,
@@ -836,7 +843,11 @@ async fn enqueue_uploads(
     let (mount, _) = state.mount_and_backend(&window, mount.as_deref()).await?;
     let mut ids = Vec::new();
     for path in paths {
-        let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+        // A directory's own `len()` is its entry size — 96 bytes on APFS —
+        // which as a progress total is worse than admitting we do not know
+        // yet. The planner's `Planned` event fills it in a moment later.
+        let size =
+            std::fs::metadata(&path).map_or(0, |meta| if meta.is_dir() { 0 } else { meta.len() });
         let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
         let dest = if destination.is_empty() {
             name
