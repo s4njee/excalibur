@@ -710,3 +710,21 @@ undo, or neither. Copy note: the section reads `Favorites` because that is what
 the platform calls it, while this repo's prose is otherwise British — if the UI
 should be `Favourites` everywhere, it is one string in `Shell.tsx` and two in
 `menu.ts`.
+
+**Favourites carry glyphs the handoff does not draw.** The mock's sidebar is
+text only, and a text-only Favorites section is legible but slow to scan: six
+rows of similar-length words, where every OS the user came from gives each of
+these folders a picture. So each row now carries a 16px glyph — a house, an app
+grid, a display, a page, a photo, a film frame, and a plain folder for anything
+added.
+
+Two things a designer should rule on. **They are our drawings, not Apple's**:
+Finder uses SF Symbols, whose licence does not permit shipping them outside an
+Apple framework, so these approximate the shapes rather than reproduce them —
+close enough to recognise, not identical, and they will not track Apple's when
+those change. And **the glyph is chosen by path, not by name**: only the
+platform's real Documents folder draws a page, while a project directory called
+`Documents` draws a plain folder. That is what Finder does, but it means two
+rows reading the same word can carry different pictures, which is either
+exactly right or confusing depending on how it reads on screen.
+

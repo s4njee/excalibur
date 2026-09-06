@@ -22,7 +22,9 @@ import {
   favoriteDraft,
   favoriteDrop,
   favoriteName,
+  favoriteGlyph,
   isFavorite,
+  NO_USER_FOLDERS,
   normalisePath,
   removeFavorite,
   restoreFavorite,
@@ -276,5 +278,48 @@ describe("a drop onto the section", () => {
       ok: true,
       paths: ["/Users/dorian/notes.txt"],
     });
+  });
+});
+
+describe("a favourite's glyph", () => {
+  const folders = {
+    home: "/Users/dorian",
+    applications: "/Applications",
+    desktop: "/Users/dorian/Desktop",
+    documents: "/Users/dorian/Documents",
+    pictures: "/Users/dorian/Pictures",
+    videos: "/Users/dorian/Movies",
+  };
+
+  it("gives each of the platform's own folders its own picture", () => {
+    expect(favoriteGlyph("/Users/dorian", folders)).toBe("home");
+    expect(favoriteGlyph("/Applications", folders)).toBe("applications");
+    expect(favoriteGlyph("/Users/dorian/Desktop", folders)).toBe("desktop");
+    expect(favoriteGlyph("/Users/dorian/Documents", folders)).toBe("documents");
+    expect(favoriteGlyph("/Users/dorian/Pictures", folders)).toBe("pictures");
+    // Seeded from `videos` and drawn as a film frame whatever the leaf is
+    // called, so a Mac's `Movies` and a Linux box's `Videos` are one row type.
+    expect(favoriteGlyph("/Users/dorian/Movies", folders)).toBe("movies");
+  });
+
+  it("decides by path, so a folder merely *named* Documents is a folder", () => {
+    // The reason this rule reads paths at all. Matching the row's label would
+    // hand the document icon to any project directory called `Documents`, and
+    // would miss home entirely — home's label is the account name, which is a
+    // different word on every machine.
+    expect(favoriteGlyph("/Volumes/raid6/Documents", folders)).toBe("folder");
+    expect(favoriteGlyph("/Users/dorian/code/Pictures", folders)).toBe("folder");
+  });
+
+  it("draws a plain folder for anything the user added", () => {
+    expect(favoriteGlyph("/Users/dorian/code/excalibur", folders)).toBe("folder");
+  });
+
+  it("matches nothing at all before the platform has answered", () => {
+    // `NO_USER_FOLDERS` is every field empty, and an empty field must never
+    // match: a favourite whose path normalised to nothing would otherwise
+    // collect whichever glyph happened to be first in the table.
+    expect(favoriteGlyph("/Users/dorian", NO_USER_FOLDERS)).toBe("folder");
+    expect(favoriteGlyph("", NO_USER_FOLDERS)).toBe("folder");
   });
 });

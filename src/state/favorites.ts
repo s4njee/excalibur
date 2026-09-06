@@ -158,6 +158,61 @@ export function defaultFavorites(folders: UserFolders): Favorite[] {
     .map((path) => toFavorite(path, home));
 }
 
+/**
+ * No answer from the OS yet.
+ *
+ * Every field empty, and empty never matches a real path — so before the first
+ * `userFolders()` reply every favourite draws the plain folder, and the special
+ * glyphs appear together when the answer lands. The alternative, guessing from
+ * names in the meantime, would flicker Documents from folder to document.
+ */
+export const NO_USER_FOLDERS: UserFolders = {
+  home: "",
+  applications: "",
+  desktop: "",
+  documents: "",
+  pictures: "",
+  videos: "",
+};
+
+/** Which picture a favourite's row carries. */
+export type Glyph =
+  | "home"
+  | "applications"
+  | "desktop"
+  | "documents"
+  | "pictures"
+  | "movies"
+  | "folder";
+
+/**
+ * The glyph for one favourite, by *path* rather than by name.
+ *
+ * Finder gives its special folders their own icons and everything else a plain
+ * folder, and it decides by which folder a thing actually is. Matching on the
+ * row's label instead would hand the document icon to any folder a user
+ * happens to have called `Documents`, and would miss home entirely — home's
+ * label is the account name, which is a different word on every machine.
+ */
+export function favoriteGlyph(path: string, folders: UserFolders): Glyph {
+  const target = normalisePath(path);
+  const named: [string, Glyph][] = [
+    [folders.home, "home"],
+    [folders.applications, "applications"],
+    [folders.desktop, "desktop"],
+    [folders.documents, "documents"],
+    [folders.pictures, "pictures"],
+    [folders.videos, "movies"],
+  ];
+  for (const [candidate, glyph] of named) {
+    // The empty check is load-bearing: a platform without an Applications
+    // folder reports `""`, and `normalisePath("")` would otherwise match a
+    // favourite whose path normalised to the same nothing.
+    if (candidate !== "" && normalisePath(candidate) === target) return glyph;
+  }
+  return "folder";
+}
+
 /** Whether this folder is already in the section. */
 export function isFavorite(favorites: Favorite[], path: string): boolean {
   const target = normalisePath(path);

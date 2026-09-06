@@ -252,6 +252,16 @@
   transition: background var(--transition-state);
 }
 
+/* The favourite's glyph. Sized once here rather than on the SVG, so a row that
+   changes its type size does not leave the picture behind. `flex: none` because
+   a long folder name must eat the text's width, never the icon's. */
+.sidebarGlyph {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
 .sidebarRowActive {
   background: var(--sidebar-active-bg);
   border-left-color: var(--sidebar-active-border);

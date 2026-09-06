@@ -21,6 +21,7 @@ import {
   favoriteDraft,
   favoriteDrop,
   isFavorite,
+  NO_USER_FOLDERS,
   normalisePath,
   removeFavorite,
   toFavorite,
@@ -40,7 +41,13 @@ import {
   TitleBar,
   Toolbar,
 } from "./components/Shell";
-import { defaultBackend, fixtureBackend, writeGuarded, type Backend } from "./state/backend";
+import {
+  defaultBackend,
+  fixtureBackend,
+  writeGuarded,
+  type Backend,
+  type UserFolders,
+} from "./state/backend";
 import type {
   Bookmark,
   Conflict,
@@ -309,7 +316,13 @@ export default function App(props: {
   const [favorites, setFavorites] = createSignal<Favorite[]>([]);
   const [presentFolders, setPresentFolders] = createSignal<Set<string>>(new Set());
   /** The home directory, which is the one favourite not named after its leaf. */
-  const [home, setHome] = createSignal("");
+  // The whole set, not just home: the sidebar picks each favourite's glyph by
+  // comparing its path against these, so a folder the *user* happens to have
+  // named "Documents" keeps the plain folder icon and only the real one gets
+  // the document. Empty until the first answer comes back, which is the state
+  // `favoriteGlyph` treats as "nothing is special yet".
+  const [folders, setFolders] = createSignal<UserFolders>(NO_USER_FOLDERS);
+  const home = () => folders().home;
   const shownFavorites = createMemo(() => visibleFavorites(favorites(), presentFolders()));
 
   const persistFavorites = (next: Favorite[]) => {
@@ -351,7 +364,7 @@ export default function App(props: {
       // recognised as home. Nothing is seeded from it.
       void backend
         .userFolders()
-        .then((folders) => setHome(folders.home))
+        .then(setFolders)
         .catch(() => undefined);
       return;
     }
@@ -359,7 +372,7 @@ export default function App(props: {
     // seeds. Once the list exists, removing a default is final.
     try {
       const folders = await backend.userFolders();
-      setHome(folders.home);
+      setFolders(folders);
       const candidates = defaultFavorites(folders);
       const present = await foldersPresent(candidates);
       // Seeded with what is actually there, so the saved list is exactly what
@@ -2221,6 +2234,7 @@ export default function App(props: {
           selectedId={selectedBookmark()}
           dropBookmark={dropTarget()?.bookmark ?? null}
           favorites={shownFavorites()}
+          userFolders={folders()}
           dropFavorites={dropTarget()?.favorites ?? false}
           onOpenFavorite={openFavorite}
           onFavoriteMenu={openFavoriteMenu}

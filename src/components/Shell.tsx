@@ -36,7 +36,9 @@ import {
 } from "../state/format";
 import { formatSize } from "../state/format";
 import { bookmarkSubtitle } from "../state/bookmarks";
-import type { Favorite } from "../state/favorites";
+import { favoriteGlyph, type Favorite } from "../state/favorites";
+import type { UserFolders } from "../state/backend";
+import { Glyph } from "./Glyph";
 
 /**
  * `<share> — <host>`, centred, as the design specifies.
@@ -398,6 +400,8 @@ export function Sidebar(props: {
   onEdit: (id: string) => void;
   /** Folders on this machine, above MOUNTED (E27-S1). */
   favorites: Favorite[];
+  /** Compared against each favourite's path to choose its glyph. */
+  userFolders: UserFolders;
   /** Single click, unlike a bookmark: see the section's comment below. */
   onOpenFavorite: (path: string) => void;
   onFavoriteMenu: (path: string, at: { x: number; y: number }) => void;
@@ -454,6 +458,10 @@ export function Sidebar(props: {
                 props.onFavoriteMenu(favorite.path, { x: event.clientX, y: event.clientY });
               }}
             >
+              <Glyph
+                class={styles.sidebarGlyph}
+                kind={favoriteGlyph(favorite.path, props.userFolders)}
+              />
               <div class={styles.sidebarText}>
                 <div class={styles.sidebarName}>{favorite.name}</div>
               </div>
