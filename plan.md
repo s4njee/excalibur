@@ -4415,6 +4415,26 @@ Three things to raise, none editable from here:
   sheet; the sheet stays as the compact view. (Resolves the E13-S1 design gap.)
 - "Apply to all remaining" is a choice on the conflict prompt, as E13-S6 asked.
 
+> **Blocked, 2026-09-06: the bundled app renders nothing.** M7's code is committed and
+> green at every level below the bundle — 437 frontend tests, clippy, `cargo test
+> --workspace`, `cargo deny`, and the built `dist/` renders correctly when served over
+> HTTP — but inside the `.app` the webview shows an empty window. Bisected as far as it
+> goes: **a hand-written two-line `index.html` with an `<h1>` and no scripts is also
+> blank**, so this is not our frontend, not the CSP (rebuilt with it off), not the
+> capability or the window config (reverted), not the menu bar (disabled), not the
+> WebKit cache (cleared), and not the machine (a sibling Tauri app renders fine beside
+> it). The same Rust binary loading from `devUrl` over HTTP renders and runs JS
+> normally; only `tauri://localhost` — the embedded-asset path — fails, and it fails
+> silently: assets are fetched with 200s, no JS ever executes, and a `WebviewWindow::
+> eval` from Rust has no effect. It worked in this same tree earlier the same day
+> (E21's bundle mounted a share and listed 518 items), so something in the packaging
+> path regressed rather than anything in E23/E24/E26.
+>
+> **Next:** get the Web Inspector onto the bundled window (Safari ▸ Develop ▸ the app),
+> which needs a human at the keyboard, and read the one console line this has been
+> costing hours to guess at. Until then M7 is *implemented and unverified*, and none of
+> its stories should be called done in the demo sense.
+
 ### E23 — Windows
 
 #### E23-S1 — More than one browser window — **Done**
