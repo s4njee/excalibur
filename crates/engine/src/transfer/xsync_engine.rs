@@ -674,13 +674,13 @@ impl Tally {
                 }
                 true
             }
-            LocalEvent::Skipped { path, bytes } => {
+            LocalEvent::Skipped { path, bytes, .. } => {
                 self.in_flight.remove(path);
                 self.settled += bytes;
                 self.skipped += 1;
                 true
             }
-            LocalEvent::Failed { path, message } => {
+            LocalEvent::Failed { path, message, .. } => {
                 self.in_flight.remove(path);
                 self.failed += 1;
                 if self.first_failure.is_none() {
