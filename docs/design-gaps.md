@@ -531,3 +531,40 @@ Whether a sidebar drop should highlight the row or the whole sidebar, since the
 drop lands at a share's *root* and not in anything the row itself shows. And
 whether the drag image should be the row (name and glyph, as built), a stack for
 a multiple selection the way Finder draws one, or a count badge.
+
+## M7 verification, 2026-09-06 — three defects found in the bundled app
+
+Driving the packaged app with two windows on two mounts turned up three things
+the tests could not see, because each needs a *second* window to exist.
+
+**1. A window's chrome does not follow a share mounted into it.** Mounting a
+second share through the sidebar's `+` (New Connection) while a share is already
+mounted moves the listing and the window's active mount to the new share, but
+the title, the breadcrumb and the sidebar's selected row all keep naming the old
+one. Only this route: opening a *bookmark* replaces the mount and updates the
+chrome correctly, so the two paths disagree. It matters more than a cosmetic lag
+— the window is naming a share that its next delete or upload will not go to,
+and the standing rule is that a mount's identity comes from the session and is
+never inferred. **For the designer:** whether mounting a second share should
+move the window to it at all, or open it alongside and leave the window where it
+is; the current behaviour is halfway between the two and reads as a bug either
+way.
+
+**2. A completed transfer does not refresh the destination listing.** A file
+dropped into the folder a window is showing lands on disk and reaches `done` in
+the queue, but the window keeps the listing it had; the file appears only on a
+manual refresh or a re-navigation. `listing://changed` exists and is addressed
+to the right window — nothing emits it when a transfer finishes.
+
+**3. The Window menu has no window list.** It offers Minimize, Zoom and Close
+only. Every macOS app with more than one window lists the open windows there and
+offers *Bring All to Front*, and with two Excalibur windows overlapping there is
+no keyboard or menu route to the one behind. This is E26 (Finder parity) work
+rather than a defect in E23-S1, but it is what makes two windows awkward to use
+rather than merely possible.
+
+A fourth observation, not a defect: a **debug** bundle takes several seconds to
+first paint, showing an empty window meanwhile. That is what was misread for a
+day as "the bundle renders nothing" (see the withdrawn note in `plan.md` at
+E22-S3). Worth knowing before anyone reaches the same conclusion again; worth
+measuring on a release bundle before treating it as a real startup cost.

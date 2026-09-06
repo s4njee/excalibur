@@ -200,6 +200,28 @@ function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+/**
+ * Subscribe to an event Rust addressed to *this* window.
+ *
+ * `listen` from the event module registers for `EventTarget::Any`, which
+ * receives an event whatever window it was sent to. Every `emit_to` in the
+ * shell — the mount audience E23-S1 computes, a listing that changed, an edit
+ * that saved, a drag over one window — was therefore addressed and then had
+ * its address thrown away here, and every window acted on every window's
+ * events. That is invisible with one window open, which is why it survived
+ * review; with two it is destructive (see `onFileDrop`).
+ *
+ * A global `emit` still arrives, so the shell's deliberate broadcasts — the
+ * mount event with no audience — are unaffected.
+ */
+async function listenHere<T>(
+  name: string,
+  handler: (payload: T) => void,
+): Promise<() => void> {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return getCurrentWebviewWindow().listen<T>(name, (message) => handler(message.payload));
+}
+
 /** Serves the committed fixture, optionally read-only, with optional latency. */
 export function fixtureBackend(
   options: {
@@ -500,14 +522,10 @@ function tauriBackend(): Backend {
       // and covers unsubscribing before the listener finished registering.
       let stop: (() => void) | null = null;
       let cancelled = false;
-      void import("@tauri-apps/api/event").then(({ listen }) =>
-        listen<MountEvent>("mount://changed", (message) => handler(message.payload)).then(
-          (unlisten) => {
-            if (cancelled) unlisten();
-            else stop = unlisten;
-          },
-        ),
-      );
+      void listenHere<MountEvent>("mount://changed", handler).then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      });
       return () => {
         cancelled = true;
         stop?.();
@@ -516,14 +534,10 @@ function tauriBackend(): Backend {
     onListingChanged(handler: (mount: string) => void): () => void {
       let stop: (() => void) | null = null;
       let cancelled = false;
-      void import("@tauri-apps/api/event").then(({ listen }) =>
-        listen<string>("listing://changed", (message) => handler(message.payload)).then(
-          (unlisten) => {
-            if (cancelled) unlisten();
-            else stop = unlisten;
-          },
-        ),
-      );
+      void listenHere<string>("listing://changed", handler).then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      });
       return () => {
         cancelled = true;
         stop?.();
@@ -645,42 +659,39 @@ function tauriBackend(): Backend {
         position: { x: number; y: number } | null;
       }) => void,
     ): () => void {
-      const stops: (() => void)[] = [];
+      let stop: (() => void) | null = null;
       let cancelled = false;
-      void import("@tauri-apps/api/event").then(async ({ listen }) => {
-        // Tauri reports the pointer in *physical* pixels; everything this is
-        // hit-tested against is in CSS pixels, so it is converted once here
-        // rather than at each call site.
+      void import("@tauri-apps/api/webview").then(async ({ getCurrentWebview }) => {
+        // The webview's own subscription, not `listen`: `listen` registers for
+        // `EventTarget::Any` and so receives a drop whichever window it landed
+        // on. With two windows open that made one drag enqueue one upload *per
+        // window*, each to that window's own mount — and a window showing the
+        // dragged file's own folder turned the extra one into a copy of a file
+        // onto itself, which rewrites the user's file in place. Verified on
+        // 2026-09-06 by dropping one ISO and watching two transfers start.
         const scale = window.devicePixelRatio || 1;
-        const toCss = (raw: unknown) => {
-          const point = raw as { x?: number; y?: number } | undefined;
-          if (!point || point.x === undefined || point.y === undefined) return null;
-          return { x: point.x / scale, y: point.y / scale };
-        };
-        const bind = async (
-          name: string,
-          phase: "over" | "drop" | "leave",
-        ): Promise<void> => {
-          const unlisten = await listen<{ paths?: string[]; position?: unknown }>(
-            name,
-            (message) =>
-              handler({
-                phase,
-                paths: message.payload?.paths ?? [],
-                position: toCss(message.payload?.position),
-              }),
-          );
-          if (cancelled) unlisten();
-          else stops.push(unlisten);
-        };
-        await bind("tauri://drag-enter", "over");
-        await bind("tauri://drag-over", "over");
-        await bind("tauri://drag-drop", "drop");
-        await bind("tauri://drag-leave", "leave");
+        const toCss = (point: { x: number; y: number } | undefined) =>
+          point ? { x: point.x / scale, y: point.y / scale } : null;
+        const unlisten = await getCurrentWebview().onDragDropEvent((message) => {
+          const drag = message.payload;
+          if (drag.type === "leave") {
+            handler({ phase: "leave", paths: [], position: null });
+            return;
+          }
+          handler({
+            // `enter` and `over` are one phase here: what the window does with
+            // either is highlight the row under the pointer.
+            phase: drag.type === "drop" ? "drop" : "over",
+            paths: "paths" in drag ? drag.paths : [],
+            position: toCss(drag.position),
+          });
+        });
+        if (cancelled) unlisten();
+        else stop = unlisten;
       });
       return () => {
         cancelled = true;
-        for (const stop of stops) stop();
+        stop?.();
       };
     },
     async editFile(path: string): Promise<EditSession> {
@@ -698,14 +709,10 @@ function tauriBackend(): Backend {
     onEditSaved(handler: (session: EditSession) => void): () => void {
       let stop: (() => void) | null = null;
       let cancelled = false;
-      void import("@tauri-apps/api/event").then(({ listen }) =>
-        listen<EditSession>("edit://saved", (message) => handler(message.payload)).then(
-          (unlisten) => {
-            if (cancelled) unlisten();
-            else stop = unlisten;
-          },
-        ),
-      );
+      void listenHere<EditSession>("edit://saved", handler).then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      });
       return () => {
         cancelled = true;
         stop?.();
@@ -721,35 +728,35 @@ function tauriBackend(): Backend {
     onWindowDrag(handler: (event: WindowDragEvent) => void): () => void {
       const stops: (() => void)[] = [];
       let cancelled = false;
-      void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      void (async () => {
         // The same physical-to-CSS conversion `onFileDrop` does, and for the
         // same reason: the native side reports physical pixels so that both
         // kinds of drag are hit-tested by one piece of code. Two conventions
         // would be a factor-of-two error on a Retina display.
         const scale = window.devicePixelRatio || 1;
         const bind = async (name: string, phase: WindowDragEvent["phase"]) => {
-          const unlisten = await listen<{
+          const unlisten = await listenHere<{
             x?: number;
             y?: number;
             modifiers?: WindowDragEvent["modifiers"];
             selection?: WindowDragEvent["selection"];
-          }>(name, (message) =>
+          }>(name, (payload) =>
             handler({
               phase,
               position:
                 phase === "leave"
                   ? null
                   : {
-                      x: (message.payload?.x ?? 0) / scale,
-                      y: (message.payload?.y ?? 0) / scale,
+                      x: (payload?.x ?? 0) / scale,
+                      y: (payload?.y ?? 0) / scale,
                     },
-              modifiers: message.payload?.modifiers ?? {
+              modifiers: payload?.modifiers ?? {
                 alt: false,
                 shift: false,
                 command: false,
                 control: false,
               },
-              selection: message.payload?.selection ?? null,
+              selection: payload?.selection ?? null,
             }),
           );
           if (cancelled) unlisten();
@@ -758,7 +765,7 @@ function tauriBackend(): Backend {
         await bind("drag://over", "over");
         await bind("drag://drop", "drop");
         await bind("drag://leave", "leave");
-      });
+      })();
       return () => {
         cancelled = true;
         for (const stop of stops) stop();

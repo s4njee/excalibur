@@ -4415,25 +4415,46 @@ Three things to raise, none editable from here:
   sheet; the sheet stays as the compact view. (Resolves the E13-S1 design gap.)
 - "Apply to all remaining" is a choice on the conflict prompt, as E13-S6 asked.
 
-> **Blocked, 2026-09-06: the bundled app renders nothing.** M7's code is committed and
-> green at every level below the bundle — 437 frontend tests, clippy, `cargo test
-> --workspace`, `cargo deny`, and the built `dist/` renders correctly when served over
-> HTTP — but inside the `.app` the webview shows an empty window. Bisected as far as it
-> goes: **a hand-written two-line `index.html` with an `<h1>` and no scripts is also
-> blank**, so this is not our frontend, not the CSP (rebuilt with it off), not the
-> capability or the window config (reverted), not the menu bar (disabled), not the
-> WebKit cache (cleared), and not the machine (a sibling Tauri app renders fine beside
-> it). The same Rust binary loading from `devUrl` over HTTP renders and runs JS
-> normally; only `tauri://localhost` — the embedded-asset path — fails, and it fails
-> silently: assets are fetched with 200s, no JS ever executes, and a `WebviewWindow::
-> eval` from Rust has no effect. It worked in this same tree earlier the same day
-> (E21's bundle mounted a share and listed 518 items), so something in the packaging
-> path regressed rather than anything in E23/E24/E26.
+> **Withdrawn, 2026-09-06: the bundle was never blank, and the diagnosis above was
+> wrong.** The packaged app renders correctly and always did. Two mistakes produced
+> the phantom. First, the control that "proved" it was not our frontend never ran:
+> `beforeBuildCommand` is `pnpm build`, which regenerates `dist/` on every build, so
+> the hand-written two-line `index.html` was overwritten before each of those bundles
+> and what was actually launched was the ordinary app every time. Second, a debug
+> bundle takes several seconds to first paint, and the screenshots were taken inside
+> that window.
 >
-> **Next:** get the Web Inspector onto the bundled window (Safari ▸ Develop ▸ the app),
-> which needs a human at the keyboard, and read the one console line this has been
-> costing hours to guess at. Until then M7 is *implemented and unverified*, and none of
-> its stories should be called done in the demo sense.
+> Settled by making the page report on itself instead of guessing: a temporary
+> `on_page_load` probe plus a script eval'd from Rust that beacons back through the
+> app's own `excalibur-stream://` handler answered `title=Excalibur`, `scripts=1`,
+> `root=yes`, `tauri=true`, `bodylen=3761` — Solid had mounted and rendered. The probes
+> were removed afterwards; nothing of them is committed.
+>
+> **The lesson worth keeping:** the control was never verified to be the thing under
+> test. Hours went into bisecting stories that were never implicated, because a
+> negative result was trusted without checking that the experiment had run at all.
+
+**M7 verified in the bundled app, 2026-09-06** — ⌘N opens a second window; both windows
+mount independently (`Downloads` and a scratch folder, each with its own listing,
+capacity and RW badge); a file dragged from Finder onto a window is accepted, enqueued
+and copied. Verification found three defects, one of them destructive; the destructive
+one is fixed below, the other two are recorded as gaps.
+
+**E24-S1 defect, found and fixed 2026-09-06 — one drop, one upload per open window.**
+The shell addresses its events (`emit_to`) but the frontend subscribed with `listen`,
+which registers for `EventTarget::Any` and receives an event whatever window it was
+sent to. So E23-S1's audience was computed, sent, and then discarded, and every window
+acted on every window's events — invisible with one window open, which is how it passed
+review. Dragging one 8.5 GB ISO onto one window started **two** uploads, one per window,
+each to that window's own mount; the second window was showing the file's own folder, so
+its upload copied the file onto itself and rewrote it in place. (The file survived — it
+was verified byte-identical afterwards — but only because the bytes written back
+happened to match.) Fixed by taking the file drop from `getCurrentWebview().
+onDragDropEvent` and every addressed event through `getCurrentWebviewWindow().listen`,
+leaving only the deliberate `transfer://progress` broadcast on the global bus. The rule
+is asserted in `src/state/backend.events.test.ts`, which was confirmed to fail when the
+old form is put back. Re-verified in the bundle: one drop now yields exactly one queue
+row, to the window dropped on, with the source's mtime untouched.
 
 ### E23 — Windows
 
