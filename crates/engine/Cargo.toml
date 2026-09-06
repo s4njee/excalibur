@@ -68,12 +68,14 @@ tokio = { workspace = true }
 [target.'cfg(any(windows, all(unix, not(target_os = "ios"), not(target_os = "android"))))'.dependencies]
 trash = { workspace = true }
 
-# The native drag (E24-S2). macOS-only: E24-S4 adds the GTK/XDG side, which is
-# a different set of crates, so neither is a dependency of the other platform.
+# The native drag (E24-S2) and the file promises it carries (E24-S1).
+# macOS-only: E24-S4 adds the GTK/XDG side, which is a different set of crates,
+# so neither is a dependency of the other platform.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true }
 objc2-foundation = { workspace = true }
+block2 = { workspace = true }
 
 [features]
 default = []
@@ -87,3 +89,10 @@ smb = ["dep:pavao", "dep:libc"]
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+# The drag's AppKit objects are main-thread-only and libtest runs every `#[test]`
+# on a thread it spawned, so this one owns its own `main` — which *is* the main
+# thread. See the file's own header.
+[[test]]
+name = "promises"
+harness = false

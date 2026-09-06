@@ -1,4 +1,5 @@
-//! Native drag and drop between our own windows (E24-S2).
+//! Native drag and drop: between our own windows (E24-S2), and out to Finder
+//! as file promises (E24-S1).
 //!
 //! **Why this is native at all.** Tauri's `tauri://drag-*` events carry OS file
 //! paths and nothing else, and a webview cannot start a drag that Finder or a
@@ -10,10 +11,15 @@
 //! **What crosses the boundary.** One private pasteboard type,
 //! [`SELECTION_TYPE`], carrying [`Selection`] as JSON: which mount the items
 //! came from, their share-relative paths, and which window started the drag.
-//! E24-S1 will add `NSFilePromiseProvider`s *beside* this type on the same
-//! pasteboard, so a single drag can end in Finder or in another window; the
-//! name and the payload are fixed here so that story does not have to change
-//! them.
+//! Beside it, one `NSFilePromiseProvider` per item — a claim that a file *will*
+//! exist, with no bytes behind it yet. One drag therefore ends in either place:
+//! another Excalibur window reads the private type and never touches disk, and
+//! Finder sees only the promises and asks for them one at a time.
+//!
+//! **Nothing is fetched until somebody asks.** That is the whole point of a
+//! promise, and it is a property of the shape rather than a check: a drag
+//! cancelled over the Desktop produces no [`PromiseRequest`], so there is no
+//! path through this module on which a cancelled drag could queue anything.
 //!
 //! **What this module is.** The safe wrapper the rest of the tree sees. All the
 //! `unsafe` is in [`macos`], one module with `#![allow(unsafe_code)]` and a
@@ -29,11 +35,14 @@
 pub mod macos;
 
 use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::backend::EntryKind;
 use crate::error::{EngineError, Result};
+use crate::kind::classify_entry;
 
 /// The private pasteboard type an Excalibur drag carries.
 ///
@@ -92,6 +101,118 @@ impl Selection {
         Some(parsed)
     }
 }
+
+/// One item offered to Finder as a file that does not exist yet (E24-S1).
+///
+/// A promise is the only honest way to drag something off a share. The
+/// alternative — writing the file out first and dragging the copy — fetches
+/// every byte of a selection the user may be about to drop back where it came
+/// from, and on a 40 GB film that is not a slower version of the same feature,
+/// it is a different one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Promise {
+    /// The share-relative path this promises, so fulfilling it can name a source.
+    pub path: String,
+    /// What the file will be called where it lands.
+    pub name: String,
+    /// The Uniform Type Identifier it is offered under, from the kind table.
+    pub uti: String,
+}
+
+/// The promises one selection makes, in the order the list had them.
+///
+/// `folders` is the subset of `selection.paths` that are directories, rather
+/// than a parallel array of flags: the two travel from the webview over IPC and
+/// a flag array that arrived one element short would silently promise a folder
+/// as a file — which Finder accepts and then writes an empty *file* for, so the
+/// tree never appears and nothing reports an error. A set of paths cannot
+/// desynchronise from the paths it names.
+#[must_use]
+pub fn promises_for(selection: &Selection, folders: &[String]) -> Vec<Promise> {
+    selection
+        .paths
+        .iter()
+        .map(|path| {
+            let is_dir = folders.iter().any(|folder| folder == path);
+            let name = promised_name(path);
+            let kind = classify_entry(
+                &name,
+                if is_dir {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                },
+            );
+            Promise {
+                path: path.clone(),
+                name,
+                uti: kind.category.uti().to_owned(),
+            }
+        })
+        .collect()
+}
+
+/// The base name a promised path will land under.
+///
+/// Trailing slashes are trimmed first: a folder path that arrived as `Films/`
+/// would otherwise promise a file called `""`, which `AppKit` turns into an
+/// item Finder cannot name and drops on the floor without saying so.
+fn promised_name(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if base.is_empty() {
+        // The share root, which the list has no row for. Named rather than
+        // empty, because an unnamed promise fails invisibly.
+        "Untitled".to_owned()
+    } else {
+        base.to_owned()
+    }
+}
+
+/// Finder asking for one promised item, at last.
+///
+/// This arrives **only** when something accepted the drop and wants the bytes.
+/// A drag released over the Desktop and cancelled, or dropped on an app that
+/// takes the private type instead, never produces one — which is what makes
+/// "nothing is fetched until Finder asks" a property of the design rather than
+/// a check somebody has to remember to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromiseRequest {
+    /// The mount and window the drag came from.
+    pub selection: Selection,
+    /// The share-relative path being asked for.
+    pub path: String,
+    /// The full path Finder wants the item written to, name and all.
+    ///
+    /// The name is Finder's, not ours: a second `Arrival.mkv` on a Desktop that
+    /// already has one arrives as `Arrival 2.mkv`, and a fulfilment that wrote
+    /// the name it promised instead would overwrite the file already there.
+    pub destination: PathBuf,
+}
+
+impl PromiseRequest {
+    /// The folder Finder named — where the transfer is queued to.
+    ///
+    /// A destination with no parent cannot happen from `AppKit`, which always
+    /// hands over a file inside a directory; `/` is returned rather than
+    /// `Option` so no caller has to invent a behaviour for a case the OS does
+    /// not produce.
+    #[must_use]
+    pub fn folder(&self) -> &Path {
+        self.destination.parent().unwrap_or_else(|| Path::new("/"))
+    }
+}
+
+/// What fulfils one promise: queue the transfer, and block until it lands.
+///
+/// **Blocking is the contract, not an accident.** `AppKit` calls this on the
+/// operation queue the drag vends — never the main thread — and the promise is
+/// not complete until the function returns, which is exactly how Finder knows
+/// when to stop showing the progress it started. An implementation that queued
+/// the transfer and returned immediately would tell Finder the file was there
+/// before a byte of it was.
+pub type PromiseSink = Arc<dyn Fn(&PromiseRequest) -> Result<()> + Send + Sync>;
 
 /// Where a drag is in its life over one window.
 ///
@@ -202,20 +323,32 @@ pub fn remove_drop_targets() {
 /// path**. A dragged item that is not local yet has no file to point at, and
 /// writing one out to name it would be a fetch the user did not ask for.
 ///
+/// `promises` is one [`Promise`] per item, and the pasteboard carries one file
+/// promise for each of them *beside* [`SELECTION_TYPE`] — so the same drag can
+/// end in another Excalibur window, which reads the private type and moves
+/// nothing to disk, or in Finder, which sees only the promises. `fulfil` is
+/// called once per item, and only if something asks; see [`PromiseSink`].
+///
 /// The drop targets installed by [`install_drop_target`] are removed
 /// automatically when the session ends, however it ends.
 ///
 /// # Errors
 /// If the platform has no implementation, this is not the main thread, the view
 /// is not in a window, or the image cannot be decoded.
-pub fn start_drag(ns_view: *mut c_void, selection: &Selection, image_png: &[u8]) -> Result<()> {
+pub fn start_drag(
+    ns_view: *mut c_void,
+    selection: &Selection,
+    promises: &[Promise],
+    image_png: &[u8],
+    fulfil: &PromiseSink,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        macos::start_drag(ns_view, selection, image_png)
+        macos::start_drag(ns_view, selection, promises, image_png, fulfil)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ns_view, selection, image_png);
+        let _ = (ns_view, selection, promises, image_png, fulfil);
         Err(unsupported())
     }
 }
@@ -235,7 +368,9 @@ fn unsupported() -> EngineError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Modifiers, Phase, Selection, SELECTION_TYPE};
+    use super::{
+        promises_for, Modifiers, Path, PathBuf, Phase, PromiseRequest, Selection, SELECTION_TYPE,
+    };
 
     fn selection() -> Selection {
         Selection {
@@ -289,6 +424,71 @@ mod tests {
         assert_eq!(
             Selection::from_json(r#"{"mount":"local::/tmp","paths":[],"window":"main"}"#),
             None,
+        );
+    }
+
+    #[test]
+    fn every_item_is_promised_once_in_the_order_the_list_had_them() {
+        // One promise per item is the AC, and the order matters because the
+        // drag image's stack and the pasteboard's items are read positionally
+        // by whatever receives them.
+        let promises = promises_for(&selection(), &["Films/Dune".to_owned()]);
+        assert_eq!(promises.len(), 2);
+        assert_eq!(promises[0].path, "Films/Arrival.mkv");
+        assert_eq!(promises[0].name, "Arrival.mkv");
+        assert_eq!(promises[1].path, "Films/Dune");
+        assert_eq!(promises[1].name, "Dune");
+    }
+
+    #[test]
+    fn a_folder_is_promised_as_a_folder_and_a_file_by_its_extension() {
+        // The failure this prevents: a folder promised by its *name* has no
+        // extension, so the kind table calls it `public.data`, Finder accepts
+        // the drag and writes an empty file, and the tree never arrives. That
+        // is why `promises_for` is told which paths are directories rather
+        // than guessing from the string.
+        let promises = promises_for(&selection(), &["Films/Dune".to_owned()]);
+        assert_eq!(promises[0].uti, "public.movie");
+        assert_eq!(promises[1].uti, "public.folder");
+
+        // And the same path with nothing said about it is a file.
+        let as_file = promises_for(&selection(), &[]);
+        assert_eq!(as_file[1].uti, "public.data");
+    }
+
+    #[test]
+    fn a_trailing_slash_does_not_promise_a_nameless_file() {
+        let selection = Selection {
+            mount: "xsync:raid6:media".to_owned(),
+            paths: vec!["Films/Dune/".to_owned(), String::new()].clone(),
+            window: "main".to_owned(),
+        };
+        let promises = promises_for(&selection, &["Films/Dune/".to_owned()]);
+        assert_eq!(promises[0].name, "Dune");
+        // The share root has no row in the list, so this cannot arrive from the
+        // app — but an empty name reaches AppKit as an item Finder silently
+        // discards, and a named one is at least visible when it is wrong.
+        assert_eq!(promises[1].name, "Untitled");
+    }
+
+    #[test]
+    fn a_request_names_the_folder_finder_chose_and_not_the_file() {
+        // The transfer is queued to the *folder*: this is the conversion, and
+        // getting it wrong queues a copy into a path that is a file.
+        let request = PromiseRequest {
+            selection: selection(),
+            path: "Films/Arrival.mkv".to_owned(),
+            destination: PathBuf::from("/Users/sanjee/Desktop/Arrival 2.mkv"),
+        };
+        assert_eq!(request.folder(), Path::new("/Users/sanjee/Desktop"));
+        // And the name Finder de-duplicated is kept, because writing the name
+        // we promised instead would overwrite the file already on the Desktop.
+        assert_eq!(
+            request
+                .destination
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("Arrival 2.mkv"),
         );
     }
 

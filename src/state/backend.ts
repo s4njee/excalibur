@@ -181,13 +181,18 @@ export interface Backend {
     }) => void,
   ): () => void;
   /**
-   * Start a native drag of this window's selection (E24-S2).
+   * Start a native drag of this window's selection (E24-S2, E24-S1).
    *
    * `image` is PNG bytes the window rendered, never a path: an item on a share
    * has no local file to point at, and writing one out to name it would be a
    * fetch nobody asked for.
+   *
+   * `folders` is which of `paths` are directories. The engine cannot work that
+   * out — a folder called `Dune` has no extension to classify — and the file
+   * promise the drag carries has to say which it is, or Finder accepts the drop
+   * and writes an empty file where the tree should be.
    */
-  beginDrag(paths: string[], image: Uint8Array): Promise<void>;
+  beginDrag(paths: string[], folders: string[], image: Uint8Array): Promise<void>;
   /**
    * A drag from an Excalibur window over this one.
    *
@@ -793,12 +798,12 @@ function tauriBackend(): Backend {
         stop?.();
       };
     },
-    async beginDrag(paths: string[], image: Uint8Array): Promise<void> {
+    async beginDrag(paths: string[], folders: string[], image: Uint8Array): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       // As a plain array: Tauri's IPC serialises a `Uint8Array` to `{}`, which
       // reaches Rust as an empty image and a drag with nothing under the
       // pointer. `Array.from` is a copy of a few kilobytes, once per drag.
-      return invoke<void>("begin_drag", { paths, image: Array.from(image) });
+      return invoke<void>("begin_drag", { paths, folders, image: Array.from(image) });
     },
     onWindowDrag(handler: (event: WindowDragEvent) => void): () => void {
       const stops: (() => void)[] = [];

@@ -609,6 +609,44 @@ and which the panel has no vocabulary for. The engine can supply any of the
 three — the planner names and sizes every file before the first byte moves —
 so this is a drawing question, not a plumbing one.
 
+## Dragging out to Finder is invisible in this app *(E24-S1, 2026-09-06)*
+
+**The mock** draws no state for a drag that leaves the window. §Screens/4's
+transfers panel is drawn for copies the user started *here* — Download, Upload,
+a drop onto a list — and the handoff's drag material is all about the ring on a
+destination row, which by definition is not what happens when the destination is
+the Desktop.
+
+**What was built:** dragging a selection out puts one file promise per item on
+the pasteboard. Nothing is fetched until Finder asks; when it does, the copy is
+an ordinary transfer, so it appears in the panel as rows like any other and can
+be paused, cancelled and retried there. Meanwhile **Finder** shows its own copy
+progress, because it is Finder that asked. So one copy is reported twice, in two
+different vocabularies, in two different places — and the window the user
+dragged *from* shows nothing at all at the moment of the drop.
+
+Three things are undesigned, and only the first is urgent:
+
+1. **Where the promise's rows go.** They are indistinguishable from a Download
+   in the panel: same direction, same shape, and a destination path in a
+   staging directory the user never sees, renamed into place at the end. A
+   person who drags a film onto the Desktop and then opens the sheet sees a
+   download to a folder whose name has a dot in front of it. The row needs to
+   say *dragged to Desktop*, or the panel needs to leave these out entirely on
+   the grounds that Finder is already reporting them.
+2. **A failure has nowhere good to land.** A promise that cannot be fulfilled
+   reports an `NSError`, and Finder renders it as its own alert — which is the
+   right place for it, but it means one error appears in Finder's words and the
+   same error on a queue row in ours.
+3. **The drag image for many items.** One rendered row with AppKit's own count
+   badge on it, because only the first dragging item carries a picture; the
+   design has no drawing for a multi-item drag out.
+
+**For the designer:** the question to answer first is whether a promise is a
+transfer *the user should see in this app at all*. Both answers are defensible
+and the plumbing supports either — the rows exist because the queue is what
+moves the bytes, not because anybody decided they should be visible.
+
 ## A FAVORITES section in the sidebar *(E27-S1, 2026-09-06)*
 
 **The mock** draws two sidebar sections and no more: `MOUNTED` and `BOOKMARKS`,

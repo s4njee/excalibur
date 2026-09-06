@@ -58,6 +58,44 @@ impl Category {
             Self::Video | Self::Audio | Self::Image | Self::Pdf | Self::Text | Self::Code
         )
     }
+
+    /// The Uniform Type Identifier a file promise is offered under (E24-S1).
+    ///
+    /// **Why the category and not the extension.** A promise's type is what
+    /// the receiving app matches against when it decides whether it will take
+    /// the drag at all, and what Finder draws the dragged badge from. It is
+    /// not what names the file — that is [`crate::drag::Promise::name`], which
+    /// carries the extension verbatim — so the answer only has to be true, not
+    /// maximally specific. Declaring one system type per category is a table of
+    /// fifteen answers that can be read against Apple's own list; declaring one
+    /// per extension would be two hundred and fifty, each of them a guess that
+    /// nothing in the app would ever notice being wrong.
+    ///
+    /// Every string here is a type Apple declares. A made-up identifier is not
+    /// a harmless placeholder: an unknown UTI makes a drag that no app accepts.
+    #[must_use]
+    pub const fn uti(self) -> &'static str {
+        match self {
+            Self::Folder => "public.folder",
+            Self::Alias => "public.symlink",
+            Self::Video => "public.movie",
+            Self::Audio => "public.audio",
+            Self::Image => "public.image",
+            Self::Pdf => "com.adobe.pdf",
+            Self::Text => "public.plain-text",
+            Self::Code => "public.source-code",
+            Self::Archive => "public.archive",
+            Self::Disk => "public.disk-image",
+            Self::Application => "public.executable",
+            Self::Font => "public.font",
+            // A word processor file, a database and an unrecognised extension
+            // have no abstract type in common beyond "a file with bytes in
+            // it", and `public.data` is exactly that. Reaching for
+            // `public.content` instead would claim these are all things an app
+            // opens as documents, which of `Data` is simply untrue.
+            Self::Document | Self::Data | Self::Other => "public.data",
+        }
+    }
 }
 
 /// One row: extension, the label to show, and what sort of thing it is.
@@ -524,6 +562,59 @@ mod tests {
         // ...but Quick Look can still show it, because it is still text.
         assert_eq!(kind.category, Category::Text);
         assert!(kind.category.previewable());
+    }
+
+    #[test]
+    fn a_folder_is_promised_as_a_folder_and_not_as_bytes() {
+        // The one mapping the drag out to Finder cannot get wrong: a folder
+        // offered as `public.data` is a drag Finder accepts and then writes a
+        // *file* for, so the tree never appears.
+        assert_eq!(
+            classify_entry("Films", EntryKind::Dir).category.uti(),
+            "public.folder"
+        );
+        assert_eq!(classify("Arrival.mkv").category.uti(), "public.movie");
+        assert_eq!(classify("notes.txt").category.uti(), "public.plain-text");
+        // An extension nothing in the table knows is still a promise; it is
+        // just an unspecific one.
+        assert_eq!(classify("archive.xyz").category.uti(), "public.data");
+    }
+
+    #[test]
+    fn every_promised_type_is_a_reverse_dns_identifier_apple_could_know() {
+        // A misspelt or invented UTI is not a cosmetic error: it makes a drag
+        // that no application will accept, and nothing else in the app reads
+        // this string, so nothing else would notice. The shape is all a test
+        // can check — that it is a dotted identifier under a real authority —
+        // but it catches the empty string and the bare word, which are the two
+        // ways a hand-written table like this actually rots.
+        for category in [
+            Category::Folder,
+            Category::Alias,
+            Category::Video,
+            Category::Audio,
+            Category::Image,
+            Category::Pdf,
+            Category::Text,
+            Category::Code,
+            Category::Document,
+            Category::Archive,
+            Category::Disk,
+            Category::Application,
+            Category::Font,
+            Category::Data,
+            Category::Other,
+        ] {
+            let uti = category.uti();
+            assert!(
+                uti.starts_with("public.") || uti.starts_with("com."),
+                "{category:?} is promised as {uti}"
+            );
+            assert!(
+                uti.split('.').all(|part| !part.is_empty()),
+                "{category:?} is promised as {uti}"
+            );
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
 use excalibur_engine::drag::{self, Selection};
 use excalibur_engine::transfer::conflict::{self, Conflict};
 use excalibur_engine::transfer::plan;
-use excalibur_engine::transfer::queue::TransferQueue;
+use excalibur_engine::transfer::queue::{QueueEvent, TransferQueue};
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::transfer::xsync_engine::{SshEndpoint, XsyncRemote, XsyncRoute};
 use excalibur_engine::{
@@ -1341,21 +1341,27 @@ async fn new_window(
     Ok(label)
 }
 
-/// Start a native drag of this window's selection (E24-S2).
+/// Start a native drag of this window's selection (E24-S2, E24-S1).
 ///
 /// `image` is the drag image the webview rendered, as PNG **bytes**. Never a
 /// path: an item on a share has no local file to point at, and writing one out
 /// to name it would be a fetch nobody asked for.
 ///
-/// What actually crosses to `AppKit` is one pasteboard type,
-/// `dev.excalibur.selection`, carrying the mount, the paths and this window's
-/// label. Nothing else — E24-S1 adds the file promises that let the same drag
-/// end in Finder.
+/// `folders` is the subset of `paths` the list drew as directories. It is the
+/// one thing the engine cannot work out from a path — a folder called `Dune`
+/// has no extension to classify — and getting it wrong promises a folder as a
+/// file, which Finder accepts and then writes nothing into.
+///
+/// What crosses to `AppKit` is one pasteboard type, `dev.excalibur.selection`,
+/// carrying the mount, the paths and this window's label, and beside it one
+/// file promise per item. The promises are what let the same drag end in
+/// Finder; nothing is fetched for them until Finder asks.
 #[tauri::command]
 async fn begin_drag(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
+    folders: Vec<String>,
     image: Vec<u8>,
 ) -> std::result::Result<(), CommandError> {
     if paths.is_empty() {
@@ -1371,6 +1377,8 @@ async fn begin_drag(
         paths,
         window: window.label().to_owned(),
     };
+    let promises = drag::promises_for(&selection, &folders);
+    let fulfil = promise_sink(&state);
     let app = window.app_handle().clone();
     let source = window.label().to_owned();
 
@@ -1381,12 +1389,203 @@ async fn begin_drag(
     let (done, wait) = tokio::sync::oneshot::channel();
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        let _ = done.send(open_drag(&handle, &source, &selection, &image));
+        let _ = done.send(open_drag(
+            &handle, &source, &selection, &promises, &image, &fulfil,
+        ));
     })
     .map_err(|error| drag_failed(&format!("could not reach the main thread: {error}")))?;
     wait.await
         .map_err(|_| drag_failed("the main thread dropped the drag"))?
         .map_err(CommandError::from)
+}
+
+/// What fulfils a promise once Finder asks for it (E24-S1).
+///
+/// Built from the state's `Arc`s rather than borrowing it, because the closure
+/// outlives the command: it is called from `AppKit`'s operation queue, at
+/// whatever later moment somebody accepts the drop, and `tauri::State` is a
+/// borrow of the app that cannot travel there.
+fn promise_sink(state: &tauri::State<'_, AppState>) -> drag::PromiseSink {
+    let sessions = Arc::clone(&state.sessions);
+    let transfers = Arc::clone(&state.transfers);
+    let worker = Arc::clone(&state.worker);
+    Arc::new(move |request: &drag::PromiseRequest| {
+        // Not a tokio worker thread — `AppKit` owns this one — so blocking on
+        // the runtime here blocks nothing else. It is also required: the
+        // promise is complete when this returns, which is how Finder knows to
+        // stop showing a copy in progress.
+        tauri::async_runtime::block_on(fulfil_promise(&sessions, &transfers, &worker, request))
+    })
+}
+
+/// Fetch one promised item into the folder Finder named, and land it there.
+///
+/// **Staged in a hidden directory inside that folder, then renamed into place.**
+/// Two reasons, and both of them are silent data loss without it:
+///
+/// - the name is Finder's, not ours. A second `Arrival.mkv` dropped on a
+///   Desktop that already has one arrives as `Arrival 2.mkv`, and a transfer
+///   written straight into the folder would use the name it promised and
+///   overwrite the file already there;
+/// - a rename inside one directory is on one filesystem, so it is atomic and
+///   free. Nothing half-copied ever appears under the final name.
+///
+/// The transfer itself is E22's, unchanged: `plan_downloads` for the walk and
+/// the ordinary queue for the bytes, so a promise is visible in the transfers
+/// sheet like anything else and can be paused, cancelled and retried there.
+async fn fulfil_promise(
+    sessions: &Arc<SessionManager>,
+    transfers: &Arc<TransferQueue>,
+    worker: &Arc<Worker>,
+    request: &drag::PromiseRequest,
+) -> Result<()> {
+    let mount = &request.selection.mount;
+    let backend = sessions
+        .backend(mount)
+        .await
+        .ok_or_else(|| EngineError::Disconnected(format!("{mount} is not connected")))?;
+
+    let staging = request.folder().join(format!(".excalibur-{}", new_id()));
+    std::fs::create_dir_all(&staging)
+        .map_err(|error| EngineError::Io(format!("create {}: {error}", staging.display())))?;
+    // Every early return from here on has to take the staging directory with
+    // it: a dotted directory left on somebody's Desktop is invisible litter,
+    // which is the worst kind.
+    let landed = fetch_into(transfers, worker, backend.as_ref(), request, &staging).await;
+    let outcome = match landed {
+        Ok(landed) => place(&landed, &request.destination),
+        Err(error) => Err(error),
+    };
+    let _ = std::fs::remove_dir_all(&staging);
+    outcome
+}
+
+/// Run the transfer, and answer with the one thing that landed in `staging`.
+async fn fetch_into(
+    transfers: &Arc<TransferQueue>,
+    worker: &Arc<Worker>,
+    backend: &dyn ShareBackend,
+    request: &drag::PromiseRequest,
+    staging: &Path,
+) -> Result<std::path::PathBuf> {
+    let plan = plan::plan_downloads(backend, std::slice::from_ref(&request.path), staging).await;
+    // A problem in the walk is the answer here, not a row: nobody is watching
+    // the queue for a drag onto the Desktop, and a promise that reported
+    // success for a subtree it could not read would produce a folder that is
+    // quietly missing files. Finder shows this sentence.
+    if let Some(problem) = plan.problems.first() {
+        return Err(EngineError::Io(problem.reason.clone()));
+    }
+    for directory in &plan.directories {
+        std::fs::create_dir_all(directory)
+            .map_err(|error| EngineError::Io(format!("create {}: {error}", directory.display())))?;
+    }
+
+    // Subscribed before anything is queued: a small file can finish before the
+    // wait below starts, and a wait that missed its own transfer would hold
+    // Finder's progress open until the queue happened to change again.
+    let changes = transfers.events();
+    let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in plan.files {
+        let id = new_id();
+        transfers
+            .add(
+                Transfer::new(
+                    id.clone(),
+                    Direction::Down,
+                    file.source,
+                    file.destination.to_string_lossy().into_owned(),
+                    file.size,
+                )
+                .on_mount(&request.selection.mount),
+            )
+            .await;
+        pending.insert(id);
+    }
+    let running = Arc::clone(worker);
+    tauri::async_runtime::spawn(async move { running.drain().await });
+
+    settle(transfers, changes, pending).await?;
+    only_child(staging)
+}
+
+/// Wait for every row in `pending` to stop moving, or say why one did not.
+///
+/// The broadcast channel is a **wake-up**, not the record: it drops messages
+/// for a slow consumer without telling it, so every pass re-reads the queue,
+/// which is the only thing that knows the truth. The timeout is what makes a
+/// dropped or closed channel a slower wait rather than one that never ends.
+async fn settle(
+    transfers: &Arc<TransferQueue>,
+    mut changes: tokio::sync::broadcast::Receiver<QueueEvent>,
+    mut pending: std::collections::HashSet<String>,
+) -> Result<()> {
+    loop {
+        let rows = transfers.all().await;
+        for row in &rows {
+            if !pending.contains(&row.id) {
+                continue;
+            }
+            match row.status {
+                TransferStatus::Done => {
+                    pending.remove(&row.id);
+                }
+                // Paused counts as an ending, not as a wait. The user pausing a
+                // queue must not leave Finder spinning on a copy that is never
+                // going to move again.
+                TransferStatus::Failed | TransferStatus::Cancelled | TransferStatus::Paused => {
+                    return Err(EngineError::Io(
+                        row.error
+                            .clone()
+                            .unwrap_or_else(|| format!("{} did not finish", row.name)),
+                    ));
+                }
+                TransferStatus::Queued | TransferStatus::Running => {}
+            }
+        }
+        // A row cleared out from under us is one nobody can report on any more.
+        pending.retain(|id| rows.iter().any(|row| &row.id == id));
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), changes.recv()).await;
+    }
+}
+
+/// The single entry a fulfilled promise left in its staging directory.
+///
+/// One, always: the plan was made from one path, so it produced either a file
+/// or a tree with one root. Anything else means the walk and this function
+/// disagree, which is worth an error rather than a guess about which of them.
+fn only_child(staging: &Path) -> Result<std::path::PathBuf> {
+    let mut entries = std::fs::read_dir(staging)
+        .map_err(|error| EngineError::Io(format!("read {}: {error}", staging.display())))?
+        .filter_map(std::result::Result::ok);
+    let first = entries
+        .next()
+        .ok_or_else(|| EngineError::Io("the copy produced nothing".to_owned()))?;
+    if entries.next().is_some() {
+        return Err(EngineError::Io(
+            "the copy produced more than one item".to_owned(),
+        ));
+    }
+    Ok(first.path())
+}
+
+/// Move what landed to the exact path Finder asked for.
+///
+/// Whatever is already at that path is removed first. It is not a file of the
+/// user's: Finder chose this name precisely because nothing of theirs had it,
+/// and what may be there is the empty placeholder it reserved the name with.
+fn place(landed: &Path, destination: &Path) -> Result<()> {
+    if destination.is_dir() {
+        let _ = std::fs::remove_dir_all(destination);
+    } else if destination.exists() {
+        let _ = std::fs::remove_file(destination);
+    }
+    std::fs::rename(landed, destination).map_err(|error| {
+        EngineError::Io(format!("put {} in place: {error}", destination.display()))
+    })
 }
 
 /// Install a drop target on every window, then begin the session. Main thread.
@@ -1402,7 +1601,9 @@ fn open_drag(
     app: &tauri::AppHandle,
     source: &str,
     selection: &Selection,
+    promises: &[drag::Promise],
     image: &[u8],
+    fulfil: &drag::PromiseSink,
 ) -> excalibur_engine::error::Result<()> {
     // Defensive: a drag whose end we somehow missed would leave an invisible
     // view over a window, swallowing clicks. Cheap to redo, expensive to debug.
@@ -1435,7 +1636,7 @@ fn open_drag(
             "the window that started the drag has no native view".to_owned(),
         ));
     };
-    drag::start_drag(view, selection, image)
+    drag::start_drag(view, selection, promises, image, fulfil)
 }
 
 /// Linux gets this with E24-S4; until then a drag is a gesture that does nothing.
@@ -1444,9 +1645,11 @@ fn open_drag(
     app: &tauri::AppHandle,
     source: &str,
     selection: &Selection,
+    promises: &[drag::Promise],
     image: &[u8],
+    fulfil: &drag::PromiseSink,
 ) -> excalibur_engine::error::Result<()> {
-    let _ = (app, source, selection, image);
+    let _ = (app, source, selection, promises, image, fulfil);
     Err(EngineError::Unsupported(
         "dragging between windows is macOS-only until E24-S4".to_owned(),
     ))

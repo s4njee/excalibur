@@ -4855,25 +4855,221 @@ to a window). Only if S1's design spike says windows alone are not enough.
 
 ### E24 — Drag and drop, every direction
 
-#### E24-S1 — Drag out to Finder (file promises)
+#### E24-S1 — Drag out to Finder (file promises) — **Partly done**
+
+*2026-09-06. Built and unit-tested end to end; the one thing not done is the AC's own
+test, a real drag onto Finder driven by an accessibility harness — see the last AC.*
+
 **AC**
-- Dragging a selection out of the list starts a native `NSDraggingSession` whose
+- [x] Dragging a selection out of the list starts a native `NSDraggingSession` whose
   pasteboard carries one `NSFilePromiseProvider` per item (`objc2-app-kit`,
   `NSFilePromiseProvider` feature) with the item's UTI from the kind table, plus the
   private type `dev.excalibur.selection` (mount id + paths, JSON). Nothing is fetched
   until Finder calls the delegate with a destination; then the transfer is queued to
   that folder through E22 and the promise is fulfilled when it lands. A drag cancelled
   over the Desktop moves nothing.
-- Folders promise a folder and produce the tree.
-- The FFI lives in one module (`crates/engine/src/drag/macos.rs`, allow `unsafe_code`
+- [x] Folders promise a folder and produce the tree.
+- [x] The FFI lives in one module (`crates/engine/src/drag/macos.rs`, allow `unsafe_code`
   there only, `// SAFETY:` per block) behind a safe `start_drag(items, image)` that the
   Tauri layer calls from the list's `pointerdown`+move on the name cell — the gesture
   E8-S8 reserved.
-- The drag image is the row's name and glyph (rendered to an image in the webview,
+- [x] The drag image is the row's name and glyph (rendered to an image in the webview,
   handed across as PNG bytes — not a file).
-- Tested: a real drag onto a temp folder in Finder through the accessibility test
+- [ ] Tested: a real drag onto a temp folder in Finder through the accessibility test
   harness, asserting the file appears with the right digest and that a cancelled drag
-  queued nothing.
+  queued nothing. — **Not done, and not attempted half-way.** There is no accessibility
+  test harness in this repo to hang it on; building one is a story, not a step in this
+  one. What *is* tested is everything on this side of the OS boundary, including the
+  parts that used not to be — see "The tests that were passing without running" below.
+  A drop onto Finder remains a manual check, written out at the end of this section.
+
+**Results**
+
+*One writer, two vocabularies*
+
+A dragging item has exactly **one** pasteboard writer, which is the fact the whole
+shape follows from. The drag has to be legible to two different readers — Finder,
+which understands file promises, and another Excalibur window, which understands
+`dev.excalibur.selection` — so either they come from the same object or they do not
+come at all. Two dragging items would have worked and been wrong: Finder counts items,
+so a drag of three files would have made four, and the fourth would have been a file it
+could not create.
+
+So `NSFilePromiseProvider` is **subclassed** (`PromisingProvider`), and its three
+`NSPasteboardWriting` methods are overridden to *append* our type to whatever AppKit
+already vends rather than to replace it. The test that pins this reads the actual list
+off a real pasteboard writer:
+
+```
+["com.apple.NSFilePromiseItemMetaData",
+ "com.apple.pasteboard.promised-file-name",
+ "com.apple.pasteboard.promised-suggested-file-name",
+ "com.apple.pasteboard.promised-file-content-type",
+ "com.apple.pasteboard.NSFilePromiseID",
+ "dev.excalibur.selection"]
+```
+
+Nothing about `SELECTION_TYPE` or its payload changed, exactly as E24-S2's notes
+predicted. `DropSurface` still reads the private type with `stringForType:` and never
+learns that a promise was beside it.
+
+*Nothing is fetched until Finder asks, and that is structural*
+
+The only path from a drag to the transfer queue is
+`filePromiseProvider:writePromiseToURL:completionHandler:`, which AppKit calls when
+something has accepted the drop and wants the bytes. There is no other call site, no
+flag, and no "did the drag end over a real destination" check to get wrong. **A drag
+cancelled over the Desktop queues nothing because there is nowhere for it to queue
+from** — which is a better guarantee than a test, and the test asserts it anyway, by
+counting the sink's calls before and after the one method that reaches it.
+
+*Which UTI, and why it comes from the category rather than the extension*
+
+`Category::uti()`, beside `previewable()` in `kind.rs`, because that table is already
+the one place that answers "what sort of thing is this" for the Kind column, the row
+glyph and Quick Look. A promise's type is what a receiving app matches on and what
+Finder draws the badge from; it is **not** what names the file, which is
+`Promise::name` and carries the extension verbatim. So the answer has to be true, not
+maximally specific: fifteen system types that can be read against Apple's own list,
+rather than two hundred and fifty guesses nothing in the app would notice being wrong.
+
+The one that is not cosmetic is `Folder → public.folder`. A folder promised as
+`public.data` is a drop Finder accepts and then writes an empty *file* for — success
+reported, nothing produced — and a path cannot say which it is, because `Dune` and
+`Dune.mkv` differ by their row's kind and not by their string. So `begin_drag` gained a
+`folders: Vec<String>` argument: the subset of `paths` the list drew as directories,
+**as paths and not as a parallel array of flags**, because an array one element short
+would desynchronise silently and a set of paths cannot.
+
+*The staging directory, which is not tidiness*
+
+A fulfilment does not write into the folder Finder named. It creates
+`<folder>/.excalibur-<id>/`, runs the transfer into that, renames the one thing that
+landed onto the exact path Finder asked for, and removes the directory — on the failure
+path too.
+
+Two reasons, and the first is data loss. **The name is Finder's, not ours.** Drop a
+second `Arrival.mkv` on a Desktop that already has one and the promise's URL is
+`Arrival 2.mkv`; `plan_downloads` writes `<root>/<basename>`, so a transfer queued
+straight into the folder would have written `Arrival.mkv` and overwritten the film
+already there. The second reason is free once the first is paid for: a rename inside one
+directory is on one filesystem, so nothing half-copied ever appears under the final
+name.
+
+The transfer itself is E22's and unchanged — `plan_downloads` for the walk, the ordinary
+queue for the bytes — so a folder produces its tree for the same reason a folder dropped
+between windows does, and a promise can be paused, cancelled and retried in the
+transfers sheet like anything else. That it *appears* there at all is a question for the
+designer; it is in `docs/design-gaps.md`.
+
+*Blocking, and the queue that makes it safe*
+
+The promise is complete when the delegate returns, which is how Finder knows to stop
+showing a copy in progress. So fulfilment blocks — and the delegate therefore **must**
+implement `operationQueueForFilePromiseProvider:`, because the default when it does not
+is the *main* queue, and a main-queue block for the length of a 40 GB copy is every
+window in the app frozen. One `NSOperationQueue` per drag, shared by its items.
+
+Waiting on the queue re-reads it rather than trusting the broadcast channel, for the
+reason `queue.rs` already gives: the channel drops messages for a slow consumer without
+telling it. The events are a wake-up; `transfers.all()` is the truth; a 500 ms timeout
+means a dropped or closed channel is a slower wait rather than one that never ends. A
+row that is `Paused` ends the wait as a failure — a user pausing the queue must not
+leave Finder spinning on something that is never going to move again.
+
+*Two things that are not `unsafe` and needed the same care*
+
+**The delegate can panic while Objective-C is the caller**, which is undefined behaviour
+— and it would also leave the completion handler uncalled, which is Finder showing a
+copy that never finishes and never fails. `catch_unwind`, and a panic becomes an error
+on the drop.
+
+**`NSFilePromiseProvider` holds its delegate weakly**, and Finder asks for the bytes
+*after* the session has ended, so the drag cannot be what keeps it alive. The delegates
+are held in a thread-local and released at the start of the next drag, on the same
+reasoning as `SOURCES` — and it is sufficient, because AppKit takes a strong reference
+for the duration of the message it sends, so a delegate whose write is still running
+survives being dropped from there.
+
+*The tests that were passing without running*
+
+Worth writing down because it is the sort of thing that is only ever found by accident.
+Every `AppKit`-object test in `drag/macos.rs` began `let Some(mtm) = MainThreadMarker::
+new() else { return; }` — and **libtest runs every `#[test]` on a thread it spawned**, so
+that marker is never `Some`. `--test-threads=1` does not change it. E24-S2's
+"a drop target claims our type and only ours" has therefore never executed a single
+assertion since it was written.
+
+The fix is `crates/engine/tests/promises.rs`, a **`harness = false`** binary whose `main`
+*is* the main thread. Five checks run there now, the old one among them: the drop target
+registers for our type and no other; a promise vends its own five types **and** ours from
+one writer; the delegate turns Finder's URL into a request naming the right folder and
+Finder's own de-duplicated file name; the promised name is the row's; and the write never
+lands on the main queue. This cost three classes and their ivar structs a `pub`, which is
+recorded where they are declared.
+
+*Smaller things*
+
+- `promises_for(&selection, &folders)` is the tested seam: names, UTIs and order, with
+  no window. A trailing slash is trimmed before the name is taken — `Films/` would
+  otherwise promise a file called `""`, which AppKit turns into an item Finder discards
+  without saying so.
+- The drag image goes on the **first** dragging item and nothing on the rest. Every item
+  still needs a frame, but repeating the picture draws the same rendered row on top of
+  itself once per file, which reads as a smudge rather than as a stack. AppKit supplies
+  the count badge.
+- A failed promise reports an `NSError` carrying a localized description, so Finder shows
+  a sentence rather than "the operation couldn't be completed".
+- Four feature names and one package name were added to `Cargo.toml`
+  (`NSFilePromiseProvider`, `block2`, and Foundation's `NSError`/`NSOperation`/`NSURL`/
+  `NSDictionary`/`NSObject`; `block2` itself). Every one of them was already in
+  `Cargo.lock` via `objc2`, wry and Tauri, so the audit gained no package and no licence.
+  `docs/supply-chain.md` records it, along with the module's now ten `unsafe` blocks.
+
+---
+
+**Next steps**
+
+- **The accessibility harness is the unmet AC and belongs in its own story.** What it
+  needs to drive: press on a name cell, move four pixels, and from there AppKit owns the
+  tracking loop — so it is `CGEvent` synthesis against a running bundle, not a Rust test.
+  The two assertions worth having are the AC's: the file appears in a temp folder with
+  the right digest, and a drag released over the Desktop and cancelled leaves the queue
+  empty. Nothing in the code has to change to make either measurable.
+- **Whether a promise should appear in the transfers sheet at all.** It does, because the
+  queue is what moves the bytes — not because anyone decided it should be visible, and
+  the row currently names a staging directory the user never sees. In
+  `docs/design-gaps.md`.
+- **`fulfil_promise` is a download, so remote→remote is out of scope here as well.** A
+  promise dropped in Finder is by definition a copy to this machine, so E22's remaining
+  refusal does not touch it. That is luck rather than design, and it will stop being
+  true the moment something other than Finder accepts one of these promises.
+- **Linux (E24-S4)** gets `promises_for` unchanged — it is platform-independent — and a
+  `start_drag` that still returns `EngineError::Unsupported`. XDG's answer to a promise
+  is `application/octet-stream` plus `XdndDirectSave0`, which is a different shape and
+  wants its own decision.
+
+---
+
+*For the lead to verify by hand*
+
+The manual check the unmet AC stands in for. In the bundled app, on a mount with a file
+of a few hundred megabytes and a folder in it:
+
+1. **A file onto the Desktop.** Drag its *name* out of the window and release over the
+   Desktop. Finder starts a copy; the file appears; `shasum` it against the source. The
+   transfers sheet has a row for it.
+2. **Nothing before the drop.** Watch the sheet while dragging around for a few seconds
+   without releasing, then press Escape over the Desktop. **No row appears, at any
+   point.** This is the AC's second assertion and the one most worth doing by hand.
+3. **A folder.** Drag one out. Finder should produce the tree, not an empty file — this
+   is the `folders` argument and the `public.folder` UTI, and it is the failure that
+   reports success.
+4. **A name that collides.** Copy a file to the Desktop first, then drag the same file
+   out of Excalibur. Finder names the second one `… 2`; the **first must be untouched**.
+   That is what the staging directory exists for.
+5. **Still a move between windows.** Drag from one Excalibur window into another. It must
+   behave exactly as it did before this story: E24-S2's ring, its verbs, no fetch.
 
 #### E24-S2 — Drag between Excalibur windows — **Done (M7's slice: our own windows)**
 

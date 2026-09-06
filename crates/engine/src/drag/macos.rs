@@ -1,4 +1,4 @@
-//! The one hand-written FFI module in the tree (E24-S2, plan.md Decision 9).
+//! The one hand-written FFI module in the tree (E24-S2/S1, plan.md Decision 9).
 //!
 //! `unsafe` is allowed **here and nowhere else**: on this module, never on the
 //! crate and never on the workspace. Every block carries a `// SAFETY:` note,
@@ -32,23 +32,58 @@
 //! these — it arrives when no Excalibur drag is in flight — so wry's own file
 //! drop handling (E13-S5's `tauri://drag-*`) is untouched and OS file paths are
 //! still handled in exactly one place.
+//!
+//! # The second structural decision: promises, not files (E24-S1)
+//!
+//! Dragging *out* cannot put a file on the pasteboard, because there is no
+//! file. Every item in an Excalibur list lives on a share, and writing one out
+//! to have something to drag would fetch a 40 GB film to answer a gesture the
+//! user is as likely as not about to abandon over the Desktop. So each item is
+//! offered as an `NSFilePromiseProvider`: a claim that a file *will* exist,
+//! with a type and a name and no bytes.
+//!
+//! The provider is subclassed ([`PromisingProvider`]) rather than used as-is,
+//! for one reason: a dragging item has exactly one pasteboard writer, and the
+//! same drag has to be legible to another Excalibur window as well. Overriding
+//! `writableTypesForPasteboard:` to append [`SELECTION_TYPE`] to whatever
+//! `NSFilePromiseProvider` already vends puts both on the same item, so
+//! [`DropSurface`] reads the private type and never touches disk while Finder
+//! sees only the promises. The alternative — a separate, promise-less dragging
+//! item carrying the payload — would make Finder create one more file than the
+//! user dragged.
+//!
+//! **Nothing is fetched until Finder asks.** The sink is reached from exactly
+//! one place, `filePromiseProvider:writePromiseToURL:completionHandler:`, which
+//! `AppKit` calls only when a destination has accepted the drop and wants the
+//! bytes. A drag released over the Desktop and cancelled never reaches it.
 
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use block2::DynBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem,
-    NSDraggingSession, NSDraggingSource, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
-    NSPasteboardItem, NSPasteboardType, NSView, NSWindowOrderingMode,
+    NSDraggingSession, NSDraggingSource, NSEvent, NSEventModifierFlags, NSEventType,
+    NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSImage, NSPasteboard, NSPasteboardType,
+    NSPasteboardWriting, NSPasteboardWritingOptions, NSView, NSWindowOrderingMode,
 };
-use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSData, NSDictionary, NSError, NSOperationQueue, NSPoint, NSRect, NSSize, NSString,
+    NSURL,
+};
 
-use super::{DropEvent, DropSink, Modifiers, Phase, Selection, SELECTION_TYPE};
+use super::{
+    DropEvent, DropSink, Modifiers, Phase, Promise, PromiseRequest, PromiseSink, Selection,
+    SELECTION_TYPE,
+};
 use crate::error::{EngineError, Result};
 
 // The drop targets currently installed, one per window.
@@ -67,10 +102,23 @@ thread_local! {
     // receiver mid-message. Deferring to the next drag costs one retained
     // object and cannot be wrong.
     static SOURCES: RefCell<Vec<Retained<DragSource>>> = const { RefCell::new(Vec::new()) };
+    // The promise delegates of the drag in flight, one per item.
+    //
+    // `NSFilePromiseProvider` holds its delegate **weakly**, so something has
+    // to keep these alive, and it cannot be the drag session: Finder asks for
+    // the bytes *after* the drop, which is after the session has ended.
+    // Released at the start of the next drag, on the same reasoning as
+    // SOURCES — and it is enough, because AppKit takes a strong reference for
+    // the duration of the message it sends, so a keeper whose write is still
+    // running survives being dropped from here.
+    static KEEPERS: RefCell<Vec<Retained<PromiseKeeper>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What one window's drop target needs to report an event.
-struct SurfaceIvars {
+///
+/// Public only because the class that holds it is, which it is only so the
+/// main-thread test harness can build one. Every field stays private.
+pub struct SurfaceIvars {
     /// The Tauri label of the window this covers, so the shell can `emit_to` it.
     label: String,
     sink: DropSink,
@@ -84,7 +132,7 @@ define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[ivars = SurfaceIvars]
-    struct DropSurface;
+    pub struct DropSurface;
 
     // SAFETY: `NSView` already conforms; this only surfaces it to Rust.
     unsafe impl NSObjectProtocol for DropSurface {}
@@ -134,7 +182,18 @@ define_class!(
 
 impl DropSurface {
     /// Build a target covering `content`, and register it for our type.
-    fn new(mtm: MainThreadMarker, content: &NSView, label: &str, sink: DropSink) -> Retained<Self> {
+    ///
+    /// Public so `tests/promises.rs` can build one: `AppKit` objects here are
+    /// main-thread-only, and libtest runs every test on a spawned thread, so
+    /// the only way to exercise them is a `harness = false` binary whose own
+    /// `main` does it.
+    #[must_use]
+    pub fn new(
+        mtm: MainThreadMarker,
+        content: &NSView,
+        label: &str,
+        sink: DropSink,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(SurfaceIvars {
             label: label.to_owned(),
             sink,
@@ -245,6 +304,230 @@ define_class!(
     }
 );
 
+/// What one promise needs to be fulfilled, once somebody asks.
+///
+/// Public for the same reason [`SurfaceIvars`] is, and just as opaque.
+pub struct KeeperIvars {
+    /// The mount and window the drag came from, passed through to the sink.
+    selection: Selection,
+    promise: Promise,
+    sink: PromiseSink,
+    /// The queue `AppKit` runs the write on. Held so the same one is handed
+    /// back every time it is asked for: a delegate that vended a fresh queue
+    /// per call would leave a thread per promise with nothing to do.
+    queue: Retained<NSOperationQueue>,
+}
+
+// The delegate AppKit asks for a promised file's name, its queue, and finally
+// its bytes.
+define_class!(
+    // SAFETY:
+    // - `NSObject` has no subclassing requirements.
+    // - This type does not implement `Drop`.
+    #[unsafe(super(objc2_foundation::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = KeeperIvars]
+    pub struct PromiseKeeper;
+
+    // SAFETY: `NSObject` already conforms; this only surfaces it to Rust.
+    unsafe impl NSObjectProtocol for PromiseKeeper {}
+
+    // SAFETY: all three selectors have the signatures AppKit declares for
+    // `NSFilePromiseProviderDelegate`. The protocol's own bindings carry a
+    // `MainThreadMarker` on the two that AppKit calls on the main thread;
+    // `define_class!` has no way to receive one, so it is simply absent here —
+    // it is zero-sized and no part of the selector.
+    //
+    // The class is `MainThreadOnly` like everything else in this module, but
+    // `writePromiseToURL:` is deliberately *not* a main-thread method: AppKit
+    // runs it on the queue vended below. That is sound because the ivars it
+    // touches are plain Rust data (`Selection`, `Promise`, and an `Arc` that is
+    // `Send + Sync` by its own bound), it takes them by shared reference, and
+    // it touches no AppKit state at all.
+    unsafe impl NSFilePromiseProviderDelegate for PromiseKeeper {
+        #[unsafe(method_id(filePromiseProvider:fileNameForType:))]
+        fn file_name(
+            &self,
+            _provider: &NSFilePromiseProvider,
+            _file_type: &NSString,
+        ) -> Retained<NSString> {
+            // The name the row had. Finder may not use it verbatim — a second
+            // `Arrival.mkv` on a Desktop that has one becomes `Arrival 2.mkv` —
+            // which is why fulfilment reads the URL it is given rather than
+            // assuming this one came back.
+            NSString::from_str(&self.ivars().promise.name)
+        }
+
+        #[unsafe(method_id(operationQueueForFilePromiseProvider:))]
+        fn queue(&self, _provider: &NSFilePromiseProvider) -> Retained<NSOperationQueue> {
+            // Not optional in practice, whatever the header says: the default
+            // when this is unimplemented is the **main** queue, and a promise
+            // that blocks until a file has come off a share would freeze every
+            // window in the app for the length of the copy.
+            self.ivars().queue.clone()
+        }
+
+        #[unsafe(method(filePromiseProvider:writePromiseToURL:completionHandler:))]
+        fn write_promise(
+            &self,
+            _provider: &NSFilePromiseProvider,
+            url: &NSURL,
+            done: &DynBlock<dyn Fn(*mut NSError)>,
+        ) {
+            let ivars = self.ivars();
+            // Caught rather than allowed to unwind, for two reasons that both
+            // matter: a panic crossing back into Objective-C is undefined
+            // behaviour, and `done` not being called leaves Finder showing a
+            // copy that never finishes and never fails. A panic becomes an
+            // error on the drop, which is a thing the user can see.
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let path = url
+                    .path()
+                    .ok_or_else(|| refused("Finder named a destination that is not a file"))?;
+                (ivars.sink)(&PromiseRequest {
+                    selection: ivars.selection.clone(),
+                    path: ivars.promise.path.clone(),
+                    destination: PathBuf::from(path.to_string()),
+                })
+            }))
+            .unwrap_or_else(|_| Err(refused("the copy panicked")));
+
+            match outcome {
+                Ok(()) => done.call((std::ptr::null_mut(),)),
+                Err(error) => {
+                    // Held across the call: the block may retain it, and it
+                    // must still be there when it does.
+                    let reported = failure(&error.to_string());
+                    done.call((Retained::as_ptr(&reported).cast_mut(),));
+                }
+            }
+        }
+    }
+);
+
+impl PromiseKeeper {
+    /// One keeper per promised item, sharing the drag's operation queue.
+    ///
+    /// Public for the same reason [`DropSurface::new`] is.
+    #[must_use]
+    pub fn new(
+        mtm: MainThreadMarker,
+        selection: &Selection,
+        promise: &Promise,
+        sink: PromiseSink,
+        queue: &Retained<NSOperationQueue>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(KeeperIvars {
+            selection: selection.clone(),
+            promise: promise.clone(),
+            sink,
+            queue: queue.clone(),
+        });
+        // SAFETY: `init` is `NSObject`'s designated initialiser and `this` is a
+        // freshly allocated instance of a subclass of it.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// The JSON a promising provider also vends, under our private type.
+///
+/// Public for the same reason [`SurfaceIvars`] is, and just as opaque.
+pub struct ProviderIvars {
+    payload: String,
+}
+
+// A file promise that is also an Excalibur selection.
+define_class!(
+    // SAFETY:
+    // - `NSFilePromiseProvider` is a plain `NSObject` subclass with no
+    //   subclassing requirements beyond calling its designated initialiser,
+    //   which `PromisingProvider::new` does.
+    // - This type does not implement `Drop`.
+    #[unsafe(super(NSFilePromiseProvider))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ProviderIvars]
+    pub struct PromisingProvider;
+
+    // SAFETY: `NSObject` already conforms; this only surfaces it to Rust.
+    unsafe impl NSObjectProtocol for PromisingProvider {}
+
+    // SAFETY: the superclass already conforms to `NSPasteboardWriting`; these
+    // three are its methods, with the signatures AppKit declares, and each one
+    // answers for our own type and defers everything else to the
+    // implementation it is overriding.
+    unsafe impl NSPasteboardWriting for PromisingProvider {
+        #[unsafe(method_id(writableTypesForPasteboard:))]
+        fn writable_types(&self, pasteboard: &NSPasteboard) -> Retained<NSArray<NSPasteboardType>> {
+            // Appended, never replaced: the types `NSFilePromiseProvider`
+            // vends are what makes this a promise at all, and a drag that
+            // dropped them would be a private type nothing outside this app
+            // can read.
+            // SAFETY: calling the implementation being overridden, with the
+            // argument it was given and the return type its binding declares.
+            let inherited: Retained<NSArray<NSPasteboardType>> =
+                unsafe { msg_send![super(self), writableTypesForPasteboard: pasteboard] };
+            let mut types = inherited.to_vec();
+            types.push(selection_type());
+            NSArray::from_retained_slice(&types)
+        }
+
+        #[unsafe(method(writingOptionsForType:pasteboard:))]
+        fn writing_options(
+            &self,
+            kind: &NSPasteboardType,
+            pasteboard: &NSPasteboard,
+        ) -> NSPasteboardWritingOptions {
+            if is_selection_type(kind) {
+                // Not `Promised`: the payload is a few hundred bytes that are
+                // already in hand, and marking it promised would make a drop in
+                // another one of our own windows wait on a callback for a
+                // string we could simply have written.
+                return NSPasteboardWritingOptions::empty();
+            }
+            // SAFETY: as above — the overridden implementation, unchanged
+            // arguments, the return type its binding declares.
+            unsafe { msg_send![super(self), writingOptionsForType: kind, pasteboard: pasteboard] }
+        }
+
+        #[unsafe(method_id(pasteboardPropertyListForType:))]
+        fn property_list(&self, kind: &NSPasteboardType) -> Option<Retained<AnyObject>> {
+            // One expression rather than an early return: `method_id` rewrites
+            // the tail of the body, and a `return` slips past it.
+            if is_selection_type(kind) {
+                let payload = NSString::from_str(&self.ivars().payload);
+                Some(Retained::into_super(Retained::into_super(payload)))
+            } else {
+                // SAFETY: as above.
+                unsafe { msg_send![super(self), pasteboardPropertyListForType: kind] }
+            }
+        }
+    }
+);
+
+impl PromisingProvider {
+    /// One provider per item: its type, its delegate, and our payload.
+    ///
+    /// Public for the same reason [`DropSurface::new`] is.
+    #[must_use]
+    pub fn new(
+        mtm: MainThreadMarker,
+        promise: &Promise,
+        keeper: &PromiseKeeper,
+        payload: &str,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ProviderIvars {
+            payload: payload.to_owned(),
+        });
+        let file_type = NSString::from_str(&promise.uti);
+        let delegate: &ProtocolObject<dyn NSFilePromiseProviderDelegate> =
+            ProtocolObject::from_ref(keeper);
+        // SAFETY: `initWithFileType:delegate:` is `NSFilePromiseProvider`'s
+        // designated initialiser, `this` is a freshly allocated instance of a
+        // subclass of it, and both arguments have the types it declares.
+        unsafe { msg_send![super(this), initWithFileType: &*file_type, delegate: delegate] }
+    }
+}
+
 /// Put a drop target over one window. See [`super::install_drop_target`].
 ///
 /// # Errors
@@ -288,32 +571,36 @@ pub fn remove_drop_targets() {
 /// Begin a native drag. See [`super::start_drag`].
 ///
 /// # Errors
-/// If this is not the main thread, the view is not in a window, or `image_png`
-/// is not an image `AppKit` can read.
-pub fn start_drag(ns_view: *mut c_void, selection: &Selection, image_png: &[u8]) -> Result<()> {
+/// If this is not the main thread, the view is not in a window, there is
+/// nothing to promise, or `image_png` is not an image `AppKit` can read.
+pub fn start_drag(
+    ns_view: *mut c_void,
+    selection: &Selection,
+    promises: &[Promise],
+    image_png: &[u8],
+    fulfil: &PromiseSink,
+) -> Result<()> {
     let mtm = main_thread()?;
     let view = view_at(ns_view)?;
     let window = view
         .window()
         .ok_or_else(|| refused("the window has no content view to drag from"))?;
-
-    // The previous drag's source, released now rather than from inside its own
-    // `ended` callback.
-    SOURCES.with_borrow_mut(Vec::clear);
-
-    let item = NSPasteboardItem::init(NSPasteboardItem::alloc());
-    if !item.setString_forType(&NSString::from_str(&selection.to_json()), &selection_type()) {
-        return Err(refused("the pasteboard refused the selection"));
+    if promises.is_empty() {
+        // A session with no items is one AppKit begins and immediately ends,
+        // which looks to the user exactly like a gesture that was not
+        // recognised. Refusing says so on the row they grabbed.
+        return Err(refused("there is nothing to drag"));
     }
+
+    // The previous drag's source and promise delegates, released now rather
+    // than from inside their own callbacks.
+    SOURCES.with_borrow_mut(Vec::clear);
+    KEEPERS.with_borrow_mut(Vec::clear);
 
     let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(image_png))
         .ok_or_else(|| refused("the drag image is not a readable PNG"))?;
     let size = image.size();
 
-    let dragging = NSDraggingItem::initWithPasteboardWriter(
-        NSDraggingItem::alloc(),
-        ProtocolObject::from_ref(&*item),
-    );
     // Centred on the pointer. The frame is in the *source view's* coordinates,
     // so the same bottom-left origin conversion applies as on the way in.
     let at = view.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
@@ -321,10 +608,31 @@ pub fn start_drag(ns_view: *mut c_void, selection: &Selection, image_png: &[u8])
         NSPoint::new(at.x - size.width / 2.0, at.y - size.height / 2.0),
         NSSize::new(size.width, size.height),
     );
-    let contents: &AnyObject = &image;
-    // SAFETY: `setDraggingFrame:contents:` documents `contents` as an object
-    // the dragging item can render; an `NSImage` is the documented case.
-    unsafe { dragging.setDraggingFrame_contents(frame, Some(contents)) };
+
+    // One queue for the whole drag rather than one per item: Finder can ask for
+    // several promises at once, and this is what bounds the threads that answer
+    // them to what `NSOperationQueue` thinks the machine can carry.
+    let queue = NSOperationQueue::new();
+    let payload = selection.to_json();
+    let mut items = Vec::with_capacity(promises.len());
+    let mut keepers = Vec::with_capacity(promises.len());
+    for (index, promise) in promises.iter().enumerate() {
+        let keeper = PromiseKeeper::new(mtm, selection, promise, Arc::clone(fulfil), &queue);
+        let provider = PromisingProvider::new(mtm, promise, &keeper, &payload);
+        let writer: &ProtocolObject<dyn NSPasteboardWriting> = ProtocolObject::from_ref(&*provider);
+        let dragging = NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), writer);
+        // The image goes on the first item and nothing on the rest. Every item
+        // still needs a frame — one without it is an item AppKit cannot place —
+        // but repeating the picture would draw the same rendered row on top of
+        // itself once per file, which reads as a smudge rather than as a stack.
+        let contents: Option<&AnyObject> = if index == 0 { Some(&image) } else { None };
+        // SAFETY: `setDraggingFrame:contents:` documents `contents` as an
+        // object the dragging item can render, or nil for none; an `NSImage` is
+        // the documented case.
+        unsafe { dragging.setDraggingFrame_contents(frame, contents) };
+        items.push(dragging);
+        keepers.push(keeper);
+    }
 
     let source = {
         let this: Allocated<DragSource> = DragSource::alloc(mtm);
@@ -337,11 +645,14 @@ pub fn start_drag(ns_view: *mut c_void, selection: &Selection, image_png: &[u8])
 
     let event = drag_event(&window, at, view)?;
     let _session = view.beginDraggingSessionWithItems_event_source(
-        &NSArray::from_retained_slice(&[dragging]),
+        &NSArray::from_retained_slice(&items),
         &event,
         ProtocolObject::from_ref(&*source),
     );
     SOURCES.with_borrow_mut(|sources| sources.push(source));
+    // Only once the session is under way: a drag that could not start should
+    // not leave delegates behind waiting for a question nobody will ask.
+    KEEPERS.with_borrow_mut(|held| held.append(&mut keepers));
     Ok(())
 }
 
@@ -402,6 +713,39 @@ fn selection_type() -> Retained<NSPasteboardType> {
     NSString::from_str(SELECTION_TYPE)
 }
 
+/// Whether a type `AppKit` is asking about is ours.
+///
+/// Compared as a Rust string rather than with `isEqualToString:` so the
+/// comparison is the same one [`Selection`]'s own tests make.
+fn is_selection_type(kind: &NSPasteboardType) -> bool {
+    kind.to_string() == SELECTION_TYPE
+}
+
+/// The error a failed promise reports to whoever asked for the file.
+///
+/// A description rather than a bare code: Finder puts this sentence in front of
+/// the user, and "the operation couldn't be completed" is what it says when
+/// nobody supplies one. `NSLocalizedDescription` is spelled out rather than
+/// read from Foundation's exported constant, which would be an `extern static`
+/// and a fourth kind of `unsafe` in this file for a string that has not changed
+/// since Mac OS X 10.0.
+fn failure(why: &str) -> Retained<NSError> {
+    let key = NSString::from_str("NSLocalizedDescription");
+    let message = NSString::from_str(why);
+    let described: &AnyObject = &message;
+    let info = NSDictionary::from_slices(&[&*key], &[described]);
+    // SAFETY: `errorWithDomain:code:userInfo:` is unsafe in these bindings only
+    // because the dictionary's values are untyped; ours holds the key
+    // Foundation documents for that domain, mapped to an `NSString`.
+    unsafe {
+        NSError::errorWithDomain_code_userInfo(
+            &NSString::from_str("dev.excalibur.drag"),
+            1,
+            Some(&info),
+        )
+    }
+}
+
 /// The view behind a pointer from `tauri::Window::ns_view()`.
 ///
 /// # Errors
@@ -426,14 +770,22 @@ fn refused(why: &str) -> EngineError {
     EngineError::Unsupported(why.to_owned())
 }
 
+/// What can be tested here, and what cannot.
+///
+/// Everything below builds objects that are **not** main-thread-only, so it
+/// runs under `cargo test` like any other unit test. Everything that *is* —
+/// the drop target, the promise provider and its delegate — lives in
+/// `tests/promises.rs` instead, because libtest runs every `#[test]` on a
+/// thread it spawned and `MainThreadMarker::new()` is `None` there. A test that
+/// skipped itself on that condition would pass without executing, which is
+/// worse than not having it: this module used to have one.
 #[cfg(test)]
 mod tests {
-    use super::{selection_type, DropSurface};
-    use crate::drag::{DropEvent, Selection, SELECTION_TYPE};
-    use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{NSPasteboardItem, NSView};
-    use objc2_foundation::{NSRect, NSString};
-    use std::sync::{Arc, Mutex};
+    use super::selection_type;
+    use crate::drag::{Selection, SELECTION_TYPE};
+    use objc2::AnyThread;
+    use objc2_app_kit::NSPasteboardItem;
+    use objc2_foundation::NSString;
 
     fn selection() -> Selection {
         Selection {
@@ -484,41 +836,5 @@ mod tests {
     #[test]
     fn the_type_name_reaches_appkit_unchanged() {
         assert_eq!(selection_type().to_string(), SELECTION_TYPE);
-    }
-
-    /// Building a drop target, without a drag.
-    ///
-    /// A synthetic `performDragOperation:` needs a real `NSDraggingInfo`, and
-    /// only a live drag session produces one — there is no public way to build
-    /// it, so that half is the manual check recorded in the story's notes. What
-    /// *is* testable headlessly is which types the target claims: one that also
-    /// claimed `public.file-url` would take Finder's drops away from wry and
-    /// E13-S5's upload path would stop firing, silently.
-    #[test]
-    fn a_drop_target_claims_our_type_and_only_ours() {
-        let Some(mtm) = MainThreadMarker::new() else {
-            // `cargo test` runs each test on a spawned thread, and this whole
-            // module is main-thread-only by construction. Skipping is honest;
-            // pretending would mean constructing an `NSView` off the main
-            // thread, which is the undefined behaviour the marker exists to
-            // prevent.
-            return;
-        };
-        let seen: Arc<Mutex<Vec<DropEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = {
-            let seen = Arc::clone(&seen);
-            Arc::new(move |_label: &str, event: DropEvent| {
-                seen.lock().expect("not poisoned").push(event);
-            })
-        };
-        let content = NSView::initWithFrame(NSView::alloc(mtm), NSRect::ZERO);
-        let surface = DropSurface::new(mtm, &content, "main", sink);
-        let types: Vec<String> = surface
-            .registeredDraggedTypes()
-            .iter()
-            .map(|kind| kind.to_string())
-            .collect();
-        assert_eq!(types, vec![SELECTION_TYPE.to_owned()]);
-        assert!(seen.lock().expect("not poisoned").is_empty());
     }
 }

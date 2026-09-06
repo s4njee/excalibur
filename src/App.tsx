@@ -1533,6 +1533,11 @@ export default function App(props: {
     try {
       await backend.beginDrag(
         chosen.map((item) => item.path),
+        // Which of them are folders, because a file promise has to say so and
+        // a path cannot: `Dune` and `Dune.mkv` are told apart by the listing,
+        // not by the string. A folder promised as a file is a drop Finder
+        // accepts and then writes an empty file for.
+        chosen.filter((item) => item.kind === "dir").map((item) => item.path),
         await dragImage(chosen),
       );
     } catch (error) {

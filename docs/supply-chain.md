@@ -131,7 +131,8 @@ as a transitive dependency of these.
 | `blake3` | engine | E12-S1. The whole-file digest a staged xsync commit verifies. Already in the tree via `xsync-client`. |
 | `fs4` | engine | E21-S1. `statvfs` for the local backend's capacity. Already in the tree via `xsync-core`, and thin: it is a `FsStats` struct over `rustix::fs::statvfs`, with no `libc` and no code of its own on the platform paths. |
 | `trash` | engine *(target-gated)* | E21-S1. Moves a deleted file or folder to the platform's Trash. See the note below. |
-| `objc2`, `objc2-app-kit`, `objc2-foundation` | engine *(macOS only)* | E24-S2. Apple's drag and drop, for the one FFI module. Vetted bindings rather than hand-written `extern` blocks — the middle step of the preference order in "Decisions taken". All three were **already in the lock file** via Tauri, wry and `trash`, at the same versions, so this adds no package and no licence to the audit. See the note below. |
+| `objc2`, `objc2-app-kit`, `objc2-foundation` | engine *(macOS only)* | E24-S2, E24-S1. Apple's drag and drop, for the one FFI module. Vetted bindings rather than hand-written `extern` blocks — the middle step of the preference order in "Decisions taken". All three were **already in the lock file** via Tauri, wry and `trash`, at the same versions, so this adds no package and no licence to the audit. See the note below. |
+| `block2` | engine *(macOS only)* | E24-S1. The Objective-C block a file promise's delegate calls to say the file has landed. One function needs the type by name, so it is a direct dependency rather than a transitive one; it was **already in the lock file** via `objc2` and wry, at the same version. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync and SFTP integration tests. |
 
 ### On the xsync path dependencies, and the gate that was red
@@ -179,10 +180,10 @@ so it cannot reintroduce the failure from this side.
 
 ### The one `unsafe` module
 
-`crates/engine/src/drag/macos.rs` (E24-S2, 2026-09-06) is the first and so far
-only module in this tree to carry `#![allow(unsafe_code)]`. It is recorded here
-with the same detail a dependency gets, because that is what the rule in
-plan.md's "Decisions taken" asks for.
+`crates/engine/src/drag/macos.rs` (E24-S2 and E24-S1, 2026-09-06) is the first
+and so far only module in this tree to carry `#![allow(unsafe_code)]`. It is
+recorded here with the same detail a dependency gets, because that is what the
+rule in plan.md's "Decisions taken" asks for.
 
 **Why it exists.** A drag out of the file list has to put a *private pasteboard
 type* on an `NSDraggingSession` — `dev.excalibur.selection`, naming the mount and
@@ -194,24 +195,58 @@ was walked in full: there is no safe crate for this (`tauri-plugin-drag` drags
 step, so what is written by hand is the message sends that crate cannot express
 for a custom `NSView` subclass.
 
-**What the `unsafe` actually is.** Five blocks, each with a `// SAFETY:` note:
+**Why it grew for E24-S1.** Dragging *out* to Finder cannot put a file on the
+pasteboard, because there is no file: an item in the list lives on a share, and
+writing it out first would fetch every byte of a selection the user may be about
+to abandon over the Desktop. `NSFilePromiseProvider` is Apple's answer, and it
+has to be **subclassed** — a dragging item has exactly one pasteboard writer, so
+the promise and `dev.excalibur.selection` have to come from the same object or
+the drag is legible to Finder or to another Excalibur window but not both.
+
+**What the `unsafe` actually is.** Ten `unsafe` blocks and four `define_class!`
+invocations whose `#[unsafe(..)]` markers are assertions of their own. Every one
+of them carries a `// SAFETY:` note; grouped by what they do:
 
 | Where | What |
 |---|---|
 | `define_class!` for `DropSurface` | Declaring an `NSView` subclass and its `NSDraggingDestination` methods. The `#[unsafe(super(..))]` and `#[unsafe(method(..))]` markers are the macro's, asserting the superclass has no subclassing requirements and that each selector's signature matches AppKit's. |
 | `define_class!` for `DragSource` | The same, for an `NSObject` implementing `NSDraggingSource`. |
-| `msg_send![super(this), initWithFrame:]` / `init` | Calling the superclass's designated initialiser on a freshly allocated instance. |
-| `setDraggingFrame:contents:` | `contents` is typed `Option<&AnyObject>`; an `NSImage` is the documented case. |
+| `define_class!` for `PromiseKeeper` | The same, for an `NSObject` implementing `NSFilePromiseProviderDelegate`. Its note also records the one method AppKit deliberately calls off the main thread, and why the ivars it touches there are safe to read from one: they are plain Rust data behind a `Send + Sync` bound, taken by shared reference, and it touches no AppKit state. |
+| `define_class!` for `PromisingProvider` | An `NSFilePromiseProvider` subclass that appends our private type to the three `NSPasteboardWriting` methods rather than replacing what AppKit vends. |
+| `msg_send![super(this), initWithFrame:]` / `init` / `initWithFileType:delegate:` | Calling the superclass's designated initialiser on a freshly allocated instance. Three sites, one per class that has one. |
+| `msg_send![super(self), ..]` in the three overridden `NSPasteboardWriting` methods | Calling the implementation being overridden, with the arguments it was handed and the return type its binding declares. |
+| `setDraggingFrame:contents:` | `contents` is typed `Option<&AnyObject>`; an `NSImage` is the documented case, and `None` is the documented "no image". |
+| `NSError::errorWithDomain:code:userInfo:` | Unsafe in these bindings only because a userInfo dictionary is untyped. Ours holds the key Foundation documents for a localized description, mapped to an `NSString`. |
 | `view_at` | Turning the `*mut c_void` `tauri::Window::ns_view()` returns into `&NSView`. The pointer is the window's content view, alive for as long as the window, and the borrow never outlives the call it is passed to. |
 
+**One thing that is not `unsafe` and is worth the same attention.** The promise
+delegate is the only path from a drag to the transfer queue, and it runs Rust
+that can panic while Objective-C is the caller — which is undefined behaviour,
+and which would also leave Finder showing a copy that never finishes. It is
+wrapped in `catch_unwind`, and a panic becomes an error on the drop.
+
 **What contains it.** `crates/engine/src/drag/mod.rs` is a safe wrapper — three
-functions and four plain data types — and is all the rest of the tree can see.
-The payload's encoding, the phase and modifier vocabulary, and the refusal on
-non-macOS targets are testable without a window; the FFI itself has tests that
-build the pasteboard item and read the payload back, and that assert the drop
-target registers for our type and no other. What is *not* covered by a test is a
-real drag session: an `NSDraggingInfo` cannot be constructed without one. That
-half is a manual check, recorded in the story's notes.
+functions and half a dozen plain data types — and is all the rest of the tree
+can see. The payload's encoding, the phase and modifier vocabulary, the promise
+names and their UTIs, the folder a fulfilment is queued to, and the refusal on
+non-macOS targets are all testable without a window.
+
+The FFI's own objects are tested too, in `crates/engine/tests/promises.rs`,
+which is a **`harness = false`** binary rather than a set of `#[test]`
+functions. That is not a style choice: these objects are `MainThreadOnly`,
+libtest runs every `#[test]` on a thread it spawned, and a test that asks for a
+`MainThreadMarker` there can only skip itself — which is a test that passes
+without executing. This module used to have exactly that. `main` in a harnessed
+binary *is* the main thread, so those five checks now run: the drop target
+registers for our type and no other; the promise vends its own five
+`com.apple.pasteboard.promised-*` types **and** `dev.excalibur.selection` from
+one writer; the delegate turns Finder's URL into a request naming the right
+folder and Finder's own de-duplicated file name; the promised name is the row's;
+and the write never lands on the main queue.
+
+What is still *not* covered by a test is a real drag session: an
+`NSDraggingInfo` cannot be constructed without one, and neither can a drop onto
+Finder. That half is a manual check, recorded in the story's notes.
 
 **Threading.** AppKit's dragging protocols are `MainThreadOnly`. Every function
 in the wrapper returns an error off the main thread rather than doing something

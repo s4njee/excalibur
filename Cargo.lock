@@ -1495,6 +1495,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "block2",
  "dirs",
  "fs4",
  "keyring",

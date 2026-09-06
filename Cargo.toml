@@ -64,9 +64,20 @@ trash = "5"
 # the preference order in "Decisions taken" — and every one of these is already
 # in the lock file via Tauri, wry and `trash`, so this adds no package and no
 # licence to the audit. See docs/supply-chain.md.
+#
+# E24-S1 adds four feature names and no packages: `NSFilePromiseProvider` for
+# the promise and its delegate, `block2` for the completion handler that
+# delegate is handed, and `NSError`/`NSOperation`/`NSURL`/`NSDictionary` in
+# Foundation for what crosses that one method. Turning a feature on in a crate
+# already in the lock file adds nothing to audit.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFilePromiseProvider", "NSGraphics", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSObject", "NSOperation", "NSString", "NSURL"] }
+# The Objective-C block the file promise delegate has to call to say the file
+# has landed. `objc2-app-kit`'s own `block2` feature is what declares it, and
+# calling it needs the type by name, so this is a direct dependency of one
+# function. Already in the lock file via wry and objc2.
+block2 = "0.6"
 zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 
