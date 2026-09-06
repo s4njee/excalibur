@@ -41,6 +41,12 @@ libc = { workspace = true, optional = true }
 # Excalibur does not depend on, and someone else's uncommitted work. Format with
 # `cargo fmt -p excalibur-engine -p excalibur-cli -p excalibur` instead.
 xsync-client = { path = "../../../xsync/crates/xsync-client" }
+# The transfer engine itself (E22-S1): `run_client_push` / `run_client_pull`
+# drive a Local↔xsync transfer over an `ssh` session Excalibur spawns and whose
+# host-key policy Excalibur keeps. Already in the tree — `xsync-client` depends
+# on it — so this promotes a transitive dependency to a named one and adds no
+# packages. See `../xsync/docs/library.md` and docs/supply-chain.md.
+xsync-core = { path = "../../../xsync/crates/xsync-core" }
 serde = { workspace = true }
 # The transfer queue is persisted as JSON (E13-S1), so it survives a restart.
 serde_json = { workspace = true }
@@ -52,6 +58,13 @@ tokio = { workspace = true }
 # falls back to a real delete and says so in the mount's options.
 [target.'cfg(any(windows, all(unix, not(target_os = "ios"), not(target_os = "android"))))'.dependencies]
 trash = { workspace = true }
+
+# The native drag (E24-S2). macOS-only: E24-S4 adds the GTK/XDG side, which is
+# a different set of crates, so neither is a dependency of the other platform.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
 
 [features]
 default = []

@@ -13,8 +13,8 @@ the same discipline, and this file follows its format.
   and `src-tauri` additionally `#![forbid(unsafe_code)]`s. `deny` is the
   presumption rather than an absolute: a module may allow it for itself where no
   adequate safe crate exists, under the rules in plan.md's "Decisions taken".
-  **No module does today** — this section is where the first one gets recorded,
-  with the same detail a new dependency gets.
+  **Exactly one module does**, since 2026-09-06 — see [The one `unsafe`
+  module](#the-one-unsafe-module) below.
 - `cargo audit` and `cargo deny check` run on every push and pull request and
   fail on any finding not explicitly accepted, with a reason, in `deny.toml`.
 - Everything comes from crates.io. Unknown registries and git sources are denied
@@ -112,6 +112,7 @@ as a transitive dependency of these.
 |---|---|---|
 | `tauri`, `tauri-build`, `tauri-plugin-store` | `src-tauri` | The shell: window, IPC, and persisted bookmarks. |
 | `xsync-client` | engine | The xsync v3 backend. Path dependency on the sibling repo until its `v3` branch is pushed (E7-S0). |
+| `xsync-core` | engine | E22-S1. `run_client_push` / `run_client_pull` — the transfer engine itself, driven over an `ssh` session Excalibur spawns and whose host-key policy Excalibur keeps. **Already in the tree**: `xsync-client` depends on it, so naming it directly promotes a transitive dependency and adds no package and no licence. See the note below for what a path dependency on an uncommitted tree costs. |
 | `tokio` | engine | Async runtime the backends and session manager are written against. |
 | `async-trait` | engine, cli | `ShareBackend`/`Connector` need async methods on an object-safe trait. The CLI took it too for `xcal get`, which implements the worker's `BackendSource` (E13-S7); nothing new entered the tree. |
 | `serde`, `serde_json` | both | DTOs across IPC, and the CLI's fixture output. |
@@ -129,7 +130,91 @@ as a transitive dependency of these.
 | `blake3` | engine | E12-S1. The whole-file digest a staged xsync commit verifies. Already in the tree via `xsync-client`. |
 | `fs4` | engine | E21-S1. `statvfs` for the local backend's capacity. Already in the tree via `xsync-core`, and thin: it is a `FsStats` struct over `rustix::fs::statvfs`, with no `libc` and no code of its own on the platform paths. |
 | `trash` | engine *(target-gated)* | E21-S1. Moves a deleted file or folder to the platform's Trash. See the note below. |
+| `objc2`, `objc2-app-kit`, `objc2-foundation` | engine *(macOS only)* | E24-S2. Apple's drag and drop, for the one FFI module. Vetted bindings rather than hand-written `extern` blocks — the middle step of the preference order in "Decisions taken". All three were **already in the lock file** via Tauri, wry and `trash`, at the same versions, so this adds no package and no licence to the audit. See the note below. |
 | `tempfile` | engine (dev) | Scratch exports for the xsync and SFTP integration tests. |
+
+### On `xsync-core`, and one red gate
+
+`xsync-core` is `MIT OR Apache-2.0`, like `xsync-client`, and its twenty
+dependencies — `blake3`, `zstd`, `redb`, `ignore`, `rustix`, `filetime`,
+`globset` and the rest — were **every one of them already resolved in
+`Cargo.lock`** before this story, because `xsync-client` depends on the same
+crate. The package count does not move.
+
+Two things about it are worth writing down rather than leaving to be
+rediscovered.
+
+**The tree it points at is not committed.** `xsync-client`'s row says "until its
+`v3` branch is pushed", which understates it: `xsync-core` currently depends on
+`xsync-endpoint`, a crate that is *untracked* in the xsync repository. So a
+build of Excalibur today depends on files that exist on one machine and in no
+history. That is a property of the sibling-repo arrangement E7-S0 exists to end,
+not something E22-S1 introduced, but E22-S1 is the story that made the
+dependency direct and it should be said plainly here.
+
+**`cargo deny check` fails on `bans`, and did before this change.**
+
+```
+error[wildcard]: found 1 wildcard dependency for crate 'xsync-core'.
+allow-wildcard-paths is enabled, but does not apply to public crates as
+crates.io disallows path dependencies.
+  ┌─ ../xsync/crates/xsync-core/Cargo.toml:48:18
+48 │ xsync-endpoint = { path = "../xsync-endpoint" }
+```
+
+`allow-wildcard-paths` excuses a versionless path dependency only on a crate
+that is not publishable. `xsync-core` and `xsync-endpoint` both lack
+`publish = false`, so cargo-deny treats `xsync-core` as public and refuses the
+line. It reaches Excalibur through `xsync-client`, and removing the direct
+`xsync-core` dependency does not clear it — that was checked, not assumed.
+
+It is deliberately **not** papered over here. The fix is one word in the sibling
+repo — `version = "0.1.0"` beside that path, which is exactly what
+`xsync-client` already writes for its own dependency on `xsync-core` — or
+`publish = false` on the two crates. The alternative, a `skip` in this repo's
+`deny.toml`, would switch off the check whose stated purpose is "to catch a
+wildcard on a *published* crate", which is precisely the case it is now
+catching. So the gate stays red and honest until xsync takes the one-word fix.
+
+### The one `unsafe` module
+
+`crates/engine/src/drag/macos.rs` (E24-S2, 2026-09-06) is the first and so far
+only module in this tree to carry `#![allow(unsafe_code)]`. It is recorded here
+with the same detail a dependency gets, because that is what the rule in
+plan.md's "Decisions taken" asks for.
+
+**Why it exists.** A drag out of the file list has to put a *private pasteboard
+type* on an `NSDraggingSession` — `dev.excalibur.selection`, naming the mount and
+the paths — so that a second Excalibur window can tell an Excalibur drag from a
+Finder one. Tauri's own drag events carry OS file paths and nothing else, and a
+webview cannot start a drag another webview will receive. The preference order
+was walked in full: there is no safe crate for this (`tauri-plugin-drag` drags
+*files* and cannot write a private type), and `objc2-app-kit` is the vetted-FFI
+step, so what is written by hand is the message sends that crate cannot express
+for a custom `NSView` subclass.
+
+**What the `unsafe` actually is.** Five blocks, each with a `// SAFETY:` note:
+
+| Where | What |
+|---|---|
+| `define_class!` for `DropSurface` | Declaring an `NSView` subclass and its `NSDraggingDestination` methods. The `#[unsafe(super(..))]` and `#[unsafe(method(..))]` markers are the macro's, asserting the superclass has no subclassing requirements and that each selector's signature matches AppKit's. |
+| `define_class!` for `DragSource` | The same, for an `NSObject` implementing `NSDraggingSource`. |
+| `msg_send![super(this), initWithFrame:]` / `init` | Calling the superclass's designated initialiser on a freshly allocated instance. |
+| `setDraggingFrame:contents:` | `contents` is typed `Option<&AnyObject>`; an `NSImage` is the documented case. |
+| `view_at` | Turning the `*mut c_void` `tauri::Window::ns_view()` returns into `&NSView`. The pointer is the window's content view, alive for as long as the window, and the borrow never outlives the call it is passed to. |
+
+**What contains it.** `crates/engine/src/drag/mod.rs` is a safe wrapper — three
+functions and four plain data types — and is all the rest of the tree can see.
+The payload's encoding, the phase and modifier vocabulary, and the refusal on
+non-macOS targets are testable without a window; the FFI itself has tests that
+build the pasteboard item and read the payload back, and that assert the drop
+target registers for our type and no other. What is *not* covered by a test is a
+real drag session: an `NSDraggingInfo` cannot be constructed without one. That
+half is a manual check, recorded in the story's notes.
+
+**Threading.** AppKit's dragging protocols are `MainThreadOnly`. Every function
+in the wrapper returns an error off the main thread rather than doing something
+undefined, so the shell has to say `run_on_main_thread` out loud.
 
 ### On `sha2`, `base64` and `dirs`
 

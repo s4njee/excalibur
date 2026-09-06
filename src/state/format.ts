@@ -173,6 +173,16 @@ export function formatRate(bytesPerSecond: number): string {
  * `41.2 / 61.7 GB · 112 MB/s · 3m 04s` while running, `queued` while waiting,
  * `done · 84 KB` when finished. Anything it cannot say it leaves out rather
  * than filling with a placeholder — a row reading `· — · —` is noise.
+ *
+ * A finished row has two more shapes since E22-S1, and both are the engine's
+ * word rather than this function's invention:
+ *
+ * - `verified · 84 KB` when every byte that landed was checked against a
+ *   digest the source computed. Only a transfer through xsync's engine can
+ *   say that; a chunk loop that never hashed anything says `done`, and the
+ *   difference between the two words is the whole point of having both.
+ * - `done · unchanged` when the copy found the file already there. Nothing
+ *   moved and nothing failed, which is neither `done · 0 B` nor an error.
  */
 export function formatTransferStatus(transfer: {
   status: string;
@@ -180,6 +190,8 @@ export function formatTransferStatus(transfer: {
   bytesTotal: number;
   rate: number | null;
   etaSeconds: number | null;
+  verified?: boolean;
+  note?: string | null;
 }): string {
   switch (transfer.status) {
     case "queued":
@@ -188,8 +200,12 @@ export function formatTransferStatus(transfer: {
       return "paused";
     case "cancelled":
       return "cancelled";
-    case "done":
-      return `done · ${formatSize(transfer.bytesDone)}`;
+    case "done": {
+      const word = transfer.verified ? "verified" : "done";
+      // The note replaces the size rather than joining it: "done · unchanged ·
+      // 84 KB" reads as though 84 KB moved, which is the one thing it did not.
+      return `${word} · ${transfer.note ?? formatSize(transfer.bytesDone)}`;
+    }
     case "failed":
       return "failed";
     default:

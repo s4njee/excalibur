@@ -107,6 +107,18 @@ export interface Transfer {
   status: TransferStatus;
   error: string | null;
   queuedAtMs: number;
+  /** The share this row moves bytes through, when it names one. */
+  mount?: string | null;
+  /**
+   * Whether every byte that landed was checked against the source's digest.
+   *
+   * Set only by the route through xsync's engine (E22-S1). A finished row says
+   * `verified` instead of `done` when it is true, and the two words are claims
+   * of different strength rather than decoration.
+   */
+  verified?: boolean;
+  /** A short phrase a finished row shows instead of a size, e.g. `unchanged`. */
+  note?: string | null;
 }
 
 /** A destination that already exists, awaiting a decision. */

@@ -33,6 +33,7 @@ use tokio::sync::{RwLock, Semaphore};
 
 use super::queue::TransferQueue;
 use super::rate::{backoff, Progress};
+use super::xsync_engine::XsyncRoute;
 use super::{Direction, Status, Transfer};
 use crate::backend::{read_handle, ReadHandle, ShareBackend, WriteMode};
 use crate::error::{EngineError, Result};
@@ -72,6 +73,34 @@ const MAX_ATTEMPTS: u32 = 5;
 pub trait BackendSource: Send + Sync {
     /// The backend to move bytes through, or why there is none.
     async fn active(&self) -> Result<Arc<dyn ShareBackend>>;
+
+    /// The backend for one named mount, falling back to [`Self::active`].
+    ///
+    /// A row carries its mount since E24-S2, because a drag between two windows
+    /// enqueues a transfer on a share that is *not* the one the app most
+    /// recently touched. The default keeps every caller that has only one mount
+    /// — the CLI, the worker's own tests — saying nothing about it.
+    async fn backend_for(&self, mount: Option<&str>) -> Result<Arc<dyn ShareBackend>> {
+        let _ = mount;
+        self.active().await
+    }
+
+    /// How to reach `mount` as an xsync export, when it is one (E22-S1).
+    ///
+    /// `Some` is what routes a transfer through xsync's own engine instead of
+    /// this worker's chunk loop. It is a separate question from
+    /// [`Self::backend_for`] because the answers are different objects: the
+    /// backend is a live v3 browse session, and a transfer needs a *second*
+    /// process speaking the v1/v2 sync grammar — one `xs --server` serves one
+    /// session and the role is fixed at the handshake.
+    ///
+    /// The default is `None`, so a caller with no session manager behind it —
+    /// the worker's own tests, a mock — keeps the byte-moving it already had
+    /// without having to say anything about xsync.
+    async fn xsync_route(&self, mount: Option<&str>) -> Option<XsyncRoute> {
+        let _ = mount;
+        None
+    }
 }
 
 /// Runs transfers from a queue.
@@ -308,12 +337,161 @@ impl Worker {
             .await;
     }
 
+    /// Move one transfer once, by whichever route its pair calls for.
+    ///
+    /// **The routing rule, and the whole of it (E22-S1):** a transfer whose
+    /// share end is an xsync mount and whose other end is a folder on this
+    /// machine goes through xsync's engine — with one carve-out, below. Every
+    /// other pair — NFS, SMB, SFTP, a local folder, and any pair where the
+    /// share cannot answer [`BackendSource::xsync_route`] — keeps the
+    /// `download`/`upload` this worker has always run.
+    ///
+    /// There is no fallback *between* the two once a route is chosen: an xsync
+    /// session that fails reports its failure rather than quietly re-running
+    /// the transfer a slower way, because a transfer that succeeded by a route
+    /// the user was not told about is a transfer whose progress, resume and
+    /// verification claims were all about something else.
+    ///
+    /// **The carve-out: pulling one file.** A session's root is the `--server`
+    /// argument, and for a single file that root is the file. `xs --server`
+    /// cannot serve a *file* as the source of a pull: the scan advertises the
+    /// entry, the read resolves it against the root again — the `<file>/<file>`
+    /// mistake xsync already fixed on its multi-stream push — and the session
+    /// either ends having moved nothing or hangs until the peer drops. Both
+    /// were reproduced against the current `xs`; the second cost half a minute
+    /// and the first reported success. So a one-file pull takes `download`,
+    /// which is measured, verified per chunk by the v3 protocol, and works.
+    /// Pushes of single files are unaffected — the root there is the
+    /// destination *directory* — and trees go through the planner in both
+    /// directions, which is what the AC is about.
+    ///
+    /// E22-S2 collapses all of this: once `ShareBackend` is an xsync endpoint,
+    /// every pair takes the top branch and `download`/`upload` are deleted.
     async fn attempt(&self, transfer: &Transfer, stop: &AtomicBool) -> Result<()> {
-        let backend = self.backends.active().await?;
+        if let Some(route) = self.backends.xsync_route(transfer.mount.as_deref()).await {
+            if let Some(remote_is_dir) = self.routable(transfer).await {
+                return self
+                    .through_xsync(transfer, &route, remote_is_dir, stop)
+                    .await;
+            }
+        }
+        let backend = self.backends.backend_for(transfer.mount.as_deref()).await?;
         match transfer.direction {
             Direction::Down => self.download(transfer, &backend, stop).await,
             Direction::Up => self.upload(transfer, &backend, stop).await,
         }
+    }
+
+    /// Whether the xsync route can take this transfer, and what its far end is.
+    ///
+    /// `Some(remote_is_dir)` routes it; `None` sends it to the chunk loop. The
+    /// question is only ever asked of a pair that already has a route, so the
+    /// one `None` it returns is the single-file pull described on
+    /// [`Self::attempt`].
+    ///
+    /// A `stat` that fails is treated as "not a directory", which sends a pull
+    /// to `download` — the path that will produce a real error for whatever is
+    /// actually wrong with that file.
+    async fn routable(&self, transfer: &Transfer) -> Option<bool> {
+        if transfer.direction == Direction::Up {
+            // The far end is the destination and the session's root is its
+            // parent directory either way, so nothing has to be asked.
+            return Some(false);
+        }
+        let backend = self
+            .backends
+            .backend_for(transfer.mount.as_deref())
+            .await
+            .ok()?;
+        let is_dir = backend
+            .stat(&transfer.source_path)
+            .await
+            .is_ok_and(|attrs| attrs.kind == crate::backend::EntryKind::Dir);
+        is_dir.then_some(true)
+    }
+
+    /// Run one transfer through xsync's push/pull engine (E22-S1).
+    ///
+    /// The queue is not pre-walked for this pair: a selected directory is one
+    /// row, and xsync's planner does the walk. That is the AC, and it is also
+    /// the only way the numbers mean anything — a walk this side would stat
+    /// every file over the browse session before the transfer session had sent
+    /// a byte, and then the planner would walk it again.
+    async fn through_xsync(
+        &self,
+        transfer: &Transfer,
+        route: &super::xsync_engine::XsyncRoute,
+        remote_is_dir: bool,
+        stop: &AtomicBool,
+    ) -> Result<()> {
+        // The stop flag the worker already owns, shared with the session so a
+        // cancel reaches the `ssh` child. `Worker::stop` sets it; nothing here
+        // needs a second channel.
+        let flag = self.stopping.read().await.get(&transfer.id).map_or_else(
+            || Arc::new(AtomicBool::new(stop.load(Ordering::SeqCst))),
+            Arc::clone,
+        );
+
+        // Progress arrives on the engine's own schedule and is already
+        // throttled by the session; this only writes it down.
+        let queue = Arc::clone(&self.queue);
+        let id = transfer.id.clone();
+        let mut rate = Progress::new();
+        let (updates, mut written) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<u64>)>();
+        let pump = tokio::spawn(async move {
+            while let Some((done, total)) = written.recv().await {
+                let now = Instant::now();
+                rate.sample(done, now);
+                let speed = rate.rate();
+                let eta = total.and_then(|total| rate.eta_seconds(done, total));
+                queue
+                    .update(&id, |item| {
+                        if item.status != Status::Running {
+                            return;
+                        }
+                        item.bytes_done = done;
+                        item.rate = speed;
+                        item.eta_seconds = eta;
+                        // `Planned` is where a directory row learns its size:
+                        // until the planner has scanned, nothing on this side
+                        // knows how big the job is, and a bar at zero for a
+                        // whole transfer looks broken.
+                        if let Some(total) = total {
+                            if total > 0 {
+                                item.bytes_total = total;
+                            }
+                        }
+                    })
+                    .await;
+            }
+        });
+
+        let settled =
+            super::xsync_engine::run(route, transfer, remote_is_dir, flag, move |done, total| {
+                let _ = updates.send((done, total));
+            })
+            .await;
+        // Dropped by the closure going out of scope with `run`; awaiting the
+        // pump here is what makes the last update land before the row settles.
+        let _ = pump.await;
+
+        let settled = settled?;
+        if settled.stopped {
+            // Paused or cancelled. The row's status is the user's and this
+            // must not overwrite it.
+            return Ok(());
+        }
+        self.queue
+            .update(&transfer.id, |item| {
+                if item.status != Status::Running {
+                    return;
+                }
+                item.bytes_done = settled.bytes;
+                item.verified = settled.verified;
+                item.note.clone_from(&settled.note);
+            })
+            .await;
+        Ok(())
     }
 
     /// Share to disk: `<dest>.part`, fsync, rename.

@@ -21,10 +21,12 @@ use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 use excalibur_engine::backend::smb::{SmbBackend, SmbTarget};
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
+use excalibur_engine::drag::{self, Selection};
 use excalibur_engine::transfer::conflict::{self, Conflict};
 use excalibur_engine::transfer::plan;
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
+use excalibur_engine::transfer::xsync_engine::{SshEndpoint, XsyncRemote, XsyncRoute};
 use excalibur_engine::{
     hostkeys, Connector, Direction, EditSession, EditStore, EngineError, KeyringStore, KnownHosts,
     Listing, MountInfo, Result, SaveOutcome, Secret, SecretStore, SessionManager, Transfer,
@@ -224,12 +226,86 @@ fn parse_identity(field: Option<&str>) -> Identity {
 /// window it is exactly what it meant before.
 struct AppMount {
     sessions: Arc<SessionManager>,
+    /// The app's accepted SSH host keys.
+    ///
+    /// Held here, not just on the connector, because a transfer through
+    /// xsync's engine spawns its *own* `ssh` (E22-S1) and it must enforce the
+    /// same trust decision the browse session did. A second `ssh` that fell
+    /// back to OpenSSH's own store would be a second, different policy.
+    known_hosts: KnownHosts,
 }
 
 #[async_trait]
 impl BackendSource for AppMount {
     async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
         self.sessions.recent_backend().await
+    }
+
+    /// The share a row names, rather than the one the app last touched.
+    ///
+    /// With two windows open, "the active mount" is not a thing the worker can
+    /// ask for (E23-S1): a drag from one window into another (E24-S2) enqueues a
+    /// transfer on a share that is by definition *not* the one most recently
+    /// activated, and resolving it late would read from whichever window the
+    /// user happened to click in last. Rows queued before this field existed
+    /// still fall back, so a restored queue keeps working.
+    async fn backend_for(&self, mount: Option<&str>) -> Result<Arc<dyn ShareBackend>> {
+        let Some(id) = mount else {
+            return self.sessions.recent_backend().await;
+        };
+        self.sessions
+            .backend(id)
+            .await
+            .ok_or_else(|| EngineError::Disconnected(format!("{id} is not connected")))
+    }
+
+    /// The recipe for a second `ssh` to an xsync export (E22-S1).
+    ///
+    /// `None` for every other protocol, and that `None` is the routing rule:
+    /// the worker asks this first and falls back to its own chunk loop when
+    /// there is no answer. So NFS, SMB, SFTP and a local folder are unchanged
+    /// by this story without a single mention of them here.
+    ///
+    /// A mount that is not `Ready` is deliberately still answered. The
+    /// transfer opens its own process and does not use the browse session at
+    /// all, so a mount that is reconnecting can still move bytes — and the
+    /// failure, if the host really is gone, is `ssh`'s own and reads better
+    /// than "not connected".
+    async fn xsync_route(&self, mount: Option<&str>) -> Option<XsyncRoute> {
+        let id = match mount {
+            Some(id) => id.to_owned(),
+            None => self.sessions.recent().await?,
+        };
+        let spec = self.sessions.spec(&id).await?;
+        if spec.protocol != Protocol::Xsync {
+            return None;
+        }
+        // The mount's own answer, not what the user asked for at connect time:
+        // `writable` is the one derived value every write is gated on, and on
+        // this route it is the *only* gate — `xs --server --read-only` does not
+        // stop a v1/v2 push.
+        let mount_info = self.sessions.mount_info(&id).await;
+        Some(XsyncRoute {
+            remote: XsyncRemote::Ssh(SshEndpoint {
+                host: spec.host.clone(),
+                port: spec.port.unwrap_or(hostkeys::DEFAULT_SSH_PORT),
+                username: spec.username.clone(),
+                // The app's own trust store, so the transfer's `ssh` enforces
+                // exactly the decision the user made in the trust prompt — the
+                // same file, the same `StrictHostKeyChecking=yes`, the same
+                // `BatchMode`. `hostkeys::verify` already ran when the mount
+                // was made; a key that changed since then is refused by `ssh`
+                // here rather than silently accepted.
+                known_hosts: self.known_hosts.path().to_path_buf(),
+                rsh: None,
+            }),
+            export_root: spec.share.clone(),
+            writable: mount_info.as_ref().is_some_and(|info| info.writable),
+            reason: mount_info.map_or_else(
+                || "the mount has not reported its access yet".to_owned(),
+                |info| info.reason,
+            ),
+        })
     }
 }
 
@@ -269,6 +345,36 @@ impl AppState {
     async fn backend(&self, window: &tauri::Window) -> Result<Arc<dyn ShareBackend>> {
         self.sessions.active_backend(window.label()).await
     }
+
+    /// A named mount and its backend, defaulting to the calling window's.
+    ///
+    /// The id comes back with the backend because every queue row now records
+    /// which share it moves bytes through, and resolving the id here — once —
+    /// is what stops a caller stamping a row with one mount and planning it
+    /// against another.
+    ///
+    /// `mount` is `None` for every caller that means "this window": Download,
+    /// Upload, the conflict check behind both. It is `Some` only for a drop
+    /// carrying another window's selection (E24-S2), where the source share is
+    /// named in the payload rather than implied by who is asking.
+    async fn mount_and_backend(
+        &self,
+        window: &tauri::Window,
+        mount: Option<&str>,
+    ) -> Result<(String, Arc<dyn ShareBackend>)> {
+        let Some(id) = mount
+            .map(str::to_owned)
+            .or(self.sessions.active(window.label()).await)
+        else {
+            return Err(EngineError::Disconnected("no share is mounted".to_owned()));
+        };
+        let backend = self
+            .sessions
+            .backend(&id)
+            .await
+            .ok_or_else(|| EngineError::Disconnected(format!("{id} is not connected")))?;
+        Ok((id, backend))
+    }
 }
 
 /// Tell every window on this window's mount that its listing changed.
@@ -286,10 +392,20 @@ async fn announce_listing(sessions: &SessionManager, window: &tauri::Window) {
     let Some(id) = sessions.active(window.label()).await else {
         return;
     };
-    for label in sessions.windows_on(&id).await {
+    announce_listing_on(sessions, window, &id).await;
+}
+
+/// The same, for a mutation on a share the calling window is not showing.
+///
+/// A drop can change a share that no window in this app has in front of it —
+/// a move onto a sidebar row for a mount another window holds (E24-S2) — and
+/// telling the *caller's* windows would refresh the wrong lists while leaving
+/// the changed one stale.
+async fn announce_listing_on(sessions: &SessionManager, window: &tauri::Window, id: &str) {
+    for label in sessions.windows_on(id).await {
         let _ = window
             .app_handle()
-            .emit_to(label.as_str(), LISTING_CHANGED, &id);
+            .emit_to(label.as_str(), LISTING_CHANGED, id);
     }
 }
 
@@ -562,13 +678,15 @@ async fn rename(
     from: String,
     to: String,
     replace: bool,
+    mount: Option<String>,
 ) -> std::result::Result<(), CommandError> {
-    state
-        .backend(&window)
-        .await?
-        .rename(&from, &to, replace)
-        .await?;
-    announce_listing(&state.sessions, &window).await;
+    // `mount` is given only by a drop from another window onto a share this
+    // window is not the one looking at — a sidebar row for a mount someone
+    // else has open (E24-S2). A move is a `rename` on one share, and the share
+    // is the one the *items* are on, not the one the window happens to show.
+    let (id, backend) = state.mount_and_backend(&window, mount.as_deref()).await?;
+    backend.rename(&from, &to, replace).await?;
+    announce_listing_on(&state.sessions, &window, &id).await;
     Ok(())
 }
 
@@ -613,8 +731,12 @@ async fn enqueue_downloads(
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     destination: String,
+    mount: Option<String>,
 ) -> std::result::Result<Vec<String>, CommandError> {
-    let backend = state.backend(&window).await?;
+    // `mount` names the share the *paths* are on. Absent for Download, where it
+    // is this window's; present for a drop carrying another window's selection
+    // (E24-S2), where the answer is in the payload and not in who is asking.
+    let (mount, backend) = state.mount_and_backend(&window, mount.as_deref()).await?;
     let root = std::path::PathBuf::from(destination.trim_end_matches('/'));
     // A directory expands to one row per file (E13-S4). The walk is the
     // engine's, so it can be tested without a window; the sizes it carries
@@ -645,13 +767,16 @@ async fn enqueue_downloads(
         let id = new_id();
         state
             .transfers
-            .add(Transfer::new(
-                id.clone(),
-                Direction::Down,
-                file.source,
-                file.destination.to_string_lossy().into_owned(),
-                file.size,
-            ))
+            .add(
+                Transfer::new(
+                    id.clone(),
+                    Direction::Down,
+                    file.source,
+                    file.destination.to_string_lossy().into_owned(),
+                    file.size,
+                )
+                .on_mount(&mount),
+            )
             .await;
         ids.push(id);
     }
@@ -694,12 +819,21 @@ async fn report_problem(
 }
 
 /// Queue an upload of each local path into `destination` on the share.
+///
+/// `mount` names the share `destination` is on: absent for Upload and for a
+/// Finder drop, both of which mean this window's, and present for a drop from
+/// another window (E24-S2). It is recorded on every row rather than resolved
+/// when the worker gets there, because between the enqueue and the start the
+/// user can put a different share in front of themselves.
 #[tauri::command]
 async fn enqueue_uploads(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     destination: String,
+    mount: Option<String>,
 ) -> std::result::Result<Vec<String>, CommandError> {
+    let (mount, _) = state.mount_and_backend(&window, mount.as_deref()).await?;
     let mut ids = Vec::new();
     for path in paths {
         let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
@@ -712,7 +846,7 @@ async fn enqueue_uploads(
         let id = new_id();
         state
             .transfers
-            .add(Transfer::new(id.clone(), Direction::Up, path, dest, size))
+            .add(Transfer::new(id.clone(), Direction::Up, path, dest, size).on_mount(&mount))
             .await;
         ids.push(id);
     }
@@ -801,8 +935,12 @@ async fn check_conflicts(
     paths: Vec<String>,
     destination: String,
     upload: bool,
+    mount: Option<String>,
 ) -> std::result::Result<Vec<Conflict>, CommandError> {
-    let backend = state.backend(&window).await?;
+    // The remote side of the check, which is the destination for an upload and
+    // the source for a download. Named explicitly by a cross-window drop, and
+    // this window's for everything else.
+    let (_, backend) = state.mount_and_backend(&window, mount.as_deref()).await?;
     let mut conflicts = Vec::new();
     for path in paths {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
@@ -1093,6 +1231,126 @@ async fn new_window(
         host_key: None,
     })?;
     Ok(label)
+}
+
+/// Start a native drag of this window's selection (E24-S2).
+///
+/// `image` is the drag image the webview rendered, as PNG **bytes**. Never a
+/// path: an item on a share has no local file to point at, and writing one out
+/// to name it would be a fetch nobody asked for.
+///
+/// What actually crosses to `AppKit` is one pasteboard type,
+/// `dev.excalibur.selection`, carrying the mount, the paths and this window's
+/// label. Nothing else — E24-S1 adds the file promises that let the same drag
+/// end in Finder.
+#[tauri::command]
+async fn begin_drag(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    image: Vec<u8>,
+) -> std::result::Result<(), CommandError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let Some(mount) = state.sessions.active(window.label()).await else {
+        return Err(CommandError::from(EngineError::Disconnected(
+            "no share is mounted".to_owned(),
+        )));
+    };
+    let selection = Selection {
+        mount,
+        paths,
+        window: window.label().to_owned(),
+    };
+    let app = window.app_handle().clone();
+    let source = window.label().to_owned();
+
+    // AppKit's dragging protocols are main-thread-only, and a Tauri command
+    // runs on the async runtime. The hop is awaited rather than fired and
+    // forgotten so a drag that could not start says so on the row the user just
+    // grabbed, instead of looking like a gesture that was not recognised.
+    let (done, wait) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = done.send(open_drag(&handle, &source, &selection, &image));
+    })
+    .map_err(|error| drag_failed(&format!("could not reach the main thread: {error}")))?;
+    wait.await
+        .map_err(|_| drag_failed("the main thread dropped the drag"))?
+        .map_err(CommandError::from)
+}
+
+/// Install a drop target on every window, then begin the session. Main thread.
+///
+/// Every window, including the one the drag starts in: a drop back onto the
+/// source window's own list — into a folder row, or onto the sidebar — is a
+/// move like any other, and a source window that could not receive its own drag
+/// would make the commonest gesture in a file manager the one that does
+/// nothing. Windows that have no native view yet are skipped rather than
+/// failing the drag; one window mid-creation must not stop a drag in another.
+#[cfg(target_os = "macos")]
+fn open_drag(
+    app: &tauri::AppHandle,
+    source: &str,
+    selection: &Selection,
+    image: &[u8],
+) -> excalibur_engine::error::Result<()> {
+    // Defensive: a drag whose end we somehow missed would leave an invisible
+    // view over a window, swallowing clicks. Cheap to redo, expensive to debug.
+    drag::remove_drop_targets();
+
+    let handle = app.clone();
+    let sink: drag::DropSink = Arc::new(move |label: &str, event: drag::DropEvent| {
+        // To *that* window's webview, never broadcast: two windows would
+        // otherwise both highlight a row for a pointer that is over one of them
+        // (E23-S1's rule, applied to a third event stream).
+        let name = match event.phase {
+            drag::Phase::Over => "drag://over",
+            drag::Phase::Drop => "drag://drop",
+            drag::Phase::Leave => "drag://leave",
+        };
+        let _ = handle.emit_to(label, name, &event);
+    });
+
+    let mut from = None;
+    for (label, other) in app.webview_windows() {
+        let Ok(view) = other.ns_view() else { continue };
+        drag::install_drop_target(&label, view, Arc::clone(&sink))?;
+        if label == source {
+            from = Some(view);
+        }
+    }
+    let Some(view) = from else {
+        drag::remove_drop_targets();
+        return Err(EngineError::Unsupported(
+            "the window that started the drag has no native view".to_owned(),
+        ));
+    };
+    drag::start_drag(view, selection, image)
+}
+
+/// Linux gets this with E24-S4; until then a drag is a gesture that does nothing.
+#[cfg(not(target_os = "macos"))]
+fn open_drag(
+    app: &tauri::AppHandle,
+    source: &str,
+    selection: &Selection,
+    image: &[u8],
+) -> excalibur_engine::error::Result<()> {
+    let _ = (app, source, selection, image);
+    Err(EngineError::Unsupported(
+        "dragging between windows is macOS-only until E24-S4".to_owned(),
+    ))
+}
+
+fn drag_failed(why: &str) -> CommandError {
+    CommandError {
+        message: why.to_owned(),
+        surface: excalibur_engine::error::Surface::Banner,
+        transient: false,
+        host_key: None,
+    }
 }
 
 /// Build one browser window, on a mount and a folder, optionally at a position.
@@ -1445,6 +1703,7 @@ pub fn run() {
         Arc::clone(&queue),
         Arc::new(AppMount {
             sessions: Arc::clone(&sessions),
+            known_hosts: known_hosts.clone(),
         }),
         DEFAULT_CONCURRENCY,
     ));
@@ -1577,7 +1836,8 @@ pub fn run() {
             unmount,
             remount_read_write,
             set_active,
-            new_window
+            new_window,
+            begin_drag
         ]);
 
     // The menu bar exists only on macOS, and only so that ⌘Q is something this

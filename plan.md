@@ -192,6 +192,8 @@ reconstruct it from git history.
 | **M4.5** | E21-S2 — "Local" in the dialog and the window | **Done** 2026-09-06 |
 | **M7** | E23-S1 — More than one browser window | **Done** 2026-09-06 |
 | **M7** | E26-S2 — Keyboard navigation | **Done** 2026-09-06 |
+| **M7** | E22-S1 — Local↔xsync through xsync's engine | **Done** 2026-09-06 (congress 40× faster; one 1 GiB file 20% slower) |
+| **M7** | E24-S2 — Drag between our own windows | **Done** 2026-09-06 (drag out to Finder is E24-S1) |
 | M4+ | E19, E7-S1/S3, signing and notarisation | Not started |
 
 Every "partly done" and every unchecked AC bullet above is written up under its own
@@ -4182,25 +4184,209 @@ the stories there are the spec. Written against `xsync` `v3` @ `599d9d4529`.
   host does not round-trip through the client; session `Resume` (52–55) so a transfer
   survives a link drop without re-opening every handle.
 
-#### E22-S1 — Local↔xsync transfers through xsync's engine
+#### E22-S1 — Local↔xsync transfers through xsync's engine — **Done**
+
+*2026-09-06.*
+
 **AC**
-- A transfer whose two ends are a Local mount and an xsync mount (either direction)
+- [x] A transfer whose two ends are a Local mount and an xsync mount (either direction)
   runs `run_client_push`/`run_client_pull` over a second `ssh … xs --server` spawned with
   the same host-key policy as the browse session (`hostkeys::verify`, the app's
   `known_hosts`, `BatchMode`). Whole trees go through xsync's planner, not E13-S4's walk.
-- Progress rows come from `LocalEvent::{Progress, Transferred, Skipped, Failed}` and read
+- [x] Progress rows come from `LocalEvent::{Progress, Transferred, Skipped, Failed}` and read
   exactly as today's rows do; the aggregate rate is xsync's. Resume after an interruption
   is xsync's `ResumeJournal`, keyed by job id — the `.part` mechanism is not used for
   this pair.
-- Verification is on by default (BLAKE3, xsync's `--checksum` semantics) and the row
+- [x] Verification is on by default (BLAKE3, xsync's `--checksum` semantics) and the row
   says `verified`, not `done`, when it is. Conflicts follow the queue's answer
   (Replace / Keep both / Skip) mapped onto xsync's collision policy; **mirror/delete is
   never enabled** — this is a copy, not a sync, and the option is not exposed.
-- Cancel kills the transfer's own `ssh` (the only cancellation xsync offers until
+- [x] Cancel kills the transfer's own `ssh` (the only cancellation xsync offers until
   E22-S0's token lands) and leaves the far side's stage for the journal to resume.
-- Measured against orion and freya: a 1 GiB file, `congress`-shaped small files, and a
+- [x] Measured against orion and freya: a 1 GiB file, `congress`-shaped small files, and a
   tree with a symlink and an empty directory; numbers in `docs/benchmarks.md` beside
   E13-S7's.
+
+**Results**
+
+**Shipped.** A Local↔xsync pair now moves its bytes through
+`xsync_core::server::run_client_push` / `run_client_pull` over a second `ssh`
+Excalibur spawns and whose host-key policy Excalibur keeps.
+
+*Files*
+
+| File | What |
+|---|---|
+| `crates/engine/src/transfer/xsync_engine.rs` | New. The adapter: route types, session spawn, the byte-bounded outbox, the event→row tally, cancel. |
+| `crates/engine/src/transfer/worker.rs` | `BackendSource::xsync_route`, the routing rule in `attempt`, `routable`, `through_xsync`. |
+| `crates/engine/src/transfer/mod.rs` | `Transfer::{verified, note}`, both `#[serde(default)]`. |
+| `crates/engine/src/backend/xsync.rs` | Extracted `ssh_argv` / `remote_command`; `connect_ssh` now uses them, so browse and transfer send byte-identical command lines. |
+| `crates/engine/src/session/mod.rs` | `SessionManager::spec(id)` — a transfer needs the host/port/user/root again to open its own session. |
+| `src-tauri/src/lib.rs` | `AppMount::xsync_route`, `AppMount.known_hosts`. |
+| `crates/cli/src/main.rs` | `--xsync-engine`, new `put LOCAL REMOTE`, shared `drain`. |
+| `crates/engine/tests/xsync_transfer.rs` | New. 7 tests, gated on `EXCALIBUR_XS`. |
+| `src/state/format.ts`, `types.ts`, `format.test.ts` | `verified · 84 KB`, `done · unchanged`. |
+| `docs/benchmarks.md`, `docs/supply-chain.md` | Numbers; the `xsync-core` entry and the deny gate. |
+
+*Gates*
+
+fmt ✅ · `clippy --workspace --all-targets -D warnings` ✅ · `cargo test
+--workspace` ✅ (with `EXCALIBUR_XS`, 7 new tests) · `pnpm build` ✅ ·
+`pnpm test` ✅ (437) · **`cargo deny check` ❌ — pre-existing**, see below.
+
+*The routing rule*
+
+In `Worker::attempt`. A transfer goes through xsync's engine when
+`BackendSource::xsync_route(transfer.mount)` answers `Some` — which the Tauri
+shell does only for `Protocol::Xsync` — **and** `routable()` agrees. Everything
+else keeps `download`/`upload` untouched: NFS, SMB, SFTP, local↔local. No
+fallback between the two once chosen.
+
+`routable()` has one carve-out: **a pull of a single file** goes to the chunk
+loop, because `xs --server <file>` cannot serve a file as the source of a pull
+(see Defect 2). Pushes of single files and trees in both directions go through
+xsync.
+
+The pair is named by `Transfer.mount` — added by the E24-S2 agent earlier the
+same session with `#[serde(default)]`, so an old queue file still loads. Nothing
+else was needed; no migration was written.
+
+Root selection is symmetric, from xsync's trailing-slash rule:
+
+- **directory** → the `--server` root *is* the named item, `trailing_slash =
+  true`, contents into a root that already carries the wanted name. Renaming a
+  directory is therefore free.
+- **file** → the root is the container, the file's own basename is its wire
+  path, so the name is not ours to choose. That is what forces the Keep-both
+  staging below.
+
+*Event → row*
+
+| `LocalEvent` | Row |
+|---|---|
+| `Planned { bytes }` | `bytes_total` — a directory row learns its size here and nowhere else |
+| `Progress { path, completed }` | per-path in-flight, summed with settled bytes → `bytes_done`; rate/ETA from `rate.rs` |
+| `Transferred { path, bytes, method }` | settled += bytes; `method != ByteCopy` clears `verified` |
+| `Skipped { path, bytes }` | settled += bytes; feeds the `unchanged` note |
+| `Failed { path, message }` | counted; first one becomes the row's error |
+| `Finished` / the report | `judge()` — engine error, non-zero child exit, or `partial_failure()` all fail the row |
+
+`Progress` only exists for files **> 8 MiB** (`MAX_DATA_SEGMENT`); smaller ones
+report on completion. So a `congress` tree's bar moves in file-sized steps.
+
+`verified` is **not** derived from `LocalSyncOptions::checksum`. Verification on
+this route is unconditional: the source BLAKE3s every file as it reads it and
+ships the digest in the same frame, and the sink compares before it renames the
+staged file into place. For a file over 8 MiB the comparison is per 8 MiB chunk
+plus a full-coverage proof rather than one end-to-end digest — `--paranoid` is
+what buys that, at a full extra read per side, and is off.
+
+*Options*
+
+`delete: false` and `max_delete: Some(0)`, never exposed. `dry_run: false`.
+`paranoid: false`. **`checksum: false`** — see Defect 1; the loss is that
+"unchanged" on a push is a size-and-mtime claim rather than a content one.
+Verification is unaffected.
+
+Conflicts: **Replace** is the default (the planner overwrites). **Skip** is not
+enqueued. **Keep both** — a directory gets it free (the root carries the new
+name); a *file* cannot, because the engine names what it publishes after the
+source's basename, so the adapter stages one hard link under the wanted name in
+a `.excalibur-<id>` directory beside the source and pushes that directory's
+contents. Falls back to a copy if the link is refused. Swept on drop.
+
+*Cancel and resume*
+
+Cancel kills the transfer's own child (`Worker::stop`'s `AtomicBool`, polled
+every 100 ms by a watcher task). The session then fails with a transport error,
+which the adapter reads as the user's decision rather than a failure. Pause is
+the same kill; resume is a re-run.
+
+**What re-transfers.** Verified from xsync's code, not measured — the local
+route moves a gigabyte in under five seconds so a kill is a race:
+
+- a file already published is **skipped entirely** (measured: 10,000 unchanged
+  files re-planned in 0.10 s);
+- a large file resumes from its journal at **chunk granularity** — the receiver
+  checkpoints every 8 MiB on push, the client every 64 MB on pull, so at most
+  that much is redone;
+- an in-flight **small-file batch is lost work** and re-sent, but only the
+  files that had not landed.
+
+The journal is keyed by the two path strings, which is why `dest_path` is passed
+the same string as `--server`.
+
+`crates/engine/tests/xsync_transfer.rs::a_cancel_leaves_no_file_under_the_final_name`
+asserts the part that matters: nothing under the destination's final name, only
+the `.xsync.tmp.<hex>` stage the next run resumes from. The `.part` mechanism is
+not used for this pair.
+
+*Writability*
+
+The destination mount must be `writable`, checked before the session starts.
+This is the **only** gate: `docs/library.md` records that `xs --server
+--read-only` sets `MountInfo.access` for the v3 session and nothing else — the
+v1/v2 sink never consults it, so a push to a read-only export still writes.
+Tested (`a_read_only_mount_refuses_a_push`).
+
+*Numbers*
+
+In `docs/benchmarks.md`. Headline: `congress` (10,000 × 8 KB) pulled through
+xsync in **3.25 s mean** against the chunk loop's **129.7 s** — ≈40×. One 1.25
+GiB file over SSH: xsync 29.2 MB/s, chunk loop 37.2 MB/s — ≈20% *slower*, and
+reported as such.
+
+*Three surprises*
+
+1. **`checksum: true` breaks a push of any file over ~8 MiB** on the current
+   xsync tree. It replaces each scanned entry's `fingerprint.identity` with a
+   content identity; `LocalSource::read_range` then compares a fresh *metadata*
+   fingerprint against that mutated one and refuses: `source file '…' changed
+   during read after 1 attempts`. 9 MiB reproduces every time, 4 KiB never (the
+   batched pass does not read that way). Pull is unaffected. Worked around by
+   `checksum: false`.
+2. **`xs --server <file>` cannot serve a pull of that file.** The scan
+   advertises the entry and the read resolves it against the root again — the
+   `<file>/<file>` mistake xsync already fixed on its multi-stream push
+   (`server.rs:10493`). A small file reports **success having moved nothing**; a
+   1 GiB file hangs ~30 s and the peer drops. Both reproduced against the
+   current `xs` locally and against freya. Worked around by routing single-file
+   pulls to the chunk loop — one condition in `Worker::routable`, marked for
+   deletion.
+3. **The library route deadlocks over a pipe, in both directions.** xsync's
+   unacknowledged window is sized to sit inside OpenSSH's 2 MiB channel window;
+   a pipe holds 64 KiB. 10,000 files stop dead at ~1,600 with every process at
+   0% CPU. Fixed by `Detached`, which hands the child's pipe to a thread behind
+   a **byte-bounded** queue. Bounding by *message count* fixed the push and left
+   the pull hanging — acks are 41 bytes, so sixteen slots is 700 bytes of
+   headroom. Regression test covers both directions.
+
+*For whoever owns xsync*
+
+Three things to raise, none editable from here:
+
+- The `checksum`-on-push read failure (1) and the file-root pull (2) above.
+- `crates/xsync-core/Cargo.toml:48` — `xsync-endpoint = { path =
+  "../xsync-endpoint" }` has no `version`, which fails `cargo deny check`'s
+  `bans` in Excalibur. `xsync-client` already writes `version = "0.1.0"` beside
+  its own path dep on `xsync-core`; one word fixes it. Alternatively
+  `publish = false` on both crates. **The failure predates this story** —
+  verified by removing the new `xsync-core` dependency and re-running — and was
+  not papered over locally, because the `deny.toml` comment says the ban exists
+  "to catch a wildcard on a *published* crate", which is exactly what it caught.
+
+**Next steps**
+
+- **E22-S2** deletes `download`/`upload`, the single-file-pull carve-out and the
+  Keep-both staging, once `ShareBackend` is an xsync endpoint.
+- **E22-S3** is where `paranoid` and a conflict policy get somewhere to live,
+  and where a directory row stops being one row.
+- Re-measure when orion (or `gentoo-rpi5.local`, whose host key changed and was
+  deliberately not accepted) is back on a wired link. Every push figure here is
+  over a pipe on one machine; the network figure is Wi-Fi, so it is not
+  comparable to E13-S7's gigabit numbers and the doc says so.
+- The 20% deficit on one large file over SSH is the v1/v2 route being
+  single-stream by construction. Worth a look if E22-S2 does not settle it.
 
 #### E22-S2 — `ShareBackend` as an xsync endpoint *(needs E22-S0)*
 **AC**
@@ -4477,22 +4663,250 @@ to a window). Only if S1's design spike says windows alone are not enough.
   harness, asserting the file appears with the right digest and that a cancelled drag
   queued nothing.
 
-#### E24-S2 — Drag between Excalibur windows
+#### E24-S2 — Drag between Excalibur windows — **Done (M7's slice: our own windows)**
+
+*2026-09-06. Drag out to Finder is E24-S1 and is not in this slice; the pasteboard type it will add promises beside is already here.*
+
 **AC**
-- A native drop target on each window (`NSView` subclass registered for
+- [x] A native drop target on each window (`NSView` subclass registered for
   `dev.excalibur.selection` and `public.file-url`) receives drops and reports (window
   label, position, payload) to the webview, which hit-tests exactly as E13-S5 does
   (physical→CSS pixels, folder rows, the list background).
-- Dropping our own selection: same mount ⇒ **move** (`rename`, E14-S3's rules —
+- [x] Dropping our own selection: same mount ⇒ **move** (`rename`, E14-S3's rules —
   refusing a folder into itself); different mounts ⇒ **copy** through E22, one queue
   row per file. ⌥ forces a copy on the same mount. The drop ring says which
   (`Move to Documentaries` / `Copy 3 items to raid6`).
-- Dropping Finder files (`public.file-url`) is E13-S5's upload, unchanged; dropping onto
+- [x] Dropping Finder files (`public.file-url`) is E13-S5's upload, unchanged; dropping onto
   a sidebar bookmark copies to that share's root (replaces E13-S5's "coming later").
-- Spring-loaded folders: hovering a folder row for 600 ms while dragging descends into
+- [x] Spring-loaded folders: hovering a folder row for 600 ms while dragging descends into
   it, with the same delay Finder uses and Escape to back out.
-- The same drag can end in Finder or in another window; the pasteboard carries both
+- [x] The same drag can end in Finder or in another window; the pasteboard carries both
   types from the start.
+
+**Results**
+
+*The pasteboard type, fixed now so E24-S1 does not have to change it*
+
+`dev.excalibur.selection`, carrying JSON:
+
+```json
+{ "mount": "xsync:raid6:media", "paths": ["Films/Arrival.mkv"], "window": "browser-2" }
+```
+
+Three fields and no more. `mount` because a share-relative path means nothing
+without one; `paths` in `navigation.ts`'s shape, which is what every backend verb
+takes; `window` because a drop back into the folder a drag started in has to be
+recognisable as the no-op it is. `Selection::from_json` refuses an empty `mount`
+or an empty `paths`, so a string written by *any other app* under our type name
+cannot become a move of somebody's files — that is the property its test asserts,
+not the round trip.
+
+*The one `unsafe` module, and the structural surprise inside it*
+
+`crates/engine/src/drag/macos.rs`, `#![allow(unsafe_code)]` on the module and
+nowhere else, five blocks each with a `// SAFETY:` note, recorded in
+`docs/supply-chain.md` beside the dependencies. `crates/engine/src/lib.rs` had to
+go from `#![forbid(unsafe_code)]` to `#![deny(unsafe_code)]`: `forbid` cannot be
+overridden by an inner `allow`, so holding it would have meant shipping no drag
+rather than deciding anything about one — which is the failure mode the decision
+in plan.md exists to prevent. `src-tauri` still forbids and writes none.
+
+The safe wrapper (`crates/engine/src/drag/mod.rs`) is three functions:
+
+| | |
+|---|---|
+| `start_drag(ns_view, &Selection, image_png) -> Result<()>` | Begins an `NSDraggingSession` from that window's content view, with one `NSPasteboardItem` carrying `SELECTION_TYPE`. The image is **bytes**, never a path. |
+| `install_drop_target(label, ns_view, DropSink) -> Result<()>` | Puts a drop target over one window. |
+| `remove_drop_targets()` | Takes them all down, reporting a `leave` to each. |
+
+plus `Selection`, `Phase`, `Modifiers`, `DropEvent` and
+`SELECTION_TYPE`. Everything above the wrapper is safe Rust, and the payload
+encoding and the phase/modifier vocabulary are unit-tested with no window.
+
+**The surprise, and the decision it forced: a drop target cannot be a permanent
+view.** A Tauri window is an `NSWindow` whose content view holds wry's
+`WKWebView` on top, and AppKit finds a drag's destination by hit-testing from the
+front. So a target registered on the content view sits *behind* the webview and
+never fires, and one added over the webview swallows every click. Overriding
+`hitTest:` to return `nil` does not rescue it — the drag search uses the same hit
+test. The alternative was swizzling `WryWebView`'s `performDragOperation:`, which
+would put us inside wry's own file-drop handling.
+
+What is built instead: **drop targets exist only while an Excalibur drag does.**
+`begin_drag` installs one over every window immediately before starting the
+session and the session's `draggingSession:endedAtPoint:operation:` takes them
+all down. During a drag AppKit owns the tracking loop and the webview receives no
+mouse events, so a briefly-covered window behaves identically. The consequence
+worth knowing is a good one: a **Finder** drag never meets one of these, so
+E13-S5's `tauri://drag-*` path is untouched and OS file paths are still handled
+in exactly one place. There is no double-handling to reason about, and this is
+also why the target registers for `dev.excalibur.selection` **only** — a test
+asserts exactly that list, because a target that also claimed `public.file-url`
+would take Finder's drops away from wry, silently.
+
+Teardown reports a `leave` to every window rather than relying on
+`draggingExited:`, which AppKit sends only to the surface under the pointer: a
+drag cancelled with Escape over the Desktop would otherwise leave the last window
+it crossed ringed forever.
+
+*Which pairs move, copy, and refuse*
+
+Decided in `src/state/dnd.ts`, a pure module with 19 tests, for the reason
+`move.ts` gives: this is the half of the feature that is wrong invisibly.
+
+| Drop | Verb | How |
+|---|---|---|
+| Same mount, no ⌥ | **move** | `rename` per item, `replace: false`, E14-S3's `illegalDestination` reused verbatim |
+| Same mount, same folder | **nothing** | No ring at all — the user changed their mind |
+| Folder onto itself or its own descendant | **refused** | E14-S3's own sentence |
+| Any mount → a **Local** mount | **copy** | `enqueue_downloads`, source mount named. Walks folders (`plan_downloads`) |
+| **Local** mount → any mount | **copy** | `enqueue_uploads`, destination mount named |
+| Local → Local (two mounts, or ⌥ within one) | **copy** | The download verb, because it is the one that walks a folder |
+| Remote → remote, and ⌥ within one remote share | **refused** | *"Copying between two shares arrives with E22."* |
+| Source share no longer held | **refused** | *"That share is no longer open."* |
+| Read-only destination | **refused** | *"That share is mounted read-only."* |
+
+The refusals are sentences and not silences, for E13-S5's reason: a drop that
+lands and does nothing is indistinguishable from a broken app. The ring's line
+comes from a tested formatter — `Move to Documentaries`, `Copy 3 items to raid6`,
+or the refusal — with a count only when there is more than one, because "Copy 1
+item" is a sentence nobody writes.
+
+*The queue had to learn which share a row belongs to*
+
+This is the one thing built past the drag itself, and it was not optional. A
+`Transfer` carried `(direction, source, dest)` and the worker resolved its
+backend from `BackendSource::active()` → `recent_backend()` — *the app's most
+recently activated mount*. That was already a race for one window; with two
+windows open it is not ambiguous, it is simply wrong, because a drag between
+windows is by definition a transfer whose share is **not** the one the app last
+touched. A copy from `raid6` into `~/Downloads` would have read from whichever
+share the user clicked in last.
+
+So: `Transfer` gained `#[serde(default)] mount: Option<String>` with a
+`.on_mount(id)` builder (`new` unchanged, so no call site moved), and
+`BackendSource` gained `backend_for(Option<&str>)` with a default that delegates
+to `active()` — the CLI and the worker's own tests say nothing about it and still
+compile. `AppMount` overrides it. Rows restored from a queue written before this
+field keep the old meaning. `enqueue_downloads`, `enqueue_uploads`,
+`check_conflicts` and `rename` all take an `Option<String> mount` that is `None`
+for every existing caller and `Some` only for a cross-window drop;
+`AppState::mount_and_backend` is the one place that resolves it.
+
+`rename` needed it too, and that is easy to miss: a drop onto a **sidebar row**
+can be a same-mount move on a share the window doing the dropping is not the one
+looking at. `announce_listing_on` was split out so the `listing://changed` goes to
+the windows on the share that actually changed rather than the caller's.
+
+*Spring-loaded folders, and what Escape really is*
+
+600 ms, Finder's delay, restarted whenever the folder under the pointer changes —
+so a drag *across* a column of folders springs into none of them. Deliberately
+not armed for a sidebar row: descending into a share means mounting and switching
+that window mid-drag, which is far more than hovering should do to somebody.
+
+Escape needed no key handler, and could not have had one: during a native drag
+AppKit owns the event loop and the webview sees no keystrokes. Escape cancels the
+session, the session's end takes the targets down, and each window gets a
+`leave` — so "back out to where the drag started" is implemented as *any* drag
+that leaves without dropping undoes the descent. The origin is recorded on the
+first `over` in each window rather than only where the drag began, because the
+window that springs is usually not the window that was dragged from.
+
+*Smaller things*
+
+- The drag gesture is `pointerdown` on the **name cell** plus 4 px, the gesture
+  E8-S8 reserved and rubber-band selection has always refused to start on. The
+  band's guard covered `1f`'s `nameCell` only, so the name in `1g` and `1h`
+  banded rather than dragged; both now share one `onName` predicate. Six
+  component tests drive real pointer events at it — and found a listener leak:
+  a press with no `pointerup` (a pointer taken away by the OS) left a
+  `pointermove` handler that would turn the *next* movement anywhere in the
+  window into a drag. `pointercancel` now tears it down too.
+- The drag image is a canvas in the webview, handed over as PNG bytes. Drawn at
+  CSS scale, not device scale: an `NSImage` built from PNG data takes its point
+  size from the pixel dimensions, so a 2× bitmap is a drag image twice the size
+  of the row. Slightly soft on Retina; in `docs/design-gaps.md`.
+- `Array.from(bytes)` on the way through IPC. Tauri serialises a `Uint8Array` to
+  `{}`, which reaches Rust as an empty image and a drag with nothing under the
+  pointer.
+- Sidebar drop replaces E13-S5's "coming later" tooltip, on **mounted** rows
+  only — an unmounted bookmark has no session to copy into and says
+  `Open <name> first.`
+
+---
+
+**Next steps**
+
+- **E22-S1/S2 unblock the two refusals.** Remote→remote and ⌥-copy inside a
+  remote share are the only pairs `dnd.ts` turns away, and both need one verb:
+  a transfer holding two backends. `SessionManager::backend(id)` is already the
+  right primitive and `Transfer.mount` is already the right field — it wants a
+  second one, and a third `Direction`.
+- **Uploads still do not walk a folder.** `plan_downloads` exists;
+  `plan_uploads` does not, so a folder dragged from a Local mount to a share
+  becomes one row whose `std::fs::read` fails. This is pre-existing (E13-S5's
+  Finder drop has the same hole) and was left alone rather than half-built: it
+  is a planner, and it belongs with E22's. **It is what stands between M7's demo
+  line — "drag a folder from `~/Downloads` into it" — and working.** A single
+  file works today.
+- **Linux (E24-S4)** gets `install_drop_target` / `start_drag` unimplemented and
+  returning `EngineError::Unsupported`; the wrapper's shape should survive.
+- **E24-S1** adds `NSFilePromiseProvider`s beside `SELECTION_TYPE` on the same
+  pasteboard item list. Nothing about the type or the payload has to change.
+- **⌘X/⌘C/⌘V (E24-S3)** is the same `resolveDrop` against the general
+  pasteboard; the decision module is already independent of how the selection
+  arrived.
+
+---
+
+*For the lead to verify by hand*
+
+The FFI's testable half is tested: the pasteboard item round-trips the payload,
+a foreign string under our type is refused, and the drop target registers for
+our type and nothing else. **An `NSDraggingInfo` cannot be constructed without a
+live drag session** — there is no public API for one — so a synthetic
+`performDragOperation:` is not feasible headlessly and the following is a manual
+check in the bundled app, with two windows (⌘N) on two mounts:
+
+1. **Move, one window.** Drag a file's *name* onto a folder row. Ring says
+   `Move to <folder>`; release; the file is in the folder. Drag it onto the list
+   background: `Move to <share>` and it lands in the current folder.
+2. **The gesture.** A plain click on a name still selects and does not drag. A
+   press-and-drag starting on the *size* column still rubber-bands. Check `1g`
+   and `1h` too — the band guard changed for both.
+3. **Move, two windows, same mount.** Two windows on `raid6` in different
+   folders. Drag from one into the other: `Move to …`, and **both** lists
+   refresh (that is `listing://changed` reaching the window that did not ask).
+4. **Copy, two windows, different mounts.** `raid6` → a Local mount: ring says
+   `Copy … to …`, a queue row appears, the bytes land. Then the reverse, Local →
+   `raid6`. **Use a single file, not a folder** — see the upload gap above.
+   While it runs, click into the *other* window: the transfer must keep reading
+   the right share. That is the `Transfer.mount` change, and it is the one thing
+   here that was silently wrong before.
+5. **Two remote shares.** Drag between them: grey ring, *"Copying between two
+   shares arrives with E22."*, nothing queued.
+6. **⌥.** Hold ⌥ over a same-mount drop: the ring must change from `Move` to
+   `Copy` **while the pointer is still down** (modifiers are read live, not at
+   drag start). On two remote shares ⌥ must refuse; on a Local mount it must
+   copy.
+7. **Spring-load.** Hover a folder row for ~600 ms: the window descends. Drag
+   across several folders quickly: it descends into none.
+8. **Escape.** Spring into two folders deep, then Escape: the window returns to
+   where it was when the drag reached it, and the drag queues nothing. Then do
+   the same but *drop* after springing: the window must **stay** in the folder it
+   sprang into.
+9. **Sidebar.** Drag onto a mounted share's row: it highlights, and the drop
+   lands at that share's root. Onto an unmounted bookmark: `Open <name> first.`
+10. **Finder is unchanged.** Drag files from Finder into the list — E13-S5's
+    upload must still work exactly as before, including the folder-row
+    highlight. This is the one thing the native target could plausibly have
+    broken.
+11. **Nothing left behind.** After a cancelled drag, clicking anywhere in every
+    window must still work. An invisible drop surface that outlived its drag
+    would swallow clicks, and it would look like the app had frozen.
+
+---
 
 #### E24-S3 — Copy and paste
 **AC**

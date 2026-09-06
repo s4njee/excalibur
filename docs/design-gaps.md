@@ -487,3 +487,47 @@ it. Whether the chips are worth their space, or whether an ambiguous Tab should
 say nothing the way a shell's first Tab does. And whether the share name should
 be a fixed prefix beside the field — it is there to say the path is *inside* the
 mount, which is the one thing a user typing `/` is likely to get wrong.
+
+## Drag between windows: the ring, the caption and the drag image *(E24-S2, 2026-09-06)*
+
+**The mock** has a drop ring — the 2px accent inset E13-S5 already draws when
+Finder files are over the list — and nothing else. It says nothing about a drag
+that starts *inside* the app, and a drag between two Excalibur windows is a
+gesture the design has never had to describe, because until E23-S1 there was
+only one window.
+
+**The problem** is that the ring alone cannot say what the drop will do. Same
+mount is a **move**; a different mount is a **copy**; ⌥ forces a copy. Those are
+different enough that a user who guesses wrong loses a file off a share, and the
+AC asks for the ring to say which. There is also a third answer the design has
+no vocabulary for at all: a **refusal**, for the pairs the transfer queue cannot
+do yet (share to share, which arrives with E22) and for a folder dropped into
+itself.
+
+**What was built:** three things past the mock.
+
+1. **A caption inside the ring** — a small accent pill, bottom-centre of the
+   list, reading `Move to Documentaries` or `Copy 3 items to raid6`. It is
+   `position: sticky` so it survives a spring-loaded descent scrolling the list
+   under it. A refusal turns the ring and the pill grey rather than accent, and
+   the pill carries the reason verbatim: an accent ring that then refuses the
+   drop is the failure E13-S5's Results already call out.
+2. **A sidebar row as a drop target** — the "coming later" tooltip E13-S5 left
+   is gone, and a mounted share row now highlights and takes a drop to that
+   share's root. Only *mounted* rows: an unmounted bookmark has no session to
+   copy into and says `Open <name> first.`
+3. **A drag image** — the row's glyph and name in a small pill, drawn to a
+   canvas in the webview and handed to AppKit as PNG bytes. It is drawn at CSS
+   scale rather than device scale, because an `NSImage` built from PNG data
+   takes its point size from the pixel dimensions and a 2× bitmap would be a
+   drag image twice the size of the row it came from. It is therefore slightly
+   soft on a Retina display.
+
+**For the designer:** four judgement calls. Whether the caption belongs in the
+ring at all or in the status bar, which is already the app's live region and
+would not cover a row. What a refused drop should look like — grey is a guess,
+and "this cannot happen" and "this is disabled" are currently the same colour.
+Whether a sidebar drop should highlight the row or the whole sidebar, since the
+drop lands at a share's *root* and not in anything the row itself shows. And
+whether the drag image should be the row (name and glyph, as built), a stack for
+a multiple selection the way Finder draws one, or a count badge.

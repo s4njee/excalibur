@@ -14,6 +14,7 @@ use excalibur_engine::backend::mock::MockBackend;
 use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
+use excalibur_engine::transfer::xsync_engine::{SshEndpoint, XsyncRemote, XsyncRoute};
 use excalibur_engine::transfer::{plan, Direction, Status, Transfer};
 use excalibur_engine::{hostkeys, EntryKind, KnownHosts, Result, ShareBackend, Trust};
 
@@ -23,12 +24,24 @@ use excalibur_engine::{hostkeys, EntryKind, KnownHosts, Result, ShareBackend, Tr
 /// one. There is no session manager here, so the answer is always the same
 /// mount — which is also what makes `get` measure the transfer path and
 /// nothing else.
-struct Mounted(Arc<dyn ShareBackend>);
+struct Mounted {
+    backend: Arc<dyn ShareBackend>,
+    /// Set by `--xsync-engine`, and the only thing that routes a transfer
+    /// through xsync's own push/pull engine rather than the worker's chunk
+    /// loop (E22-S1). Off by default so `get` keeps measuring what
+    /// `docs/benchmarks.md` says it measures for E13-S7, and the two figures
+    /// stay comparable.
+    route: Option<XsyncRoute>,
+}
 
 #[async_trait]
 impl BackendSource for Mounted {
     async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
-        Ok(Arc::clone(&self.0))
+        Ok(Arc::clone(&self.backend))
+    }
+
+    async fn xsync_route(&self, _mount: Option<&str>) -> Option<XsyncRoute> {
+        self.route.clone()
     }
 }
 
@@ -41,6 +54,7 @@ USAGE:
     xcal mount            the mount facts a status bar would show
     xcal cat PATH         read a file through the backend
     xcal get REMOTE LOCAL download through the transfer worker
+    xcal put LOCAL REMOTE upload through the transfer worker
     xcal write PATH TEXT  write a file through the backend
     xcal df               capacity
     xcal reachable HOST PORT
@@ -57,6 +71,11 @@ instead:
     --user NAME           ssh username
     --trust               accept an unknown host key and record it
     --depth N             reads in flight per download, for `get` (default 4)
+    --xsync-engine        run `get`/`put` through xsync's own push/pull engine
+                          instead of the worker's chunk loop (E22-S1). Only
+                          meaningful with --xsync-local or --xsync-ssh; it is
+                          what the GUI does for a Local<->xsync pair, and it
+                          is how that route is measured headlessly.
 
 Every command takes --read-only, and --json to print machine-readable
 output.
@@ -72,6 +91,9 @@ async fn main() -> ExitCode {
     let json = arguments.iter().any(|argument| argument == "--json");
     let read_only = arguments.iter().any(|argument| argument == "--read-only");
     let trust = arguments.iter().any(|argument| argument == "--trust");
+    let through_xsync = arguments
+        .iter()
+        .any(|argument| argument == "--xsync-engine");
     // A flag's value is not a positional argument, so skip whatever follows
     // the flags that take one.
     let takes_value = [
@@ -219,6 +241,56 @@ async fn main() -> ExitCode {
         Arc::new(MockBackend::media_share())
     };
 
+    // The recipe for the *second* process a transfer through xsync's engine
+    // spawns (E22-S1). Rebuilt from the flags rather than threaded out of the
+    // branch above, because it is a different object from the mount: one
+    // `xs --server` serves one session, and a browse session and a sync
+    // session are different protocols chosen at the handshake.
+    let route: Option<XsyncRoute> = if !through_xsync {
+        None
+    } else if let Some(root) = value_of("--xsync-local") {
+        Some(XsyncRoute {
+            remote: XsyncRemote::Local {
+                program: value_of("--xs").unwrap_or_else(|| "xs".to_owned()),
+            },
+            export_root: root,
+            // The local `xs --server` case: `--read-only` is honoured here
+            // because Excalibur's gate is the only one there is. The flag sets
+            // the v3 mount's access and nothing else — the v1/v2 sink never
+            // consults it, so a push to a read-only export still writes.
+            writable: !read_only,
+            reason: "export is read-only".to_owned(),
+        })
+    } else if let Some(target) = value_of("--xsync-ssh") {
+        let (host, root) = target.split_once(':').unwrap_or((target.as_str(), ""));
+        let known_hosts = match KnownHosts::app_default() {
+            Ok(known) => known,
+            Err(error) => {
+                eprintln!("xcal: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        Some(XsyncRoute {
+            remote: XsyncRemote::Ssh(SshEndpoint {
+                host: host.to_owned(),
+                port: value_of("--port")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(22),
+                username: value_of("--user"),
+                // The same file the mount above verified against, so the
+                // transfer's own `ssh` enforces the same decision.
+                known_hosts: known_hosts.path().to_path_buf(),
+                rsh: None,
+            }),
+            export_root: root.to_owned(),
+            writable: !read_only,
+            reason: "export is read-only".to_owned(),
+        })
+    } else {
+        eprintln!("xcal: --xsync-engine needs --xsync-local or --xsync-ssh");
+        return ExitCode::from(2);
+    };
+
     let Some(command) = positional.first() else {
         eprint!("{USAGE}");
         return ExitCode::from(2);
@@ -302,7 +374,14 @@ async fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            get(&backend, remote, local, depth, json).await
+            get(&backend, route, remote, local, depth, json).await
+        }
+        "put" => {
+            let (Some(local), Some(remote)) = (positional.get(1), positional.get(2)) else {
+                eprintln!("put needs a local path and a remote one");
+                return ExitCode::from(2);
+            };
+            put(&backend, route, local, remote, json).await
         }
         "write" => {
             let (Some(path), Some(text)) = (positional.get(1), positional.get(2)) else {
@@ -369,14 +448,32 @@ async fn main() -> ExitCode {
 /// without a mouse.
 async fn get(
     backend: &Arc<dyn ShareBackend>,
+    route: Option<XsyncRoute>,
     remote: &str,
     local: &str,
     depth: Option<usize>,
     json: bool,
 ) -> Result<()> {
-    let attrs = backend.stat(remote).await?;
     let queue = Arc::new(TransferQueue::in_memory());
 
+    // Through xsync's engine the selection *is* the plan: one row for what was
+    // asked for, and xsync's planner does the walk. Pre-walking here would
+    // stat every file over the browse session before the transfer session had
+    // sent a byte, and then the planner would walk it again.
+    if route.is_some() {
+        queue
+            .add(Transfer::new(
+                "one",
+                Direction::Down,
+                remote.to_owned(),
+                local.to_owned(),
+                0,
+            ))
+            .await;
+        return drain(backend, route, queue, depth, json).await;
+    }
+
+    let attrs = backend.stat(remote).await?;
     if attrs.kind == EntryKind::Dir {
         // `LOCAL` is the folder the copy lands *in*, as with `cp -r`.
         let plan = plan::plan_downloads(
@@ -419,9 +516,62 @@ async fn get(
             .await;
     }
 
+    drain(backend, route, queue, depth, json).await
+}
+
+/// `xcal put LOCAL REMOTE` — an upload through the real transfer worker.
+///
+/// The counterpart `get` never had, and the reason it exists now is
+/// measurement: E22-S1's route moves bytes in both directions and there was no
+/// headless way to time the one going out. Without `--xsync-engine` this is one
+/// file through the worker's chunk loop, because that path has no directory
+/// walk for uploads; with it, a whole tree is one row and xsync plans it.
+async fn put(
+    backend: &Arc<dyn ShareBackend>,
+    route: Option<XsyncRoute>,
+    local: &str,
+    remote: &str,
+    json: bool,
+) -> Result<()> {
+    let path = std::path::Path::new(local);
+    let size = std::fs::metadata(path).map_or(0, |meta| meta.len());
+    if route.is_none() && path.is_dir() {
+        return Err(excalibur_engine::EngineError::Io(format!(
+            "{local} is a directory; uploading one needs --xsync-engine"
+        )));
+    }
+    let queue = Arc::new(TransferQueue::in_memory());
+    queue
+        .add(Transfer::new(
+            "one",
+            Direction::Up,
+            local.to_owned(),
+            remote.to_owned(),
+            size,
+        ))
+        .await;
+    drain(backend, route, queue, None, json).await
+}
+
+/// Run a queue to completion and print what it moved and how fast.
+///
+/// Shared by `get` and `put` so the two report the same numbers the same way,
+/// and so `docs/benchmarks.md` can quote either without a footnote about which
+/// timer was running.
+async fn drain(
+    backend: &Arc<dyn ShareBackend>,
+    route: Option<XsyncRoute>,
+    queue: Arc<TransferQueue>,
+    depth: Option<usize>,
+    json: bool,
+) -> Result<()> {
+    let engine = route.is_some();
     let worker = Arc::new(Worker::new(
         Arc::clone(&queue),
-        Arc::new(Mounted(Arc::clone(backend))),
+        Arc::new(Mounted {
+            backend: Arc::clone(backend),
+            route,
+        }),
         3,
     ));
     if let Some(depth) = depth {
@@ -450,7 +600,36 @@ async fn get(
                 "files": done.len(),
                 "failed": failed.len(),
                 "depth": worker.read_depth(),
+                "engine": if engine { "xsync" } else { "worker" },
+                "verified": done.iter().all(|transfer| transfer.verified),
             })
+        );
+    } else if engine {
+        // A row that carries a note moved nothing — the planner found the file
+        // already there. Its bytes still count as accounted for, which is what
+        // fills the progress bar, but dividing them by the elapsed time
+        // produces a throughput figure for a transfer that did not happen.
+        let notes: Vec<&str> = done
+            .iter()
+            .filter_map(|transfer| transfer.note.as_deref())
+            .collect();
+        let speed = if notes.len() == done.len() {
+            format!("nothing moved — {}", notes.join(", "))
+        } else {
+            format!("{rate:.1} MB/s")
+        };
+        // Depth is a property of the chunk loop and means nothing here; saying
+        // it anyway would invite a comparison between two numbers that were
+        // not measuring the same thing.
+        println!(
+            "{moved} bytes in {:.2}s — {speed} ({} row(s), xsync engine{})",
+            elapsed.as_secs_f64(),
+            done.len(),
+            if done.iter().all(|transfer| transfer.verified) {
+                ", verified"
+            } else {
+                ""
+            }
         );
     } else {
         println!(

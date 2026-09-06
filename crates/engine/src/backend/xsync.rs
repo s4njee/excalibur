@@ -69,6 +69,67 @@ pub struct SshTarget<'a> {
     pub rsh: Option<&'a str>,
 }
 
+/// The remote command line that starts `xs --server <root>`.
+///
+/// One string handed to the remote *login shell*, so every argument is
+/// single-quoted and an embedded `'` becomes `'\''`. A path that is not quoted
+/// this way is a command-injection hole rather than a style preference. The
+/// `PATH` prefix is there because a non-interactive `ssh host cmd` reads no
+/// login profile and `~/.local/bin` is where `xs` usually is.
+///
+/// Shared with the transfer session (E22-S1): a transfer opens its *own* `ssh`
+/// — one `xs --server` serves one session, and a browse session and a sync
+/// session are different protocols chosen at the handshake — and it must send
+/// byte-for-byte the same command the browse session does. See
+/// `../xsync/docs/library.md`.
+#[must_use]
+pub fn remote_command(root: &str) -> String {
+    format!(
+        "PATH=\"$HOME/.local/bin:$PATH\" 'xs' '--server' '{}'",
+        root.replace('\'', "'\\''")
+    )
+}
+
+/// The `ssh` invocation for a session against `root`: program, then arguments.
+///
+/// Returned as data rather than as a built `Command` because the browse session
+/// wants a `tokio::process::Command` and a transfer wants a blocking
+/// `std::process::Command` — xsync's engine reads and writes the pipes
+/// synchronously. Both must carry the *same* host-key policy, and the way to
+/// guarantee that is for there to be one place that decides it.
+#[must_use]
+pub fn ssh_argv(target: &SshTarget<'_>, root: &str) -> (String, Vec<String>) {
+    let mut args = vec![
+        "-p".to_owned(),
+        target.port.to_string(),
+        // Never fall back to OpenSSH's own prompt. There is no terminal to
+        // answer it on, so the choice is between failing here with a key we
+        // can describe and hanging on a question nobody can see.
+        "-o".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        "-o".to_owned(),
+        // Quoted, because OpenSSH reads this option as a space-separated
+        // *list* of files. The default data directory on macOS is
+        // `~/Library/Application Support`, so an unquoted path splits into
+        // two names that both do not exist, and every connection fails with
+        // "No host key is known" for a key that was just recorded.
+        format!("UserKnownHostsFile=\"{}\"", target.known_hosts.display()),
+        // Same reasoning for credentials: a password or passphrase prompt
+        // would go to a terminal that is not there. BatchMode turns that
+        // hang into an immediate, reportable failure. Key and agent auth,
+        // which is what `xs` over SSH is set up for, are unaffected.
+        "-o".to_owned(),
+        "BatchMode=yes".to_owned(),
+    ];
+    if let Some(username) = target.username {
+        args.push("-l".to_owned());
+        args.push(username.to_owned());
+    }
+    args.push(target.host.to_owned());
+    args.push(remote_command(root));
+    (target.rsh.unwrap_or("ssh").to_owned(), args)
+}
+
 impl XsyncBackend {
     /// Connect over SSH and mount the export at `root`.
     ///
@@ -90,40 +151,10 @@ impl XsyncBackend {
     /// `known_hosts`, the peer does not speak protocol v3, or the export cannot
     /// be mounted.
     pub async fn connect_ssh(target: &SshTarget<'_>, root: &str) -> Result<Self> {
-        let mut command = tokio::process::Command::new(target.rsh.unwrap_or("ssh"));
+        let (program, args) = ssh_argv(target, root);
+        let mut command = tokio::process::Command::new(program);
         command
-            .arg("-p")
-            .arg(target.port.to_string())
-            // Never fall back to OpenSSH's own prompt. There is no terminal to
-            // answer it on, so the choice is between failing here with a key we
-            // can describe and hanging on a question nobody can see.
-            .arg("-o")
-            .arg("StrictHostKeyChecking=yes")
-            .arg("-o")
-            // Quoted, because OpenSSH reads this option as a space-separated
-            // *list* of files. The default data directory on macOS is
-            // `~/Library/Application Support`, so an unquoted path splits into
-            // two names that both do not exist, and every connection fails with
-            // "No host key is known" for a key that was just recorded.
-            .arg(format!(
-                "UserKnownHostsFile=\"{}\"",
-                target.known_hosts.display()
-            ))
-            // Same reasoning for credentials: a password or passphrase prompt
-            // would go to a terminal that is not there. BatchMode turns that
-            // hang into an immediate, reportable failure. Key and agent auth,
-            // which is what `xs` over SSH is set up for, are unaffected.
-            .arg("-o")
-            .arg("BatchMode=yes");
-        if let Some(username) = target.username {
-            command.arg("-l").arg(username);
-        }
-        command
-            .arg(target.host)
-            .arg(format!(
-                "PATH=\"$HOME/.local/bin:$PATH\" 'xs' '--server' '{}'",
-                root.replace('\'', "'\\''")
-            ))
+            .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             // Piped, not inherited: in the desktop app the inherited stream

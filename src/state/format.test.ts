@@ -87,6 +87,22 @@ describe("transfer row strings", () => {
     ).toBe("41.2 / 61.7 GB");
   });
 
+  it("says verified rather than done when the bytes were checked", () => {
+    // Only the route through xsync's engine can set this, and the word is the
+    // stronger claim: every byte was compared against a digest the source
+    // computed. A chunk loop that hashed nothing must never reach it.
+    expect(
+      formatTransferStatus({ ...running, status: "done", bytesDone: 84_000, verified: true }),
+    ).toBe("verified · 84 KB");
+  });
+
+  it("shows the note instead of the size on a copy that moved nothing", () => {
+    // "done · unchanged · 84 KB" would read as though 84 KB moved.
+    expect(
+      formatTransferStatus({ ...running, status: "done", bytesDone: 84_000, note: "unchanged" }),
+    ).toBe("done · unchanged");
+  });
+
   it("says queued and done exactly as the design does", () => {
     expect(formatTransferStatus({ ...running, status: "queued" })).toBe("queued");
     expect(

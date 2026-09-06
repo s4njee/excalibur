@@ -92,8 +92,14 @@ export interface Backend {
   remountReadWrite(id: string): Promise<MountInfo>;
   /** Create one directory. Not `mkdir -p`: the parent must exist. */
   mkdir(path: string): Promise<void>;
-  /** Rename, refusing to clobber unless `replace` says otherwise. */
-  rename(from: string, to: string, replace: boolean): Promise<void>;
+  /**
+   * Rename, refusing to clobber unless `replace` says otherwise.
+   *
+   * `mount` names the share, for the one caller that is not acting on the
+   * share this window is showing: a drop onto a sidebar row for a mount
+   * another window holds (E24-S2).
+   */
+  rename(from: string, to: string, replace: boolean, mount?: string): Promise<void>;
   /** Remove a file, or a directory and everything under it. */
   remove(path: string, recursive: boolean): Promise<void>;
   /**
@@ -104,10 +110,17 @@ export interface Backend {
    * a way back to the truth.
    */
   transfers(): Promise<Transfer[]>;
-  /** Queue a download of each path into a local folder. */
-  enqueueDownloads(paths: string[], destination: string): Promise<string[]>;
-  /** Queue an upload of each local path into a share folder. */
-  enqueueUploads(paths: string[], destination: string): Promise<string[]>;
+  /**
+   * Queue a download of each path into a local folder.
+   *
+   * `mount` names the share the *paths* are on. Omitted for Download, where it
+   * is this window's; given for a drop carrying another window's selection
+   * (E24-S2), where "the active mount" is not a question the engine can answer
+   * — the drop is happening in one window about a share held by another.
+   */
+  enqueueDownloads(paths: string[], destination: string, mount?: string): Promise<string[]>;
+  /** Queue an upload of each local path into a share folder. `mount` as above. */
+  enqueueUploads(paths: string[], destination: string, mount?: string): Promise<string[]>;
   pauseTransfer(id: string): Promise<void>;
   cancelTransfer(id: string): Promise<void>;
   /** Put a paused or failed transfer back in the queue. */
@@ -117,7 +130,12 @@ export interface Backend {
   /** Where downloads land by default. */
   downloadFolder(): Promise<string>;
   /** Which destinations are taken, and what "Keep both" would call them. */
-  checkConflicts(paths: string[], destination: string, upload: boolean): Promise<Conflict[]>;
+  checkConflicts(
+    paths: string[],
+    destination: string,
+    upload: boolean,
+    mount?: string,
+  ): Promise<Conflict[]>;
   /** Subscribe to queue changes. Returns an unsubscribe. */
   onTransferChanged(handler: (transfer: Transfer) => void): () => void;
   /** Check a file out, open it in the OS editor, and watch it for saves. */
@@ -142,10 +160,39 @@ export interface Backend {
       position: { x: number; y: number } | null;
     }) => void,
   ): () => void;
+  /**
+   * Start a native drag of this window's selection (E24-S2).
+   *
+   * `image` is PNG bytes the window rendered, never a path: an item on a share
+   * has no local file to point at, and writing one out to name it would be a
+   * fetch nobody asked for.
+   */
+  beginDrag(paths: string[], image: Uint8Array): Promise<void>;
+  /**
+   * A drag from an Excalibur window over this one.
+   *
+   * Separate from [`onFileDrop`] rather than folded into it: the two carry
+   * different things — OS paths there, a mount and share-relative paths here —
+   * and a handler that had to ask which kind it was looking at would be one
+   * branch away from uploading a share path as if it were a file on disk.
+   * `position` is in CSS pixels, converted once here exactly as `onFileDrop`
+   * does.
+   */
+  onWindowDrag(handler: (event: WindowDragEvent) => void): () => void;
   /** Accept a host's SSH key, after the user compared its fingerprint. */
   trustHostKey(host: string, port: number): Promise<void>;
   /** Forget a host's keys, so the next connection asks again. */
   forgetHostKey(host: string, port: number): Promise<void>;
+}
+
+/** One dragging message from another Excalibur window. */
+export interface WindowDragEvent {
+  phase: "over" | "drop" | "leave";
+  /** CSS pixels from the window's top-left. `null` on `leave`. */
+  position: { x: number; y: number } | null;
+  modifiers: { alt: boolean; shift: boolean; command: boolean; control: boolean };
+  /** What the drag is carrying, when it parsed. `null` on `leave`. */
+  selection: { mount: string; paths: string[]; window: string } | null;
 }
 
 /** True when running inside the Tauri shell rather than a plain browser. */
@@ -301,6 +348,15 @@ export function fixtureBackend(
     // A browser drop gives File objects, not paths, and the engine needs
     // paths. Rather than half-support it, the preview supports none of it.
     onFileDrop(): () => void {
+      return () => undefined;
+    },
+    // A browser has no NSDraggingSession, and a webview cannot start a drag a
+    // second webview would recognise — which is the whole reason E24-S2 is
+    // native. Refusing beats an HTML5 drag that works only in the preview.
+    async beginDrag(): Promise<void> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
+    onWindowDrag(): () => void {
       return () => undefined;
     },
     // A browser cannot open an editor or watch a file.
@@ -505,9 +561,9 @@ function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("mkdir", { path });
     },
-    async rename(from: string, to: string, replace: boolean): Promise<void> {
+    async rename(from: string, to: string, replace: boolean, mount?: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<void>("rename", { from, to, replace });
+      return invoke<void>("rename", { from, to, replace, mount });
     },
     async remove(path: string, recursive: boolean): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -517,13 +573,21 @@ function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<Transfer[]>("transfers");
     },
-    async enqueueDownloads(paths: string[], destination: string): Promise<string[]> {
+    async enqueueDownloads(
+      paths: string[],
+      destination: string,
+      mount?: string,
+    ): Promise<string[]> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<string[]>("enqueue_downloads", { paths, destination });
+      return invoke<string[]>("enqueue_downloads", { paths, destination, mount });
     },
-    async enqueueUploads(paths: string[], destination: string): Promise<string[]> {
+    async enqueueUploads(
+      paths: string[],
+      destination: string,
+      mount?: string,
+    ): Promise<string[]> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<string[]>("enqueue_uploads", { paths, destination });
+      return invoke<string[]>("enqueue_uploads", { paths, destination, mount });
     },
     async pauseTransfer(id: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -553,9 +617,10 @@ function tauriBackend(): Backend {
       paths: string[],
       destination: string,
       upload: boolean,
+      mount?: string,
     ): Promise<Conflict[]> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<Conflict[]>("check_conflicts", { paths, destination, upload });
+      return invoke<Conflict[]>("check_conflicts", { paths, destination, upload, mount });
     },
     onTransferChanged(handler: (transfer: Transfer) => void): () => void {
       let stop: (() => void) | null = null;
@@ -644,6 +709,59 @@ function tauriBackend(): Backend {
       return () => {
         cancelled = true;
         stop?.();
+      };
+    },
+    async beginDrag(paths: string[], image: Uint8Array): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // As a plain array: Tauri's IPC serialises a `Uint8Array` to `{}`, which
+      // reaches Rust as an empty image and a drag with nothing under the
+      // pointer. `Array.from` is a copy of a few kilobytes, once per drag.
+      return invoke<void>("begin_drag", { paths, image: Array.from(image) });
+    },
+    onWindowDrag(handler: (event: WindowDragEvent) => void): () => void {
+      const stops: (() => void)[] = [];
+      let cancelled = false;
+      void import("@tauri-apps/api/event").then(async ({ listen }) => {
+        // The same physical-to-CSS conversion `onFileDrop` does, and for the
+        // same reason: the native side reports physical pixels so that both
+        // kinds of drag are hit-tested by one piece of code. Two conventions
+        // would be a factor-of-two error on a Retina display.
+        const scale = window.devicePixelRatio || 1;
+        const bind = async (name: string, phase: WindowDragEvent["phase"]) => {
+          const unlisten = await listen<{
+            x?: number;
+            y?: number;
+            modifiers?: WindowDragEvent["modifiers"];
+            selection?: WindowDragEvent["selection"];
+          }>(name, (message) =>
+            handler({
+              phase,
+              position:
+                phase === "leave"
+                  ? null
+                  : {
+                      x: (message.payload?.x ?? 0) / scale,
+                      y: (message.payload?.y ?? 0) / scale,
+                    },
+              modifiers: message.payload?.modifiers ?? {
+                alt: false,
+                shift: false,
+                command: false,
+                control: false,
+              },
+              selection: message.payload?.selection ?? null,
+            }),
+          );
+          if (cancelled) unlisten();
+          else stops.push(unlisten);
+        };
+        await bind("drag://over", "over");
+        await bind("drag://drop", "drop");
+        await bind("drag://leave", "leave");
+      });
+      return () => {
+        cancelled = true;
+        for (const stop of stops) stop();
       };
     },
     async trustHostKey(host: string, port: number): Promise<void> {

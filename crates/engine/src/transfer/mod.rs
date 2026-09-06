@@ -18,6 +18,7 @@ pub mod plan;
 pub mod queue;
 pub mod rate;
 pub mod worker;
+pub mod xsync_engine;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -98,6 +99,39 @@ pub struct Transfer {
     pub error: Option<String>,
     /// When it was enqueued, so the queue keeps its order across a restart.
     pub queued_at_ms: i64,
+    /// The mount whose backend moves these bytes, when the row names one.
+    ///
+    /// A row used to mean "the app's most recent mount", which was already a
+    /// race — a download queued against one share and started after the user
+    /// switched to another would read from the wrong one — and with two windows
+    /// open (E23-S1) it is not even ambiguous, it is simply wrong: a drag
+    /// between windows is by definition a transfer whose share is *not* the one
+    /// the app most recently touched (E24-S2).
+    ///
+    /// `None` keeps the old meaning for rows restored from a queue written
+    /// before this field existed, which is why it is defaulted rather than
+    /// required.
+    #[serde(default)]
+    pub mount: Option<String>,
+    /// Whether every byte that landed was checked against the source's digest.
+    ///
+    /// A finished row says `verified` rather than `done` when this is set, and
+    /// the difference is not decoration: the two words are claims of different
+    /// strength and a row that said the stronger one for a chunk loop would be
+    /// vouching for something nobody measured. Only the xsync route sets it
+    /// (E22-S1) — `download` and `upload` move bytes they never hash.
+    ///
+    /// Defaulted, so a queue written before this field existed still loads and
+    /// its rows read exactly as they did.
+    #[serde(default)]
+    pub verified: bool,
+    /// A short phrase the finished row shows instead of a size.
+    ///
+    /// For "the file was already there, byte for byte" — which is a real
+    /// outcome of a copy through a planner and is not the same as having moved
+    /// the bytes. `error` is the wrong field for it: nothing failed.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 impl Transfer {
@@ -132,7 +166,22 @@ impl Transfer {
             status: Status::Queued,
             error: None,
             queued_at_ms: now_ms(),
+            mount: None,
+            verified: false,
+            note: None,
         }
+    }
+
+    /// Name the share this row moves bytes through.
+    ///
+    /// A builder rather than a sixth argument to [`Self::new`]: most callers
+    /// have exactly one mount in play and would pass the same value they
+    /// already resolved, and the ones that matter — a drop from another
+    /// window — are the ones that should have to say it out loud.
+    #[must_use]
+    pub fn on_mount(mut self, mount: impl Into<String>) -> Self {
+        self.mount = Some(mount.into());
+        self
     }
 
     /// Fraction complete in `0.0..=1.0`, or `None` when the size is unknown.

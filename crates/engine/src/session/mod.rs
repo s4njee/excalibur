@@ -448,6 +448,17 @@ impl SessionManager {
             .and_then(|s| s.mount.clone())
     }
 
+    /// What `id` was mounted from.
+    ///
+    /// A transfer through xsync's engine needs the host, port, user and export
+    /// root again, because it spawns its own `ssh` (E22-S1): one `xs --server`
+    /// serves one session, and a browse session and a sync session are
+    /// different protocols. The live backend cannot answer that — it is the
+    /// far end of a socket, not a recipe for opening another one.
+    pub async fn spec(&self, id: &str) -> Option<ConnectionSpec> {
+        self.sessions.read().await.get(id).map(|s| s.spec.clone())
+    }
+
     /// The backend for `id`, if it is connected.
     pub async fn backend(&self, id: &str) -> Option<Arc<dyn ShareBackend>> {
         self.sessions

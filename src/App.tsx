@@ -63,6 +63,14 @@ import { ContextMenu } from "./components/ContextMenu";
 import { Properties } from "./components/Properties";
 import { MoveTo } from "./components/MoveTo";
 import { destinationOf } from "./state/move";
+import {
+  SPRING_DELAY_MS,
+  describeDrop,
+  moveTargets,
+  resolveDrop,
+  type DropMount,
+  type DropPlan,
+} from "./state/dnd";
 import { menuFor, type MenuAction, type MenuItem } from "./state/menu";
 import { editable } from "./state/preview";
 import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
@@ -688,9 +696,23 @@ export default function App(props: {
     upload: boolean;
     sources: string[];
     destination: string;
+    /** The share side of the transfer, when it is not this window's (E24-S2). */
+    mount?: string;
   } | null>(null);
-  /** A drag from the OS is over the list, and where it would land. */
-  const [dropTarget, setDropTarget] = createSignal<{ folder: string | null } | null>(null);
+  /**
+   * A drag is over this window, and where it would land.
+   *
+   * One signal for both kinds — a Finder drag (E13-S5) and an Excalibur one
+   * (E24-S2) — because they light up the same rows. `message` is the drop
+   * ring's line and is empty for an OS drag, which has nothing to say beyond
+   * the highlight; `bookmark` is the sidebar row a drop would go to.
+   */
+  const [dropTarget, setDropTarget] = createSignal<{
+    folder: string | null;
+    bookmark?: string | null;
+    message?: string;
+    refused?: boolean;
+  } | null>(null);
   /** A write-back that the remote refused, awaiting Replace / Cancel. */
   const [saveConflict, setSaveConflict] = createSignal<EditSession | null>(null);
   /** Whether Quick Look is open. It follows the selection while it is. */
@@ -1122,34 +1144,44 @@ export default function App(props: {
    * files answers at most twenty questions rather than being interrupted
    * twenty times mid-copy. `apply to all` collapses it to one.
    */
-  const startTransfer = async (sources: string[], destination: string, upload: boolean) => {
+  const startTransfer = async (
+    sources: string[],
+    destination: string,
+    upload: boolean,
+    mount?: string,
+  ) => {
     if (sources.length === 0) return;
     try {
-      const clashes = await backend.checkConflicts(sources, destination, upload);
+      const clashes = await backend.checkConflicts(sources, destination, upload, mount);
       const standing = settings().conflictDefault;
       if (clashes.length > 0 && standing !== "ask") {
         // A standing answer, applied to the whole batch. The prompt is still
         // the default because replacing a file is not something to do on the
         // user's behalf unless they said so once, deliberately.
-        setConflicts({ items: clashes, upload, sources, destination });
+        setConflicts({ items: clashes, upload, sources, destination, mount });
         await resolveConflicts(standing, true);
         return;
       }
       if (clashes.length > 0) {
-        setConflicts({ items: clashes, upload, sources, destination });
+        setConflicts({ items: clashes, upload, sources, destination, mount });
         return;
       }
-      await enqueue(sources, destination, upload);
+      await enqueue(sources, destination, upload, mount);
     } catch (error) {
       setProblem(engineFailure(error).message);
     }
   };
 
-  const enqueue = async (sources: string[], destination: string, upload: boolean) => {
+  const enqueue = async (
+    sources: string[],
+    destination: string,
+    upload: boolean,
+    mount?: string,
+  ) => {
     if (sources.length === 0) return;
     await (upload
-      ? backend.enqueueUploads(sources, destination)
-      : backend.enqueueDownloads(sources, destination));
+      ? backend.enqueueUploads(sources, destination, mount)
+      : backend.enqueueDownloads(sources, destination, mount));
     setShowTransfers(true);
     refreshTransfers();
   };
@@ -1176,7 +1208,7 @@ export default function App(props: {
       return choice !== "skip";
     });
     try {
-      await enqueue(keep, pending.destination, pending.upload);
+      await enqueue(keep, pending.destination, pending.upload, pending.mount);
     } catch (error) {
       setProblem(engineFailure(error).message);
     }
@@ -1247,6 +1279,11 @@ export default function App(props: {
       }
       const folder = folderUnder(event.position);
       if (event.phase === "over") {
+        // Where this window was when the drag reached it, so a spring-loaded
+        // descent can be backed out of. Recorded on the first `over` rather
+        // than only where the drag started, because the window that springs is
+        // usually not the window that was dragged from.
+        if (dragOrigin() === null) setDragOrigin(path());
         setDropTarget({ folder });
         return;
       }
@@ -1269,6 +1306,266 @@ export default function App(props: {
     return entries().some((entry) => entry.path === path && entry.kind === "dir")
       ? path
       : null;
+  };
+
+  /**
+   * Dragging a selection out of the list (E24-S2).
+   *
+   * The gesture E8-S8 reserved: `pointerdown` on the name cell plus a few
+   * pixels of movement, which is why rubber-band selection deliberately does
+   * not start there. From that point AppKit owns the drag, so nothing here
+   * tracks the pointer.
+   */
+  const dragOut = async (entry: Entry) => {
+    // The dragged set is the selection when the grabbed row is in it, and just
+    // that row when it is not — Finder's rule, and the one that stops a drag
+    // of one file quietly moving nine others the user had forgotten about.
+    const chosen = selectedVisible().some((candidate) => candidate.path === entry.path)
+      ? selectedVisible()
+      : [entry];
+    setDragOrigin(path());
+    try {
+      await backend.beginDrag(
+        chosen.map((item) => item.path),
+        await dragImage(chosen),
+      );
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+
+  /**
+   * The drag image, as PNG bytes.
+   *
+   * Rendered here rather than in Rust because this is the side that knows what
+   * the row looks like, and drawn at CSS scale rather than device scale: an
+   * `NSImage` built from PNG data takes its size in points from the pixel
+   * dimensions, so a 2× bitmap would be a drag image twice the size of the row
+   * it came from. Slightly soft on a Retina display, and noted in
+   * docs/design-gaps.md.
+   */
+  const dragImage = async (chosen: Entry[]): Promise<Uint8Array> => {
+    const label =
+      chosen.length === 1 && chosen[0] ? chosen[0].name : `${chosen.length} items`;
+    const canvas = document.createElement("canvas");
+    const measure = canvas.getContext("2d");
+    if (!measure) return new Uint8Array();
+    const font = "13px -apple-system, system-ui, sans-serif";
+    measure.font = font;
+    const width = Math.min(320, Math.ceil(measure.measureText(label).width) + 40);
+    canvas.width = width;
+    canvas.height = 22;
+    const paint = canvas.getContext("2d");
+    if (!paint) return new Uint8Array();
+    paint.font = font;
+    // A glyph and a name, which is what the row shows. Deliberately not a
+    // screenshot of the row: the row is 1000px wide and a drag image that size
+    // hides the folder it is being dropped on.
+    paint.fillStyle = "rgba(120,120,128,0.55)";
+    paint.fillRect(4, 5, 12, 12);
+    paint.fillStyle = "rgba(0,0,0,0.85)";
+    paint.fillText(label, 24, 16);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    return blob ? new Uint8Array(await blob.arrayBuffer()) : new Uint8Array();
+  };
+
+  /** The folder this window was showing when the drag began, for Escape. */
+  const [dragOrigin, setDragOrigin] = createSignal<string | null>(null);
+  /** Set once a spring-load has descended, so leaving can undo it. */
+  const [sprung, setSprung] = createSignal(false);
+  let springTimer: number | undefined;
+  let springOver: string | null = null;
+
+  /** A mount as `dnd.ts` needs it, or `null` when this app is not holding it. */
+  const dropMountOf = (id: string | null): DropMount | null => {
+    if (id === null) return null;
+    const bookmark = bookmarks().find((candidate) => candidate.id === id);
+    if (!bookmark || !bookmark.mounted) return null;
+    // `share` is the absolute folder for a local mount, and unused otherwise —
+    // it is what turns a share-relative path into the OS path the transfer
+    // queue's two verbs are the only ones that take.
+    return { id, protocol: bookmark.protocol, root: bookmark.share };
+  };
+
+  /** Where a point would drop: a folder row, a sidebar row, or this folder. */
+  const targetUnder = (
+    position: { x: number; y: number } | null,
+  ): { mount: string | null; path: string; label: string; bookmark: string | null } | null => {
+    if (!position) return null;
+    const element = document.elementFromPoint(position.x, position.y);
+    const row = element?.closest("[data-bookmark]");
+    const id = row?.getAttribute("data-bookmark");
+    if (id) {
+      // A bookmark is that share's **root** — the "coming later" E13-S5 left.
+      const bookmark = bookmarks().find((candidate) => candidate.id === id);
+      return { mount: id, path: "", label: bookmark?.name ?? id, bookmark: id };
+    }
+    const folder = folderUnder(position);
+    if (folder !== null) {
+      return {
+        mount: activeMountId(),
+        path: folder,
+        label: folder.slice(folder.lastIndexOf("/") + 1),
+        bookmark: null,
+      };
+    }
+    // The list background, or anywhere else in the window: this folder.
+    return {
+      mount: activeMountId(),
+      path: path(),
+      label: path() === "" ? (share() ?? "this share") : path().slice(path().lastIndexOf("/") + 1),
+      bookmark: null,
+    };
+  };
+
+  /**
+   * A drag from an Excalibur window, over this one (E24-S2).
+   *
+   * Every window gets its own stream — the native side emits to the window the
+   * pointer is over, never broadcasts — so this asks no questions about whose
+   * drag it is. It only has to decide what a drop *here* would mean, which is
+   * `resolveDrop`'s job, and say so.
+   */
+  onMount(() => {
+    const stop = backend.onWindowDrag((event) => {
+      if (event.phase === "leave" || !event.selection) {
+        // Left without dropping: Escape, or the pointer moved to another
+        // window. Either way this window backs out of anything it sprang into,
+        // which is what "Escape backs out to where the drag started" is.
+        endDrag(true);
+        return;
+      }
+      const target = targetUnder(event.position);
+      if (!target) {
+        endDrag(false);
+        return;
+      }
+      const to = dropMountOf(target.mount);
+      const plan: DropPlan = to
+        ? resolveDrop({
+            selection: event.selection,
+            from: dropMountOf(event.selection.mount),
+            to,
+            path: target.path,
+            // Only this window's own mount has facts to read. A sidebar row for
+            // a share another window holds is taken at its word and refused by
+            // the server if it was wrong — better than refusing a legal drop on
+            // the strength of not having asked.
+            writable:
+              target.mount === activeMountId()
+                ? (listing()?.mount.writable ?? false)
+                : true,
+            alt: event.modifiers.alt,
+          })
+        : { verb: "refused", reason: `Open ${target.label} first.` };
+
+      if (event.phase === "over") {
+        setDropTarget({
+          folder: target.bookmark ? null : (folderUnder(event.position) ?? null),
+          bookmark: target.bookmark,
+          message: describeDrop(plan, target.label),
+          refused: plan.verb === "refused",
+        });
+        springLoad(target.bookmark ? null : folderUnder(event.position));
+        return;
+      }
+      endDrag(false);
+      void runDrop(plan);
+    });
+    onCleanup(() => {
+      stop();
+      endDrag(false);
+    });
+  });
+
+  /**
+   * Descend into a folder held under the pointer, the way Finder does.
+   *
+   * The timer is restarted whenever the folder under the pointer changes, so a
+   * drag *across* a column of folders springs into none of them — only a pause
+   * counts. Deliberately not armed for a sidebar row: descending into a share
+   * would mean mounting and switching this window mid-drag, which is a much
+   * larger thing to do to somebody by hovering.
+   */
+  const springLoad = (folder: string | null) => {
+    if (folder === springOver) return;
+    springOver = folder;
+    window.clearTimeout(springTimer);
+    if (folder === null) return;
+    springTimer = window.setTimeout(() => {
+      setSprung(true);
+      goTo(folder);
+    }, SPRING_DELAY_MS);
+  };
+
+  /** Clear the highlight, and optionally undo a spring-load. */
+  const endDrag = (restore: boolean) => {
+    window.clearTimeout(springTimer);
+    springOver = null;
+    setDropTarget(null);
+    const origin = dragOrigin();
+    if (restore && sprung() && origin !== null) goTo(origin);
+    setSprung(false);
+    // Cleared unconditionally, which is what makes the `leave` that always
+    // follows a drop harmless: the native side takes every window's drop
+    // target down when the session ends, and that teardown reports a `leave`
+    // to each of them — including the one that just received the drop, which
+    // must not then back out of the folder it sprang into.
+    setDragOrigin(null);
+  };
+
+  /**
+   * Do what the drop ring promised.
+   *
+   * The refusal is a toast rather than a silence, for E13-S5's reason: a drop
+   * that lands and does nothing is indistinguishable from a broken app.
+   */
+  const runDrop = async (plan: DropPlan) => {
+    switch (plan.verb) {
+      case "none":
+        return;
+      case "refused":
+        setProblem(plan.reason);
+        return;
+      case "move": {
+        let moved = 0;
+        for (const { from, to } of moveTargets(plan)) {
+          try {
+            // `replace: false`, as everywhere else: a move that silently
+            // overwrote a file is a destructive act nobody asked for, and the
+            // server refuses it atomically rather than this checking first.
+            await backend.rename(from, to, false, plan.mount);
+            moved += 1;
+          } catch (error) {
+            setProblem(engineFailure(error).message);
+            break;
+          }
+        }
+        refresh.request();
+        setSelection(EMPTY_SELECTION);
+        if (moved > 0) {
+          setNotice(
+            moved === 1
+              ? `Moved ${plan.items[0]?.name ?? "1 item"}`
+              : `Moved ${moved} items`,
+          );
+        }
+        return;
+      }
+      case "copy": {
+        const upload = plan.direction === "upload";
+        // The *remote* side of the transfer: the share it is going to for an
+        // upload, the one it comes from for a download. That is the mount the
+        // queue row records, so the worker reads or writes the share the drop
+        // named rather than whichever one the app most recently touched.
+        await startTransfer(
+          plan.sources,
+          plan.destination,
+          upload,
+          upload ? plan.destMount : plan.sourceMount,
+        );
+      }
+    }
   };
 
   /** Open the selected file in the OS editor and start watching it. */
@@ -1625,6 +1922,7 @@ export default function App(props: {
           bookmarks={bookmarks()}
           activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
           selectedId={selectedBookmark()}
+          dropBookmark={dropTarget()?.bookmark ?? null}
           onNewConnection={() => setConnecting(true)}
           onSelect={setSelectedBookmark}
           onOpen={(id) => void mountBookmark(id)}
@@ -1664,6 +1962,7 @@ export default function App(props: {
               onResizeEnd={onResizeEnd}
               renaming={renaming()}
               dropTarget={dropTarget()}
+              onDragOut={(entry) => void dragOut(entry)}
               onRename={(from, name) => void commitRename(from, name)}
             />
           </Show>

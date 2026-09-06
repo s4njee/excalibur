@@ -1077,6 +1077,45 @@
    rather than as a border the layout grew. */
 .rowsDropping {
   box-shadow: inset 0 0 0 2px var(--accent);
+  /* The caption below is positioned against this. */
+  position: relative;
+}
+
+/* The ring is refused when the drop cannot happen, so it must not read as an
+   invitation: no accent, and the caption carries the reason (E24-S2). */
+.rowsRefusing {
+  box-shadow: inset 0 0 0 2px var(--text-tertiary);
+}
+
+/* What the drop would do, said before the pointer is released. A ring alone
+   cannot tell a move from a copy, and those are different enough that guessing
+   is not acceptable — the same reason the design gives the sheet a verb. */
+.dropCaption {
+  position: sticky;
+  bottom: 12px;
+  z-index: 2;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 0 auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.dropCaptionRefused {
+  background: var(--text-secondary);
+}
+
+/* A sidebar row a drop would land on: that share's root (E24-S2). */
+.sidebarRowDrop {
+  background: var(--selection-soft-bg);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 /* The folder a drop would land in, highlighted so the gesture is unambiguous

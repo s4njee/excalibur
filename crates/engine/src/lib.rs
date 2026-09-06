@@ -12,9 +12,16 @@
 //! from the protocol rather than from what the user asked for, so a UI can
 //! never offer a write that the mount would refuse.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: the workspace's presumption, kept at the crate level so
+// it is visible here, but overridable by the one module that has to write FFI.
+// `drag::macos` allows it for itself (E24-S2), with a `// SAFETY:` note per
+// block and a tested safe wrapper above it; `forbid` cannot be overridden that
+// way, and holding it would mean shipping no drag at all rather than deciding
+// anything about one. See plan.md "Decisions taken", `unsafe` code.
+#![deny(unsafe_code)]
 
 pub mod backend;
+pub mod drag;
 pub mod edit;
 pub mod error;
 pub mod hostkeys;

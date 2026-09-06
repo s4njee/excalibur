@@ -374,6 +374,8 @@ export function Sidebar(props: {
   activeId: string;
   selectedId: string | null;
   onNewConnection: () => void;
+  /** The bookmark a drag would drop onto — that share's root (E24-S2). */
+  dropBookmark?: string | null;
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onEdit: (id: string) => void;
@@ -382,12 +384,13 @@ export function Sidebar(props: {
   const saved = createMemo(() => props.bookmarks.filter((bookmark) => !bookmark.mounted));
 
   return (
-    // Server-to-server is marked future in the handoff, so a drop here is a
-    // deliberate no-op with an explanation rather than something that looks
-    // broken. `onDragOver` without a `preventDefault` is what refuses it.
+    // A drop onto a share row copies to that share's root (E24-S2) — the
+    // "coming later" E13-S5 left here. `onDragOver` still refuses HTML5 drags
+    // without a `preventDefault`: an Excalibur drag is a native one and never
+    // reaches the DOM, so letting the webview's own drag through would be a
+    // second, differently-behaved path to the same gesture.
     <div
       class={`${styles.sidebar} ${props.collapsed ? styles.sidebarCollapsed : ""}`}
-      title="Dropping onto a share is coming later"
       onDragOver={(event) => event.stopPropagation()}
     >
       <div class={styles.sectionHeader}>Mounted</div>
@@ -396,7 +399,13 @@ export function Sidebar(props: {
           const active = () => bookmark.id === props.activeId;
           return (
             <div
-              class={`${styles.sidebarRow} ${active() ? styles.sidebarRowActive : ""}`}
+              class={`${styles.sidebarRow} ${active() ? styles.sidebarRowActive : ""} ${
+                props.dropBookmark === bookmark.id ? styles.sidebarRowDrop : ""
+              }`}
+              // Hit-tested by the native drop target, which has a point and no
+              // element (E24-S2). Only mounted rows carry it: an unmounted
+              // share has no session to copy into.
+              data-bookmark={bookmark.id}
               role="button"
               tabindex="0"
               onClick={() => props.onSelect(bookmark.id)}
@@ -523,8 +532,15 @@ export function FileList(props: {
   renaming?: string | null;
   /** Commit an inline rename. An unchanged name is the caller's to ignore. */
   onRename?: (from: string, name: string) => void;
-  /** A drag from the OS is over the list, and which folder row it is on. */
-  dropTarget?: { folder: string | null } | null;
+  /** A drag is over the list, and which folder row it is on. */
+  dropTarget?: {
+    folder: string | null;
+    /** What a drop would do, or why it cannot (E24-S2). Empty for an OS drag. */
+    message?: string;
+    refused?: boolean;
+  } | null;
+  /** Drag a selection out of the list. The gesture E8-S8 reserved (E24-S2). */
+  onDragOut?: (entry: Entry) => void;
   /** Which of the handoff's three row treatments to draw (E8-S3/S4). */
   layout: RowLayout;
 }) {
@@ -618,10 +634,24 @@ export function FileList(props: {
    */
   const [bandBox, setBandBox] = createSignal<{ from: number; to: number } | null>(null);
 
+  /**
+   * Whether a pointer landed on the part of a row that starts a drag.
+   *
+   * All three layouts, not just `1f`'s: the name is the handle in every one of
+   * them, and a rubber band that started on the name in two layouts and a drag
+   * in the third would be the same gesture meaning two things.
+   */
+  const onName = (target: HTMLElement): boolean =>
+    Boolean(
+      target.closest(
+        `.${styles.nameCell}, .${styles.nameLedCell}, .${styles.monoNameCell}`,
+      ),
+    );
+
   const startBand = (event: PointerEvent) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
-    if (target.closest(`.${styles.nameCell}`)) return;
+    if (onName(target)) return;
 
     const box = rows.getBoundingClientRect();
     // Measured from the first *entry*, not from the top of the content: the
@@ -648,6 +678,40 @@ export function FileList(props: {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  };
+
+  /**
+   * The drag-out gesture: pointer down on the name, then 4px of movement.
+   *
+   * The same 4px of slop the rubber band uses, so a click with a shaky hand is
+   * still a click and not a drag of somebody's files. From the moment
+   * `onDragOut` is called AppKit owns the pointer, which is why nothing here
+   * tracks it afterwards — and why the listeners are removed at that point
+   * rather than on the pointer-up that will never arrive.
+   */
+  const startDragOut = (event: PointerEvent, entry: Entry) => {
+    if (event.button !== 0 || !props.onDragOut) return;
+    const target = event.target as HTMLElement;
+    // Not while renaming: the field inside the name cell owns its own pointer.
+    if (!onName(target) || target.closest("input")) return;
+    const from = { x: event.clientX, y: event.clientY };
+    const move = (at: PointerEvent) => {
+      if (Math.abs(at.clientX - from.x) < 4 && Math.abs(at.clientY - from.y) < 4) return;
+      stop();
+      props.onDragOut?.(entry);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    // `pointercancel` too: the OS can take a pointer away — a system gesture,
+    // a window losing focus mid-press — and there is then no `pointerup` ever.
+    // The listener that survived it would turn the *next* movement anywhere in
+    // the window into a drag of a row nobody is touching.
+    window.addEventListener("pointercancel", stop);
   };
 
   /**
@@ -768,7 +832,7 @@ export function FileList(props: {
       <div
         class={`${styles.rows} ${props.slow ? styles.rowsStale : ""} ${
           props.dropTarget ? styles.rowsDropping : ""
-        }`}
+        } ${props.dropTarget?.refused ? styles.rowsRefusing : ""}`}
         role="rowgroup"
         ref={rows}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
@@ -779,6 +843,21 @@ export function FileList(props: {
           props.onContextMenu(null, { x: event.clientX, y: event.clientY });
         }}
       >
+        {/* What the drop would do, or why it cannot. Sticky rather than fixed,
+            so it stays visible while a spring-loaded descent scrolls the list
+            under it. */}
+        <Show when={props.dropTarget?.message}>
+          {(message) => (
+            <div
+              class={`${styles.dropCaption} ${
+                props.dropTarget?.refused ? styles.dropCaptionRefused : ""
+              }`}
+              role="status"
+            >
+              {message()}
+            </div>
+          )}
+        </Show>
         {/* One spacer of the full height carries the scrollbar, and the drawn
             rows are offset into it. */}
         <div
@@ -854,6 +933,7 @@ export function FileList(props: {
                     role="row"
                     aria-rowindex={range().start + index() + 1 + leadRows()}
                     aria-selected={selected()}
+                    onPointerDown={(event) => startDragOut(event, entry)}
                     onClick={(event) =>
                       props.onSelect(entry.path, {
                         shift: event.shiftKey,

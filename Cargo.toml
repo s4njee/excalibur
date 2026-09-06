@@ -59,6 +59,14 @@ fs4 = { version = "1", default-features = false }
 # The Trash, for the local backend's `remove` (E21-S1). Target-gated in the
 # engine's manifest: it has no platform module for iOS or Android.
 trash = "5"
+# Apple's own drag and drop, for E24-S2's one FFI module (`engine/src/drag`).
+# Vetted bindings rather than hand-written `extern` blocks — the middle step of
+# the preference order in "Decisions taken" — and every one of these is already
+# in the lock file via Tauri, wry and `trash`, so this adds no package and no
+# licence to the audit. See docs/supply-chain.md.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSGeometry", "NSString"] }
 zeroize = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 

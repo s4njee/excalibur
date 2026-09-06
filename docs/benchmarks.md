@@ -129,6 +129,115 @@ end, which `ssh cat` does not do.
 - Nothing about SFTP, NFS or SMB. They keep the wrapper around `read_range`,
   so their transfers are exactly as fast — or as slow — as they were.
 
+## Local↔xsync transfers through xsync's engine (E22-S1)
+
+E22-S1 asks for a 1 GiB file, a `congress`-shaped tree of small files, and a
+tree with a symlink and an empty directory, measured against orion and freya.
+**orion.local does not resolve any more** — `xcal reachable orion.local 22` says
+unreachable, `ping` cannot resolve the name, and a Raspberry Pi 5 is advertising
+on the network as `gentoo-rpi5.local` whose SSH host key has *changed* since it
+was last recorded. Overriding that is the user's decision and not a benchmark's,
+so it was left alone. What is measured instead is freya for the network figure,
+read-only, and a local `xs --server` for everything that needs a push.
+
+*2026-09-05. macOS 26.6.2 on an Apple M1 Max, 64 GiB. Release build. Fixtures:
+a 1 GiB file of `/dev/urandom` bytes (sha256 `bf78be5575e3e744c672…`) so zstd
+cannot shrink it and the figures are real payload; a `congress` shape of 10,000
+× 8 KB random files in 20 directories (78 MB); and a tree holding one file, a
+symlink, a **dangling** symlink and an empty directory. The timer starts after
+the mount, so it measures the transfer and not the SSH handshake.*
+
+### Over a local `xs --server`
+
+No network at all: this is the engine, the disk and the page cache, and it is
+the only place a **push** could be measured with orion gone. Read it as an upper
+bound on the route, not as a link figure.
+
+```
+xcal put <source> <remote path> --xsync-local <export> --xs <xs> --xsync-engine
+```
+
+| Workload | Time | Throughput |
+|---|---|---|
+| 1 GiB single file | 4.68, 4.48, 4.64 s | 229, 239, **232 MB/s** |
+| `congress`: 10,000 × 8 KB (78 MB) | 1.67, 1.77, 1.53 s | 49.2, 46.3, **53.7 MB/s** |
+| `congress` again, destination identical | 0.10 s | nothing moved — 10,000 files unchanged |
+| symlink + dangling symlink + empty directory | 0.02 s | — |
+
+The small-file number is the one worth reading: **≈5,900 files a second**,
+including a BLAKE3 digest computed and checked for every one of them. The
+re-run is the other one — a second pass over an unchanged tree of ten thousand
+files costs a tenth of a second and moves nothing, which is what makes "resume
+by re-running" cheap.
+
+The shapes tree arrives intact: `link.txt -> real.txt` and
+`dangling -> ../../nowhere` are both recreated **as symlinks**, not followed,
+and the empty directory is created. A dangling link is the interesting one,
+because a route that resolved links would have to fail on it.
+
+### Small files, against the chunk loop
+
+The same 10,000-file tree pulled back, interleaved, one run of each: `xcal get`
+with `--xsync-engine`, and without it, which is E13-S7's worker moving one file
+at a time through `read_range`.
+
+| Run | worker (`--depth 4`) | xsync engine |
+|---|---|---|
+| 1 | 119.90 s *(0.7 MB/s)* | 4.04 s *(20.3 MB/s)* |
+| 2 | 150.72 s *(0.5 MB/s)* | 3.14 s *(26.1 MB/s)* |
+| 3 | 118.52 s *(0.7 MB/s)* | 2.58 s *(31.8 MB/s)* |
+| mean | **129.7 s** | **3.25 s** |
+
+Both landed all 10,000 files. **The xsync route is ≈40× faster on this shape**,
+and the gap is not throughput, it is per-file cost: the worker pays one open,
+one stat, one `.part`, one fsync and one rename each, ten thousand times, three
+files at a time. xsync sends the same tree as batched frames and pays none of
+it. This is the clearest argument the story has, and it is why E22-S2 wants
+every backend behind the same planner rather than only this pair.
+
+### Over SSH, against the same tree
+
+The only real-network figure available: a 1.25 GiB tree of two files pulled from
+`freya.local:/mnt/raid6`, read-only, interleaved one run of each because the
+link moved between runs.
+
+```
+xcal get "movies/<tree>" /tmp/dest --xsync-ssh freya.local:/mnt/raid6 --xsync-engine
+```
+
+| Run | worker (`--depth 4`) | xsync engine |
+|---|---|---|
+| 1 | 37.6 MB/s | 30.2 MB/s |
+| 2 | 33.6 MB/s | 31.2 MB/s |
+| 3 | 40.3 MB/s | 26.3 MB/s |
+| mean | **37.2 MB/s** | **29.2 MB/s** |
+
+Both copies were digest-identical to each other. **On one large file over this
+link the xsync route is about 20% slower than the chunk loop**, and that is
+reported rather than explained away: E13-S7 tuned reads-in-flight against
+exactly this shape and got the depth right, while the v1/v2 route is
+single-stream by construction — `streams` is encoded and dropped, because
+multi-stream push spawns its own `ssh` processes and is not available to a
+caller that owns the session. The trade is a route that is 40× faster on ten
+thousand small files and 20% slower on one big one.
+
+### What these numbers do not show
+
+- **Nothing comparable to E13-S7's 66 MB/s.** That was gigabit Ethernet to a
+  Pi 5. `en0` here reports `media: autoselect` with no negotiated speed and no
+  `<full-duplex>`, which on this machine means Wi-Fi. The worker column above is
+  the honest same-day baseline; the E13-S7 figure is not.
+- **No push over a network at all.** orion is gone and freya is pull-only by
+  instruction, so every push figure is over a pipe on one machine.
+- **The local figures are page-cache figures** in both directions, on a machine
+  with 64 GiB. A 4 GiB push completed in under four seconds on a second run,
+  which is memory bandwidth rather than a transfer.
+- **Resume after a cancel was not timed.** It could not be caught: the local
+  route moves a gigabyte in under five seconds, so a kill is a race. What *is*
+  verified, by `crates/engine/tests/xsync_transfer.rs`, is the part that
+  matters — a cancel kills the child and leaves nothing under the destination's
+  final name, only the `.xsync.tmp.<hex>` stage the next run resumes from.
+
 ## SMB and SFTP
 
 Not measured. E4-S4 asks for a comparison against `smbutil`/`mount_smbfs`,
