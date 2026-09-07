@@ -133,6 +133,25 @@ impl TransferQueue {
         gone
     }
 
+    /// Take many transfers out at once, writing the file once.
+    ///
+    /// The startup sweep removes every row that named an abandoned staging
+    /// directory, and a drag of a large folder makes thousands of them. One
+    /// [`Self::remove`] each would rewrite the whole queue thousands of times
+    /// before the first window could paint — the file starts at over a
+    /// megabyte, so the cost is quadratic in the bytes and was measured in
+    /// seconds of boot.
+    pub async fn remove_all(&self, ids: &[String]) -> usize {
+        let gone = {
+            let mut items = self.items.write().await;
+            ids.iter().filter(|id| items.remove(*id).is_some()).count()
+        };
+        if gone > 0 {
+            self.persist().await;
+        }
+        gone
+    }
+
     /// The next transfer a free worker should start, if any.
     ///
     /// Oldest first, and only `Queued`: a paused transfer stays paused however

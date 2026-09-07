@@ -1683,13 +1683,36 @@ async fn retire(transfers: &Arc<TransferQueue>, worker: &Arc<Worker>, id: &str) 
 /// Called before the restored queue is drained, because draining it is the
 /// thing that would otherwise copy a whole tree back into one of these.
 async fn sweep_abandoned_staging(transfers: &Arc<TransferQueue>) {
+    let mut doomed: Vec<String> = Vec::new();
+    let mut directories: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
     for row in transfers.all().await {
-        let Some(staging) = staging_root(Path::new(&row.dest_path)) else {
-            continue;
-        };
-        let _ = std::fs::remove_dir_all(&staging);
-        transfers.remove(&row.id).await;
+        if let Some(staging) = staging_root(Path::new(&row.dest_path)) {
+            directories.insert(staging);
+            doomed.push(row.id);
+        }
     }
+    if doomed.is_empty() {
+        return;
+    }
+
+    // Gathered first, then done once each. One abandoned drag leaves *one*
+    // directory and a row per file in it — thousands, for a folder of any size
+    // — so removing per row would call `remove_dir_all` on the same path
+    // thousands of times and rewrite the queue file after every one of them.
+    // That is quadratic in the bytes and it was seconds of a blank window
+    // before the first paint.
+    //
+    // Off the async runtime because `remove_dir_all` blocks, and this runs on
+    // the way up: a blocked runtime thread here is a window that has not been
+    // built yet.
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        for staging in directories {
+            let _ = std::fs::remove_dir_all(staging);
+        }
+    })
+    .await;
+    transfers.remove_all(&doomed).await;
 }
 
 /// The `.excalibur-*` ancestor of a path, when it has one.

@@ -1,7 +1,17 @@
-import { For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import styles from "./transfers.module.css";
 import { formatRate, formatSize, formatTransferStatus } from "../state/format";
 import type { Transfer } from "../state/types";
+
+/**
+ * Rows drawn before the panel stops and offers the rest.
+ *
+ * Generous on purpose: an ordinary queue is a handful of rows and never reaches
+ * this, and a folder is one row now (E22-S3). It exists for the batch of
+ * individual files that used to be the normal case, where the panel opening on
+ * launch cost seconds of a blank window.
+ */
+const ROW_CAP = 200;
 
 /**
  * The transfer queue (E13-S1, E13-S2).
@@ -36,6 +46,12 @@ export function Transfers(props: {
       .filter((transfer) => transfer.status === "running")
       .reduce((total, transfer) => total + (transfer.rate ?? 0), 0);
 
+  /** How many rows are drawn before the panel offers the rest. */
+  const [cap, setCap] = createSignal<number>(ROW_CAP);
+  const shown = createMemo(() =>
+    props.transfers.length > cap() ? props.transfers.slice(0, cap()) : props.transfers,
+  );
+
   return (
     <div class={styles.panel} role="dialog" aria-label="Transfers">
       <div class={styles.header}>
@@ -56,7 +72,7 @@ export function Transfers(props: {
           when={props.transfers.length > 0}
           fallback={<div class={styles.empty}>Nothing transferring</div>}
         >
-          <For each={props.transfers}>
+          <For each={shown()}>
             {(transfer) => (
               <Row
                 transfer={transfer}
@@ -67,6 +83,17 @@ export function Transfers(props: {
               />
             )}
           </For>
+          {/* A queue this long is a batch of individual files, and every row
+              carries a bar and a caption — rendering all of them is seconds of
+              a frozen window, which is exactly what the panel opening on launch
+              used to cost. Bounded rather than virtualised because these rows
+              are not one height: a finished row drops its bar. The rest are one
+              click away, and the click is the user accepting the wait. */}
+          <Show when={props.transfers.length > shown().length}>
+            <button class={styles.showAll} onClick={() => setCap(Infinity)}>
+              Show {props.transfers.length - shown().length} more
+            </button>
+          </Show>
         </Show>
       </div>
 
@@ -107,7 +134,13 @@ function Row(props: {
       : 0;
 
   return (
-    <div class={`${styles.row} ${finished() ? styles.rowFinished : ""}`}>
+    <div
+      class={`${styles.row} ${finished() ? styles.rowFinished : ""}`}
+      // Which transfer this row is, the way a file row carries `data-path`.
+      // Class names are mangled by CSS modules, so there is otherwise nothing
+      // stable to count rows by.
+      data-transfer={props.transfer.id}
+    >
       <div class={styles.rowTop}>
         <span
           class={`${styles.chip} ${

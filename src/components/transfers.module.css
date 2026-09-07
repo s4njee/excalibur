@@ -203,3 +203,22 @@
   font-family: var(--font-mono);
   font-size: 10px;
 }
+
+/* The rest of a long queue, one click away. A row rather than a control in the
+   header, because it belongs at the end of what it continues. */
+.showAll {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--hairline-row);
+  color: var(--accent);
+  font-size: var(--text-row);
+  cursor: default;
+}
+
+.showAll:hover {
+  background: var(--row-hover-bg);
+}
+
