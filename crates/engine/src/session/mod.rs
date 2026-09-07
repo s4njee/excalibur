@@ -207,6 +207,42 @@ impl SessionManager {
     /// Returns the connector's failure. The session is kept in `Error` so the
     /// UI can show it and offer a reconnect rather than losing the row.
     pub async fn mount(&self, window: &str, spec: ConnectionSpec) -> Result<()> {
+        self.connect(Some(window), spec).await
+    }
+
+    /// Connect a share with no window on it, and leave it that way.
+    ///
+    /// For the shares the app should already be holding before anyone asks: the
+    /// sidebar's local favourites, which are folders on this machine that a
+    /// window will almost certainly want and that cost nothing to open. The
+    /// point is the transfer queue rather than the browsing — a queue restored
+    /// from the last run names shares nobody has mounted yet, and this is what
+    /// there is for it to wait for.
+    ///
+    /// Two differences from [`Self::mount`], and both of them are the reason
+    /// this is a separate method rather than an `Option`:
+    ///
+    /// - **Nothing already held is disturbed.** Mounting again would replace a
+    ///   live session — which is right when a user asks for it and wrong when
+    ///   the app is being helpful behind them, and with several windows this
+    ///   runs once per window.
+    /// - **It does not become `recent`.** That is the fallback for rows which
+    ///   name no mount, and a share the user never opened must not become the
+    ///   answer to "the share this app is working with".
+    ///
+    /// # Errors
+    ///
+    /// Returns the connector's failure, for a caller that wants to know. A
+    /// favourite whose folder has gone away fails here and is meant to be
+    /// ignored: the event carries no audience, so no window is told either.
+    pub async fn preconnect(&self, spec: ConnectionSpec) -> Result<()> {
+        if self.sessions.read().await.contains_key(&spec.id) {
+            return Ok(());
+        }
+        self.connect(None, spec).await
+    }
+
+    async fn connect(&self, window: Option<&str>, spec: ConnectionSpec) -> Result<()> {
         let id = spec.id.clone();
         {
             let mut sessions = self.sessions.write().await;
@@ -225,7 +261,7 @@ impl SessionManager {
             status: MountStatus::Mounting,
             mount: None,
             reason: None,
-            audience: self.audience(&id, Some(window)).await,
+            audience: self.audience(&id, window).await,
         });
 
         match self.connector.connect(&spec).await {
@@ -239,11 +275,15 @@ impl SessionManager {
                         session.mount = Some(info.clone());
                     }
                 }
-                self.active
-                    .write()
-                    .await
-                    .insert(window.to_owned(), id.clone());
-                *self.recent.write().await = Some(id.clone());
+                // A preconnect has no window to make active and must not
+                // become the app-wide fallback either: see [`Self::preconnect`].
+                if let Some(window) = window {
+                    self.active
+                        .write()
+                        .await
+                        .insert(window.to_owned(), id.clone());
+                    *self.recent.write().await = Some(id.clone());
+                }
                 self.publish(SessionEvent {
                     id: id.clone(),
                     status: MountStatus::Ready,
@@ -264,7 +304,7 @@ impl SessionManager {
                 // The window that asked keeps whatever share it had: a
                 // connection that never came up must not take a working one
                 // off the screen of the window that tried.
-                let audience = self.audience(&id, Some(window)).await;
+                let audience = self.audience(&id, window).await;
                 self.publish(SessionEvent {
                     id,
                     status: MountStatus::Error,

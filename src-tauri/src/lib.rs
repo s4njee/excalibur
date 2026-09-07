@@ -29,8 +29,8 @@ use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::transfer::xsync_engine::{SshEndpoint, XsyncRemote, XsyncRoute};
 use excalibur_engine::{
     hostkeys, Connector, Direction, EditSession, EditStore, EngineError, KeyringStore, KnownHosts,
-    Listing, MountInfo, Result, SaveOutcome, Secret, SecretStore, SessionManager, Transfer,
-    TransferStatus, Trust,
+    Listing, MountInfo, MountStatus, Result, SaveOutcome, Secret, SecretStore, SessionManager,
+    Transfer, TransferStatus, Trust,
 };
 use tauri::http;
 use tauri::{Emitter, Manager};
@@ -257,6 +257,25 @@ impl BackendSource for AppMount {
             .backend(id)
             .await
             .ok_or_else(|| EngineError::Disconnected(format!("{id} is not connected")))
+    }
+
+    /// Whether the share a row names is held right now.
+    ///
+    /// The whole of this app's answer to "not connected *yet*". Mounts are made
+    /// when a window connects to something, so between launch and the first
+    /// connection there are none — and the queue restored from the last run is
+    /// full of rows naming shares from it. Asking here, before the row is
+    /// claimed, is what makes that a wait instead of 260 identical failures.
+    ///
+    /// A map lookup and nothing else: it must not connect anything, because it
+    /// is asked once per queued row per drain.
+    ///
+    /// The xsync route is included because it is a second way to reach a share
+    /// — it spawns its own `ssh` and does not use the browse session at all —
+    /// so a mount that is reconnecting can still move bytes, exactly as
+    /// [`Self::xsync_route`] says.
+    async fn is_connected(&self, mount: Option<&str>) -> bool {
+        self.backend_for(mount).await.is_ok() || self.xsync_route(mount).await.is_some()
     }
 
     /// The recipe for a second `ssh` to an xsync export (E22-S1).
@@ -952,6 +971,32 @@ async fn retry_transfer(
     Ok(())
 }
 
+/// Put every failed transfer back in the queue.
+///
+/// Safe to offer as one gesture only because a share that is not mounted is now
+/// a *wait* rather than a failure: re-queueing hundreds of rows against nothing
+/// used to mean hundreds of instant failures, which is the retry storm the user
+/// already lived through. Rows whose share is still missing sit as `queued ·
+/// waiting for its share` until it arrives.
+#[tauri::command]
+async fn retry_failed_transfers(state: tauri::State<'_, AppState>) -> std::result::Result<(), ()> {
+    state.transfers.requeue_failed().await;
+    run_queue(&state);
+    Ok(())
+}
+
+/// Drop every failed transfer.
+///
+/// The other half of the pair, and separate from `Clear finished` on purpose: a
+/// failed row has a `Retry` on it, so sweeping it away with the done ones would
+/// throw away a choice the user had not made yet. Here it is a thing they asked
+/// for by name.
+#[tauri::command]
+async fn clear_failed_transfers(state: tauri::State<'_, AppState>) -> std::result::Result<(), ()> {
+    state.transfers.clear_failed().await;
+    Ok(())
+}
+
 /// Pause everything unfinished.
 #[tauri::command]
 async fn pause_all_transfers(state: tauri::State<'_, AppState>) -> std::result::Result<(), ()> {
@@ -1283,6 +1328,25 @@ async fn mount(
         .mount(window.label(), spec)
         .await
         .map_err(Into::into)
+}
+
+/// Connect a share without putting the calling window on it.
+///
+/// What the sidebar's local favourites are opened through at startup, so the
+/// folders the user keeps are already held before anything asks for them — and,
+/// the reason it exists, so a queue restored from the last run has something to
+/// wait *for*: an unmounted share is a wait now, and a wait needs an arrival.
+///
+/// **A failure here is not news.** A favourite whose disk was ejected fails,
+/// and it must not raise a banner in a window that is looking at something
+/// else — so the error is returned to the caller, which drops it, and the
+/// session event carries no audience because no window is on this mount.
+#[tauri::command]
+async fn preconnect(
+    state: tauri::State<'_, AppState>,
+    spec: ConnectionSpec,
+) -> std::result::Result<(), CommandError> {
+    state.sessions.preconnect(spec).await.map_err(Into::into)
 }
 
 /// Disconnect a share.
@@ -2265,8 +2329,19 @@ pub fn run() {
             // nothing but latency.
             let handle = app.handle().clone();
             let mut changes = sessions.events();
+            // The same stream wakes the transfer queue. A queued row whose
+            // share is not connected is left queued rather than failed, so
+            // something has to notice when the share turns up — and a mount
+            // reaching `Ready` is exactly that moment. Without this the rows
+            // restored at launch would wait for the next enqueue or retry,
+            // which is to say for the user to do the app's job.
+            let waking = Arc::clone(&worker);
             tauri::async_runtime::spawn(async move {
                 while let Ok(event) = changes.recv().await {
+                    if event.status == MountStatus::Ready {
+                        let worker = Arc::clone(&waking);
+                        tauri::async_runtime::spawn(async move { worker.drain().await });
+                    }
                     // Addressed, not broadcast (E23-S1): a share dropping is
                     // news for the windows looking at that share, and a banner
                     // in a window on a different mount would be a window
@@ -2335,6 +2410,8 @@ pub fn run() {
             retry_transfer,
             pause_all_transfers,
             clear_finished_transfers,
+            retry_failed_transfers,
+            clear_failed_transfers,
             download_folder,
             user_folders,
             existing_directories,
@@ -2344,6 +2421,7 @@ pub fn run() {
             edits,
             close_edit,
             mount,
+            preconnect,
             unmount,
             remount_read_write,
             set_active,

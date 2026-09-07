@@ -1,6 +1,8 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import styles from "./transfers.module.css";
+import { ContextMenu } from "./ContextMenu";
 import { formatRate, formatSize, formatTransferStatus } from "../state/format";
+import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
 
 /**
@@ -26,6 +28,8 @@ export function Transfers(props: {
   onClose: () => void;
   onPauseAll: () => void;
   onClearFinished: () => void;
+  onRetryFailed: () => void;
+  onClearFailed: () => void;
   onPause: (id: string) => void;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
@@ -52,20 +56,75 @@ export function Transfers(props: {
     props.transfers.length > cap() ? props.transfers.slice(0, cap()) : props.transfers,
   );
 
+  /** Where the overflow menu was opened, while it is open. */
+  const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | null>(null);
+  let hamburger!: HTMLButtonElement;
+
+  const toggleMenu = () => {
+    if (menuAt() !== null) {
+      setMenuAt(null);
+      return;
+    }
+    const box = hamburger.getBoundingClientRect();
+    // Under the button rather than at the pointer: this menu is opened from a
+    // fixed control, not by right-clicking a row, so it should appear in the
+    // same place whether it was reached by mouse or by keyboard.
+    setMenuAt({ x: box.left, y: box.bottom + 2 });
+  };
+
+  const runMenuAction = (action: TransferMenuAction) => {
+    setMenuAt(null);
+    switch (action) {
+      case "retryFailed":
+        props.onRetryFailed();
+        return;
+      case "clearFailed":
+        props.onClearFailed();
+        return;
+      case "clearFinished":
+        props.onClearFinished();
+        return;
+      case "pauseAll":
+        props.onPauseAll();
+    }
+  };
+
   return (
     <div class={styles.panel} role="dialog" aria-label="Transfers">
       <div class={styles.header}>
         <span class={styles.title}>Transfers</span>
-        <button class={styles.headerAction} onClick={props.onPauseAll}>
-          Pause all
-        </button>
-        <button class={styles.headerAction} onClick={props.onClearFinished}>
-          Clear finished
+        {/* The bulk actions live behind one control (asked for directly,
+            2026-09-07). The handoff draws three buttons in this header and
+            there are now four verbs, two of them about failures — recorded in
+            docs/design-gaps.md. Close stays a button of its own: it acts on the
+            panel, and everything in the menu acts on the queue. */}
+        <button
+          class={styles.headerAction}
+          ref={hamburger}
+          aria-label="Queue actions"
+          aria-haspopup="menu"
+          aria-expanded={menuAt() !== null}
+          onClick={toggleMenu}
+        >
+          ☰
         </button>
         <button class={styles.headerAction} aria-label="Close" onClick={props.onClose}>
           ✕
         </button>
       </div>
+
+      <Show when={menuAt()}>
+        {(at) => (
+          <ContextMenu
+            items={transferMenu(props.transfers)}
+            at={at()}
+            label="Queue actions"
+            anchor={hamburger}
+            onChoose={runMenuAction}
+            onClose={() => setMenuAt(null)}
+          />
+        )}
+      </Show>
 
       <div class={styles.rows}>
         <Show

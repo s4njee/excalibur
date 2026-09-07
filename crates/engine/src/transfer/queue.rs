@@ -19,7 +19,7 @@
 //! moves. There is no timer and no coalescing window: the rule is a comparison
 //! of two values, which is a thing a test can state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -157,10 +157,23 @@ impl TransferQueue {
     /// Oldest first, and only `Queued`: a paused transfer stays paused however
     /// idle the pool is, which is the whole difference between the two states.
     pub async fn next_queued(&self) -> Option<Transfer> {
+        self.next_queued_except(&HashSet::new()).await
+    }
+
+    /// As [`Self::next_queued`], ignoring rows the caller has already passed
+    /// over.
+    ///
+    /// The worker leaves a transfer `Queued` when the share it names is not
+    /// connected yet, because that is a wait rather than a failure — and a row
+    /// that stays `Queued` is a row [`Self::next_queued`] hands back for ever.
+    /// The skip set is what turns "come back to this one later" into a loop
+    /// that ends.
+    pub async fn next_queued_except(&self, skip: &HashSet<String>) -> Option<Transfer> {
         let items = self.items.read().await;
         items
             .values()
             .filter(|transfer| transfer.status == Status::Queued)
+            .filter(|transfer| !skip.contains(&transfer.id))
             .min_by_key(|transfer| (transfer.queued_at_ms, transfer.id.clone()))
             .cloned()
     }
@@ -181,6 +194,104 @@ impl TransferQueue {
         };
         self.persist().await;
         removed
+    }
+
+    /// Drop every failed row.
+    ///
+    /// Deliberately not folded into [`Self::clear_finished`] by making `Failed`
+    /// finished. A failed row carries a `Retry` button, so clearing it with the
+    /// done ones would throw away the thing the user is about to act on; this
+    /// is the other verb, asked for by name, and the two stay apart because
+    /// only one of them is destructive of a choice.
+    pub async fn clear_failed(&self) -> Vec<String> {
+        let removed: Vec<String> = {
+            let mut items = self.items.write().await;
+            let doomed: Vec<String> = items
+                .values()
+                .filter(|transfer| transfer.status == Status::Failed)
+                .map(|transfer| transfer.id.clone())
+                .collect();
+            for id in &doomed {
+                items.remove(id);
+            }
+            doomed
+        };
+        if !removed.is_empty() {
+            self.persist().await;
+        }
+        removed
+    }
+
+    /// Put every failed row back in the queue.
+    ///
+    /// One write rather than one per row: the queue this exists for is the one
+    /// with hundreds of failures in it, and a retry that rewrote a megabyte per
+    /// row would cost more than the transfers.
+    ///
+    /// The error and the note go with the status, because both describe the
+    /// attempt that failed and neither is true of the row that is about to be
+    /// tried again.
+    pub async fn requeue_failed(&self) -> Vec<Transfer> {
+        let changed = {
+            let mut items = self.items.write().await;
+            let mut changed = Vec::new();
+            for transfer in items.values_mut() {
+                if transfer.status != Status::Failed {
+                    continue;
+                }
+                transfer.status = Status::Queued;
+                transfer.error = None;
+                transfer.note = None;
+                changed.push(transfer.clone());
+            }
+            changed
+        };
+        for transfer in &changed {
+            let _ = self.events.send(QueueEvent {
+                transfer: transfer.clone(),
+            });
+        }
+        if !changed.is_empty() {
+            self.persist().await;
+        }
+        changed
+    }
+
+    /// Say why several queued rows are not moving, writing the file once.
+    ///
+    /// The worker finds these one at a time as it walks the queue, and a
+    /// restored queue against a share nothing has connected yet is every row
+    /// at once. One [`Self::update`] each would rewrite the whole file per row
+    /// on the way up, which is the boot cost `2b16451` measured and removed.
+    ///
+    /// Only `Queued` rows are touched, and only when the note is not already
+    /// what it would be set to — so the second pass over a queue that is still
+    /// waiting writes nothing and tells nobody.
+    pub async fn note_all(&self, ids: &[String], note: &str) -> usize {
+        let changed = {
+            let mut items = self.items.write().await;
+            let mut changed = Vec::new();
+            for id in ids {
+                let Some(transfer) = items.get_mut(id) else {
+                    continue;
+                };
+                if transfer.status != Status::Queued || transfer.note.as_deref() == Some(note) {
+                    continue;
+                }
+                transfer.note = Some(note.to_owned());
+                changed.push(transfer.clone());
+            }
+            changed
+        };
+        for transfer in &changed {
+            let _ = self.events.send(QueueEvent {
+                transfer: transfer.clone(),
+            });
+        }
+        if !changed.is_empty() {
+            self.persist().await;
+        }
+        changed.len()
     }
 
     /// Pause everything that has not finished.

@@ -26,6 +26,18 @@ export interface Backend {
   testConnection(spec: Spec): Promise<MountInfo>;
   /** Connect and keep it, making it the active mount. */
   mount(spec: Spec): Promise<void>;
+  /**
+   * Connect and keep it, without putting this window on it.
+   *
+   * How the sidebar's local favourites are already held at startup. It is the
+   * transfer queue this is for rather than the browsing: a queue restored from
+   * the last run names shares nobody has mounted yet, its rows now wait for
+   * them instead of failing, and this is the arrival they wait for.
+   *
+   * A folder that has gone away rejects, and the caller is expected to drop it:
+   * no window is on the mount, so nothing is shown either way.
+   */
+  preconnect(spec: Spec): Promise<void>;
   /** Whether a host is answering, for the sidebar's dimmed rows. */
   reachable(host: string, port: number): Promise<boolean>;
   /**
@@ -137,6 +149,10 @@ export interface Backend {
   retryTransfer(id: string): Promise<void>;
   pauseAllTransfers(): Promise<void>;
   clearFinishedTransfers(): Promise<void>;
+  /** Put every failed transfer back in the queue. */
+  retryFailedTransfers(): Promise<void>;
+  /** Drop every failed transfer, which `clearFinishedTransfers` keeps. */
+  clearFailedTransfers(): Promise<void>;
   /** Where downloads land by default. */
   downloadFolder(): Promise<string>;
   /** Where this platform keeps the folders FAVORITES is seeded from (E27-S1). */
@@ -410,6 +426,11 @@ export function fixtureBackend(
       if (options.hostKey) throw hostKeyFailure();
       throw new Error("not connected to the engine — run the desktop app");
     },
+    // Silently, unlike `mount`. The preview's favourites are folders on a
+    // machine this browser cannot see, and the startup preconnect is not
+    // something the user asked for — a rejection per row would be noise about
+    // work nobody requested.
+    async preconnect(): Promise<void> {},
     // A browser drop gives File objects, not paths, and the engine needs
     // paths. Rather than half-support it, the preview supports none of it.
     onFileDrop(): () => void {
@@ -452,6 +473,8 @@ export function fixtureBackend(
     async retryTransfer(): Promise<void> {},
     async pauseAllTransfers(): Promise<void> {},
     async clearFinishedTransfers(): Promise<void> {},
+    async retryFailedTransfers(): Promise<void> {},
+    async clearFailedTransfers(): Promise<void> {},
     async downloadFolder(): Promise<string> {
       return "~/Downloads";
     },
@@ -576,6 +599,10 @@ function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("mount", { spec });
     },
+    async preconnect(spec: Spec): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("preconnect", { spec });
+    },
     async reachable(host: string, port: number): Promise<boolean> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<boolean>("reachable", { host, port });
@@ -694,6 +721,14 @@ function tauriBackend(): Backend {
     async clearFinishedTransfers(): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("clear_finished_transfers");
+    },
+    async retryFailedTransfers(): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("retry_failed_transfers");
+    },
+    async clearFailedTransfers(): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("clear_failed_transfers");
     },
     async downloadFolder(): Promise<string> {
       const { invoke } = await import("@tauri-apps/api/core");

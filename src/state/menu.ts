@@ -29,8 +29,17 @@ export type MenuAction =
   | "addFavorite"
   | "removeFavorite";
 
-export interface MenuItem {
-  action: MenuAction;
+/**
+ * One row of a menu, generic in what choosing it means.
+ *
+ * The parameter exists because there is more than one menu: the transfer
+ * panel's bulk actions (`transferMenu.ts`) are a different vocabulary reaching
+ * a different handler, and they share the *shape* of a row — a label, whether
+ * it is refused, and why — with none of the verbs. Defaulted to this module's
+ * own actions, so every existing caller says nothing.
+ */
+export interface MenuItem<Action extends string = MenuAction> {
+  action: Action;
   label: string;
   /** Cannot be chosen. `reason` says why, and goes in the tooltip. */
   disabled: boolean;

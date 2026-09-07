@@ -311,3 +311,139 @@ fn remount_is_offered_only_where_it_would_help() {
     transfer.error = Some("permission denied: /srv".to_owned());
     assert!(!transfer.needs_write_access());
 }
+
+#[tokio::test]
+async fn a_row_the_worker_passed_over_is_not_handed_back_immediately() {
+    // A transfer whose share is not connected stays `Queued`, because that is a
+    // wait rather than a failure — and a loop asking for "the next queued
+    // transfer" would then be handed the same one for ever. The skip set is
+    // what makes passing over a row terminate.
+    let queue = TransferQueue::in_memory();
+    queue.add(transfer("waiting", 100)).await;
+    queue.add(transfer("ready", 200)).await;
+
+    let mut passed = std::collections::HashSet::new();
+    passed.insert("waiting".to_owned());
+    assert_eq!(
+        queue.next_queued_except(&passed).await.map(|t| t.id),
+        Some("ready".to_owned())
+    );
+    passed.insert("ready".to_owned());
+    assert!(queue.next_queued_except(&passed).await.is_none());
+    // And nothing was changed to achieve it: both are still queued.
+    assert!(queue.all().await.iter().all(|t| t.status == Status::Queued));
+}
+
+#[tokio::test]
+async fn clearing_failed_takes_the_failures_and_nothing_else() {
+    // The other verb the panel's menu offers. It is deliberately not
+    // `clear_finished` with `Failed` folded in: one is asked for by name and
+    // the other would sweep away a Retry button the user had not pressed yet.
+    let queue = TransferQueue::in_memory();
+    for (id, status) in [
+        ("failed", Status::Failed),
+        ("done", Status::Done),
+        ("running", Status::Running),
+        ("queued", Status::Queued),
+    ] {
+        queue.add(transfer(id, 100)).await;
+        queue.update(id, |t| t.status = status).await;
+    }
+
+    assert_eq!(queue.clear_failed().await, ["failed"]);
+    let left: Vec<String> = queue.all().await.iter().map(|t| t.id.clone()).collect();
+    assert_eq!(left, ["done", "queued", "running"]);
+}
+
+#[tokio::test]
+async fn retrying_every_failure_re_queues_it_without_the_reason_it_stopped() {
+    let queue = TransferQueue::in_memory();
+    for (id, status) in [("failed", Status::Failed), ("done", Status::Done)] {
+        queue.add(transfer(id, 100)).await;
+        queue
+            .update(id, |t| {
+                t.status = status;
+                t.error = Some("connection lost: not connected".to_owned());
+                t.note = Some("waiting for its share".to_owned());
+            })
+            .await;
+    }
+
+    let requeued = queue.requeue_failed().await;
+    assert_eq!(requeued.len(), 1);
+    let all = queue.all().await;
+    let back = all.iter().find(|t| t.id == "failed").expect("the row");
+    assert_eq!(back.status, Status::Queued);
+    // Both described the attempt that is over. A row about to be tried again
+    // that still reads `failed` under its name is the app disagreeing with
+    // itself.
+    assert_eq!(back.error, None);
+    assert_eq!(back.note, None);
+    // A finished transfer is not swept back into the queue by a bulk retry.
+    assert_eq!(
+        all.iter().find(|t| t.id == "done").map(|t| t.status),
+        Some(Status::Done)
+    );
+}
+
+#[tokio::test]
+async fn saying_why_a_row_is_waiting_writes_the_file_once_and_then_not_at_all() {
+    // The boot cost `2b16451` removed, and the reason this takes a slice: a
+    // restored queue against a share nothing has mounted is *every* row
+    // waiting, and one write per row is quadratic in a file that starts at over
+    // a megabyte. The second pass over a queue that is still waiting must cost
+    // nothing at all — no write, and no event for a window to re-render on.
+    let home = tempfile::tempdir().expect("temp dir");
+    let path = home.path().join("transfers.json");
+    let queue = TransferQueue::open(&path);
+    let ids: Vec<String> = (0..20).map(|n| format!("row-{n}")).collect();
+    for (index, id) in ids.iter().enumerate() {
+        queue
+            .add(transfer(id, i64::try_from(index).expect("small")))
+            .await;
+    }
+    let mut watching = queue.events();
+
+    assert_eq!(queue.note_all(&ids, "waiting for its share").await, 20);
+    let after = saved(&path);
+    assert!(after.contains("waiting for its share"), "the note was lost");
+
+    // Everything was told once.
+    let mut told = 0;
+    while watching.try_recv().is_ok() {
+        told += 1;
+    }
+    assert_eq!(told, 20);
+
+    assert_eq!(queue.note_all(&ids, "waiting for its share").await, 0);
+    assert_eq!(saved(&path), after, "a second pass rewrote the queue");
+    assert!(
+        watching.try_recv().is_err(),
+        "a second pass told the window"
+    );
+}
+
+#[tokio::test]
+async fn only_a_queued_row_is_told_it_is_waiting() {
+    // The note belongs to a row that has not started. Writing it onto one that
+    // is running, or onto a finished row whose note is the planner's own
+    // "unchanged", would overwrite an answer with a question.
+    let queue = TransferQueue::in_memory();
+    queue.add(transfer("running", 100)).await;
+    queue
+        .update("running", |t| t.status = Status::Running)
+        .await;
+    queue.add(transfer("done", 200)).await;
+    queue
+        .update("done", |t| {
+            t.status = Status::Done;
+            t.note = Some("unchanged".to_owned());
+        })
+        .await;
+
+    let ids = ["running".to_owned(), "done".to_owned()];
+    assert_eq!(queue.note_all(&ids, "waiting for its share").await, 0);
+    let all = queue.all().await;
+    assert_eq!(all[0].note, None);
+    assert_eq!(all[1].note.as_deref(), Some("unchanged"));
+}

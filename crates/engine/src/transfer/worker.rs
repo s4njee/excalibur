@@ -33,7 +33,7 @@
 //!   channel whose lag is silent, so there has to be a way back to the truth;
 //!   Kestrel has none and its UI can desync permanently.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -66,6 +66,15 @@ const DEFAULT_READ_DEPTH: usize = 4;
 /// Attempts before a transient failure is reported as a failure.
 const MAX_ATTEMPTS: u32 = 5;
 
+/// What a queued row says while the share it names is not connected.
+///
+/// A note rather than an error, because nothing has gone wrong: mounts are made
+/// when a window connects, so every row restored from the last run names a
+/// share that nobody has mounted *yet*. Reported as a failure — which is what
+/// this used to do — one launch turned a queue of 261 rows into 260 identical
+/// `connection lost: … is not connected` failures before a window existed.
+pub const WAITING_FOR_SHARE: &str = "waiting for its share";
+
 /// Where the worker gets a backend from.
 ///
 /// A trait rather than the `SessionManager` itself so the worker can be tested
@@ -85,6 +94,22 @@ pub trait BackendSource: Send + Sync {
     async fn backend_for(&self, mount: Option<&str>) -> Result<Arc<dyn ShareBackend>> {
         let _ = mount;
         self.active().await
+    }
+
+    /// Whether the share a row names can be reached at all right now.
+    ///
+    /// Asked *before* a transfer is claimed, and a `false` leaves it queued
+    /// rather than failing it: a share is mounted when a window connects, so at
+    /// launch there are none, and a restored queue that started itself against
+    /// nothing produced one identical failure per row.
+    ///
+    /// `true` by default, and the default is the interesting part: a source
+    /// with one backend and no notion of mounts — the CLI, this file's own
+    /// tests — has nothing to be waiting for, and must not have its
+    /// [`Self::active`] called an extra time to say so.
+    async fn is_connected(&self, mount: Option<&str>) -> bool {
+        let _ = mount;
+        true
     }
 
     /// How to reach `mount` as an xsync export, when it is one (E22-S1).
@@ -254,13 +279,24 @@ impl Worker {
 
     /// Run queued transfers until there are none left.
     ///
-    /// Returns when the queue has nothing `Queued`; the caller re-invokes it
-    /// when something is added. Each transfer holds a permit for its whole
-    /// life, so `concurrency` bounds what is moving rather than what is
-    /// started.
+    /// Returns when the queue has nothing `Queued` it can act on; the caller
+    /// re-invokes it when something is added, and when a mount arrives. Each
+    /// transfer holds a permit for its whole life, so `concurrency` bounds what
+    /// is moving rather than what is started.
+    ///
+    /// A row whose share is not connected is passed over rather than started:
+    /// it stays `Queued` and is picked up by the drain that a mount reaching
+    /// `Ready` triggers. Passing over a row that stays queued is how a loop
+    /// reading "the next queued transfer" spins for ever, which is why the ones
+    /// left behind are remembered here and excluded from the question.
     pub async fn drain(self: &Arc<Self>) {
         let mut running = Vec::new();
-        while let Some(transfer) = self.queue.next_queued().await {
+        let mut waiting: HashSet<String> = HashSet::new();
+        while let Some(transfer) = self.queue.next_queued_except(&waiting).await {
+            if !self.backends.is_connected(transfer.mount.as_deref()).await {
+                waiting.insert(transfer.id);
+                continue;
+            }
             // Before taking a permit, give back any the limit no longer
             // allows. Done here rather than on release because a permit is
             // returned by dropping it, which this type does not observe.
@@ -276,6 +312,10 @@ impl Worker {
                     if item.status == Status::Queued {
                         item.status = Status::Running;
                         item.error = None;
+                        // Both describe the attempt that is over — the reason
+                        // it stopped, or the reason it never started — and
+                        // neither is true of the one beginning now.
+                        item.note = None;
                     }
                 })
                 .await;
@@ -288,6 +328,15 @@ impl Worker {
                 worker.run_one(&transfer.id).await;
                 drop(permit);
             }));
+        }
+        // Once, at the end, rather than as each one is passed over: a queue
+        // restored against a share nothing has mounted is every row waiting,
+        // and `note_all` writes the file once for all of them. It also says
+        // nothing at all on the second drain over the same still-waiting
+        // queue, because the note is already what it would be set to.
+        if !waiting.is_empty() {
+            let ids: Vec<String> = waiting.into_iter().collect();
+            self.queue.note_all(&ids, WAITING_FOR_SHARE).await;
         }
         for task in running {
             let _ = task.await;

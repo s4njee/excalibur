@@ -782,3 +782,63 @@ async fn the_app_wide_mount_is_the_one_a_window_last_made_active() {
     assert_eq!(sessions.recent().await, None);
     assert!(sessions.recent_backend().await.is_err());
 }
+
+#[tokio::test]
+async fn a_preconnected_share_is_held_by_nobody_and_is_not_the_app_wide_one() {
+    // The favourites the app opens for itself at startup (E26-S1). They exist
+    // so a restored transfer queue has a share to wait for, and the two things
+    // they must *not* do are take a window's screen and become the answer to
+    // "the mount this app is working with" — a row that names no mount would
+    // then be sent to a folder the user never opened.
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+
+    sessions.preconnect(spec("documents")).await.expect("held");
+
+    assert_eq!(sessions.status("documents").await, Some(MountStatus::Ready));
+    assert!(sessions.backend("documents").await.is_some());
+    assert_eq!(sessions.active("main").await, None);
+    assert_eq!(sessions.recent().await, None);
+    assert!(sessions.windows_on("documents").await.is_empty());
+}
+
+#[tokio::test]
+async fn preconnecting_a_share_that_is_already_held_does_not_reconnect_it() {
+    // Every window runs the startup preconnect, and `mount` deliberately
+    // replaces a live session. Replacing one behind the user — dropping the
+    // connection the window in front of them is browsing — is the thing this
+    // must never do.
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = manager(&connector);
+
+    sessions
+        .mount("main", spec("documents"))
+        .await
+        .expect("mount");
+    let after_mount = connector.attempts();
+    sessions.preconnect(spec("documents")).await.expect("held");
+
+    assert_eq!(connector.attempts(), after_mount, "it reconnected");
+    // And the window that had it still has it.
+    assert_eq!(sessions.active("main").await, Some("documents".to_owned()));
+}
+
+#[tokio::test]
+async fn a_preconnect_that_fails_is_told_to_nobody() {
+    // A favourite whose disk was ejected. It fails quietly: the caller learns
+    // about it and drops it, and the event names no window — so no banner
+    // appears in a window that is looking at something else entirely.
+    let connector = Arc::new(ScriptedConnector::default());
+    connector.refuse.store(true, Ordering::SeqCst);
+    let sessions = manager(&connector);
+    sessions.mount("main", spec("elsewhere")).await.ok();
+    let mut events = sessions.events();
+
+    assert!(sessions.preconnect(spec("gone")).await.is_err());
+
+    while let Ok(event) = events.try_recv() {
+        if event.id == "gone" {
+            assert!(event.audience.is_empty(), "{:?}", event.audience);
+        }
+    }
+}

@@ -63,18 +63,31 @@ const PRESENT = [
  * whose folder is gone is staged: the entry is in the store, the folder is
  * not in this set.
  */
-function machine(present: string[] = PRESENT): Backend & { mounts: unknown[] } {
+function machine(
+  present: string[] = PRESENT,
+): Backend & { mounts: unknown[]; preconnected: string[] } {
   const inner = fixtureBackend();
   const mounts: unknown[] = [];
+  const preconnected: string[] = [];
   return {
     ...inner,
     async mount(spec) {
       mounts.push(spec);
     },
+    async preconnect(spec) {
+      const id = (spec as { id: string }).id;
+      // The ejected disk: a favourite the section knows about whose folder is
+      // not on this machine. It must fail, and the window must not notice.
+      if (!present.some((path) => `local::${path.toLowerCase()}` === id)) {
+        throw new Error("no such file or directory");
+      }
+      preconnected.push(id);
+    },
     async existingDirectories(paths: string[]) {
       return paths.filter((path) => present.includes(path));
     },
     mounts,
+    preconnected,
   };
 }
 
@@ -261,5 +274,50 @@ describe("Add to Favorites, from a row in the list", () => {
     await settle();
     expect(menuItem("Add to Favorites")?.getAttribute("aria-disabled")).toBe("true");
     expect(menuItem("Add to Favorites")?.getAttribute("title")).toMatch(/this computer/i);
+  });
+});
+
+describe("preconnecting the favourites at startup", () => {
+  // *Asked for directly, 2026-09-07: "all of the local favorites should be
+  // preconnected on startup".*
+  //
+  // The point is the transfer queue rather than the browsing: a queue restored
+  // from the last run names shares nobody has mounted yet, its rows now wait
+  // for them rather than failing, and this is the arrival they wait for.
+
+  it("holds every favourite whose folder is there, without opening one", async () => {
+    const engine = machine();
+    await open(engine, store([{ name: "Documents", path: `${HOME}/Documents` }]));
+
+    expect(engine.preconnected).toEqual([`local::${HOME.toLowerCase()}/documents`]);
+    // Preconnecting is not opening: no window is put on the mount, so the
+    // sidebar shows nothing under MOUNTED and the listing is untouched.
+    expect(engine.mounts).toEqual([]);
+    expect(sidebarText()).not.toContain("Documents · local");
+  });
+
+  it("holds the seeded defaults on a first run too", async () => {
+    const engine = machine();
+    await open(engine, store(null));
+    expect(engine.preconnected).toEqual(
+      PRESENT.map((path) => `local::${path.toLowerCase()}`),
+    );
+  });
+
+  it("says nothing at all about a favourite whose folder has gone", async () => {
+    // An ejected disk. The row is not drawn, nothing is preconnected, and —
+    // the part that matters — no banner appears and no failed row is queued.
+    const engine = machine([`${HOME}/Documents`]);
+    await open(
+      engine,
+      store([
+        { name: "Documents", path: `${HOME}/Documents` },
+        { name: "Backups", path: "/Volumes/Archive/Backups" },
+      ]),
+    );
+
+    expect(engine.preconnected).toEqual([`local::${HOME.toLowerCase()}/documents`]);
+    expect(favoriteNames()).toEqual(["Documents"]);
+    expect(host.textContent).not.toMatch(/no such file/i);
   });
 });

@@ -740,6 +740,17 @@ Seven judgement calls, in the order they will be argued about:
 7. **Removing a favourite has no undo**, where removing a bookmark does. The
    bookmark's undo exists because a removal also forgets a keychain password;
    a favourite is one path and can be dragged back.
+8. **Every favourite is connected at startup, invisibly** *(2026-09-07, asked
+   for directly: "all of the local favorites should be preconnected on
+   startup")*. The app holds each of these folders from launch, before any row
+   is clicked. Nothing on screen says so: the section looks the same, the row
+   does not appear under `MOUNTED`, and the window is not put on any of them —
+   opening one still goes through the bookmark route and still leaves a
+   bookmark behind (item 4 above). What it buys is the transfer queue: a queue
+   restored from the previous run names shares nobody has mounted yet, its rows
+   now wait for them rather than failing, and this is what they wait for. A
+   favourite whose disk has been ejected fails silently — no banner, no failed
+   row — which is the same rule item 2 states for drawing it.
 
 **For the designer:** the section itself needs sign-off before any of the
 above. Then: whether a favourite should be reorderable by dragging within the
@@ -769,3 +780,65 @@ platform's real Documents folder draws a page, while a project directory called
 rows reading the same word can carry different pictures, which is either
 exactly right or confusing depending on how it reads on screen.
 
+
+## The transfers header is a menu, not three buttons *(E13-S1, 2026-09-07)*
+
+**The mock** (§Screens/4) draws a 34px header reading `Transfers` with two
+buttons — `Pause all`, `Clear finished` — and a `✕`. Three controls, and the
+queue it is drawn over is a handful of rows.
+
+**What was built:** `Pause all` and `Clear finished` moved behind a `☰` beside
+the `✕`, joined by two verbs the mock has no reason to imagine — `Retry failed`
+and `Clear failed` — and the menu is the same `ContextMenu` the file list uses,
+so Escape, the arrow keys, the focus ring and the greyed-with-a-reason rows are
+the ones already designed.
+
+*Asked for directly, 2026-09-07: "there should probably be a hamburger menu or
+similar that has clear failed, retry failed".* The queue that prompted it held
+261 rows, 260 of them failed for one reason, and there was no way to act on all
+of them at once: a `Retry` per row and a `Clear finished` that deliberately does
+not take failures. Five buttons in a 34px header is not the answer either.
+
+Three decisions inside it, each of which a designer could reverse:
+
+1. **`Clear failed` is a separate verb from `Clear finished`.** Folding `Failed`
+   into "finished" would have been one item instead of two, and it would sweep
+   away rows that still carry a `Retry` the user has not pressed — the argument
+   `crates/engine/tests/queue.rs` has held since E13-S1, and having an explicit
+   `Clear failed` does not weaken it.
+2. **A verb with nothing to act on is greyed, not hidden**, with the count in
+   the label — `Retry failed (260)`, or `Retry failed` in grey with
+   `Nothing has failed` as its tooltip. A menu whose rows move between openings
+   has to be re-read each time; one with a greyed row can be learned once.
+3. **`✕` stays a button.** It acts on the panel; everything in the menu acts on
+   the queue.
+
+**For the designer:** whether `☰` is the right mark for it (Finder would use a
+`⋯` in a circle, and this app has no vocabulary for either yet); whether
+`Pause all` deserves to stay in a header it has been in since the first mock
+rather than joining the others; and whether the counts belong in the label at
+all, given the footer three rows below already reads `2 active · 4 queued ·
+260 failed`.
+
+## A queued transfer can be waiting for its share *(E13-S3, 2026-09-07)*
+
+**The mock** gives a queued row one string: `queued`. It has no state between
+"waiting for a worker" and "moving".
+
+**What was built:** a row whose share is not connected reads
+`queued · waiting for its share`, and stays that way until the mount arrives.
+
+It is a bug fix rather than an invention, and the bug is worth writing down
+because the design has no room for it. Mounts are made when a window connects,
+so at launch there are none — and the queue restored from the previous run is
+full of rows naming shares from it. The worker started them anyway and settled
+every one as `Failed` with `connection lost: … is not connected`, which is how a
+real `transfers.json` on this machine came to hold 261 rows of which 260 had the
+same error. A share that has not been mounted *yet* is a wait; the row now says
+which.
+
+**For the designer:** the string is the row's own, sharing the slot a finished
+row uses for `unchanged`. Whether a waiting row should look different from a
+merely queued one — dimmed, or with the share's name in it — is open. So is
+whether the panel's footer should count them separately: `260 waiting` and
+`260 queued` are different situations and it currently says only the second.

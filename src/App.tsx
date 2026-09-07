@@ -347,6 +347,39 @@ export default function App(props: {
     }
   };
 
+  /**
+   * Hold the favourites' folders before anything asks for one.
+   *
+   * *Asked for directly, 2026-09-07: "all of the local favorites should be
+   * preconnected on startup".*
+   *
+   * **Here rather than in Rust**, and the reason is what a favourite *is* on
+   * each side. The list lives in `favorites.json` through the store plugin, and
+   * the mount's id is `bookmarkId`'s — a rule about protocol, host and share
+   * that the dialog, the sidebar and every enqueued row already share. The
+   * engine reading that file would be the engine learning a frontend store's
+   * format *and* re-deriving an id it must match exactly, in a second place,
+   * for ever; getting it wrong there is a preconnect that mounts something no
+   * queued row is waiting for, which is silent.
+   *
+   * That leaves the timing objection, which is that a window exists only after
+   * the engine has drained its restored queue — and it is answered rather than
+   * dodged: a queued row whose share is not connected now *waits* instead of
+   * failing, and a mount reaching `ready` drains the queue again. So this being
+   * late is fine. Before that pair of fixes it would not have been.
+   *
+   * Only folders that are actually there, and every failure dropped: an ejected
+   * disk must produce no banner and no failed row, and `preconnect` puts no
+   * window on the mount, so nothing is told about it either way.
+   */
+  const preconnectFavorites = (list: Favorite[], present: Set<string>) => {
+    for (const favorite of list) {
+      if (!present.has(normalisePath(favorite.path))) continue;
+      const bookmark = fromDraft(favoriteDraft(favorite));
+      void backend.preconnect(toSpec(toDraft(bookmark), bookmark.id)).catch(() => undefined);
+    }
+  };
+
   onMount(async () => {
     let saved: Favorite[] | null;
     try {
@@ -359,7 +392,9 @@ export default function App(props: {
     }
     if (saved !== null) {
       setFavorites(saved);
-      setPresentFolders(await foldersPresent(saved));
+      const present = await foldersPresent(saved);
+      setPresentFolders(present);
+      preconnectFavorites(saved, present);
       // Only for the naming rule, so a folder added later can still be
       // recognised as home. Nothing is seeded from it.
       void backend
@@ -383,6 +418,7 @@ export default function App(props: {
       );
       setPresentFolders(present);
       persistFavorites(seeded);
+      preconnectFavorites(seeded, present);
     } catch {
       // No answer about this machine's folders, so nothing to seed from. The
       // next launch asks again.
@@ -2118,6 +2154,8 @@ export default function App(props: {
           onClose={() => setShowTransfers(false)}
           onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
           onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
+          onRetryFailed={() => void backend.retryFailedTransfers().then(refreshTransfers)}
+          onClearFailed={() => void backend.clearFailedTransfers().then(refreshTransfers)}
           onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
           onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
           onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}

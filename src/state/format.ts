@@ -206,7 +206,12 @@ export function formatTransferStatus(transfer: {
   const filesDone = transfer.filesDone ?? 0;
   switch (transfer.status) {
     case "queued":
-      return "queued";
+      // A queued row that is not moving because the pool is busy and one that
+      // is not moving because its share has never been connected look
+      // identical, and at launch the second is the whole queue. The engine
+      // writes the reason onto the row rather than failing it, and this is
+      // where the user reads it.
+      return transfer.note ? `queued · ${transfer.note}` : "queued";
     case "paused":
       return "paused";
     case "cancelled":

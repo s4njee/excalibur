@@ -13,11 +13,30 @@ import type { MenuAction, MenuItem } from "../state/menu";
 /** How close to an edge the menu may come before it flips. */
 const MARGIN = 8;
 
-export function ContextMenu(props: {
-  items: MenuItem[];
+/**
+ * Generic in what its items *do*, so that the one menu serves more than one
+ * vocabulary: the file verbs (`state/menu.ts`) and the transfer queue's bulk
+ * actions (`state/transferMenu.ts`) are unrelated lists, and a union of the two
+ * would let either be handed to the wrong handler without a word from the
+ * compiler. Everything here — placement, dismissal, arrows, Escape — is the
+ * same either way, which is why there is one of these rather than two.
+ */
+export function ContextMenu<Action extends string = MenuAction>(props: {
+  items: MenuItem<Action>[];
   /** Where the pointer was, in viewport coordinates. */
   at: { x: number; y: number };
-  onChoose: (action: MenuAction) => void;
+  /** What a screen reader calls this menu. */
+  label?: string;
+  /**
+   * The control this menu hangs off, when it has one.
+   *
+   * A menu opened by right-clicking has no anchor and wants none. One opened
+   * from a button does: without this, the press that ought to close it is
+   * dismissed by the handler below and then re-opened by the button's own
+   * click, so the button could open the menu and never close it.
+   */
+  anchor?: HTMLElement;
+  onChoose: (action: Action) => void;
   onClose: () => void;
 }) {
   let menu!: HTMLDivElement;
@@ -52,7 +71,9 @@ export function ContextMenu(props: {
     // whatever is underneath reacts to the press — otherwise the click that
     // closes the menu also selects a row.
     const away = (event: PointerEvent) => {
-      if (!menu.contains(event.target as Node)) props.onClose();
+      const target = event.target as Node;
+      if (props.anchor?.contains(target)) return;
+      if (!menu.contains(target)) props.onClose();
     };
     // Anything that moves the list out from under the menu closes it: a menu
     // pinned to viewport coordinates while the rows scroll past is pointing at
@@ -93,7 +114,7 @@ export function ContextMenu(props: {
     }
   };
 
-  const choose = (item: MenuItem) => {
+  const choose = (item: MenuItem<Action>) => {
     if (item.disabled) return;
     props.onChoose(item.action);
   };
@@ -150,7 +171,7 @@ export function ContextMenu(props: {
       ref={menu}
       role="menu"
       tabindex={-1}
-      aria-label="File actions"
+      aria-label={props.label ?? "File actions"}
       aria-activedescendant={active() >= 0 ? id(active()) : undefined}
       style={{
         left: `${box()?.left ?? props.at.x}px`,

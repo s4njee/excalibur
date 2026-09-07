@@ -43,6 +43,8 @@ function open(transfers: Transfer[]) {
         onCancel={() => undefined}
         onRetry={() => undefined}
         onClearFinished={() => undefined}
+        onClearFailed={() => undefined}
+        onRetryFailed={() => undefined}
         onPauseAll={() => undefined}
         onClose={() => undefined}
         onRemount={() => undefined}

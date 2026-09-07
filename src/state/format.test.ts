@@ -103,6 +103,20 @@ describe("transfer row strings", () => {
     ).toBe("done · unchanged");
   });
 
+  it("says why a queued row is not moving, when there is a reason", () => {
+    // A row waiting for the pool and a row whose share has never been
+    // connected look identical, and at launch the second is the whole queue —
+    // the engine leaves such a row queued rather than failing it and writes
+    // the reason onto it, and this is the only place the user reads it.
+    expect(
+      formatTransferStatus({
+        ...running,
+        status: "queued",
+        note: "waiting for its share",
+      }),
+    ).toBe("queued · waiting for its share");
+  });
+
   it("says queued and done exactly as the design does", () => {
     expect(formatTransferStatus({ ...running, status: "queued" })).toBe("queued");
     expect(

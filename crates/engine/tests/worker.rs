@@ -715,3 +715,93 @@ async fn a_resumed_streaming_download_starts_where_the_queue_left_off() {
 
     assert_eq!(std::fs::read(&destination).expect("read result"), payload);
 }
+
+/// A source whose share can be taken away and given back.
+///
+/// The state the app is actually in at launch: mounts are made when a window
+/// connects, so between the process starting and the first connection there is
+/// no share for a restored row to name.
+struct Unmounted {
+    inner: Arc<dyn ShareBackend>,
+    connected: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl BackendSource for Unmounted {
+    async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
+        if !self.connected.load(Ordering::SeqCst) {
+            return Err(excalibur_engine::EngineError::Disconnected(
+                "local::/users/sanjee/documents is not connected".to_owned(),
+            ));
+        }
+        Ok(Arc::clone(&self.inner))
+    }
+
+    async fn is_connected(&self, _mount: Option<&str>) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn a_transfer_whose_share_is_not_mounted_waits_instead_of_failing() {
+    // The bug the user's queue file recorded: 261 rows restored at launch, 260
+    // of them failed within a moment of the process starting, every one with
+    // the same `connection lost: … is not connected`. Nothing was wrong with
+    // any of them — the shares are made when a window connects, and at that
+    // point no window had. A share that is not mounted *yet* is a wait.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let payload = patterned_bytes(64 * 1024);
+    let share = seeded("Arrival.2016.mkv", &payload).await;
+    let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let queue = Arc::new(TransferQueue::in_memory());
+    for index in 0..3 {
+        queue
+            .add(
+                Transfer::new(
+                    format!("row-{index}"),
+                    Direction::Down,
+                    "Arrival.2016.mkv",
+                    directory
+                        .path()
+                        .join(format!("film-{index}.mkv"))
+                        .to_str()
+                        .expect("utf-8"),
+                    0,
+                )
+                .on_mount("local::/users/sanjee/documents"),
+            )
+            .await;
+    }
+    let source = Arc::new(Unmounted {
+        inner: share,
+        connected: Arc::clone(&connected),
+    });
+    let worker = worker(&queue, Arc::clone(&source) as Arc<dyn BackendSource>);
+
+    // The launch drain, against nothing. It has to *return* — a row left queued
+    // is a row `next_queued` hands back for ever — and it has to leave every
+    // row alone.
+    worker.drain().await;
+
+    for row in queue.all().await {
+        assert_eq!(row.status, Status::Queued, "{} was settled", row.id);
+        assert_eq!(row.error, None, "{} was given a reason to fail", row.id);
+        // And the row says why it is sitting there, rather than reading as an
+        // ordinary queued transfer that the pool is simply not getting to.
+        assert_eq!(
+            row.note.as_deref(),
+            Some(excalibur_engine::transfer::worker::WAITING_FOR_SHARE)
+        );
+    }
+
+    // The window connects. The next drain — the one a mount reaching `Ready`
+    // triggers — finds the same rows and runs them.
+    connected.store(true, Ordering::SeqCst);
+    worker.drain().await;
+
+    for row in queue.all().await {
+        assert_eq!(row.status, Status::Done, "{:?}", row.error);
+        // The note described a wait that is over.
+        assert_eq!(row.note, None, "{} kept its waiting note", row.id);
+    }
+}

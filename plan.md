@@ -2768,6 +2768,43 @@ go to the parent folder". The handoff draws no such row — recorded in
 - Retries are transient-only and capped at five. Retrying a permission error four more
   times only delays telling the user.
 
+**Amended 2026-09-07: a share that is not mounted is a wait, not a failure.** Found in
+the user's own `transfers.json` — 261 rows restored at launch, 260 of them `Failed`
+within a moment of the process starting, every one carrying the identical
+`connection lost: local::/users/sanjee/documents is not connected`. Nothing was wrong
+with any of them. Mounts are made when a *window* connects, the restored queue is
+drained before the first window exists, and `backend_for` answering "no such mount" was
+being settled as an ordinary failure.
+
+- `BackendSource::is_connected` is asked **before** a row is claimed, and a `false`
+  leaves it `Queued`. It defaults to `true`, so the CLI and the worker's own tests —
+  which have one backend and no notion of mounts — are untouched and do not pay an
+  extra `active()` call to say so.
+- A row left queued is a row `next_queued` hands back for ever, so `drain` remembers
+  what it passed over and `next_queued_except` excludes it. That is the whole of the
+  spin guard.
+- The row says why: `queued · waiting for its share`, through the existing `note`
+  field rather than a new one. Written by `note_all` — one call, one file write, and
+  **nothing at all** on the second drain over a queue that is still waiting, because
+  the note is already what it would be set to. Writing it per row would have put back
+  the boot cost `2b16451` measured out.
+- Something has to end the wait, so the `mount://changed` task in `src-tauri/src/lib.rs`
+  drains the queue whenever a mount reaches `Ready`. It is the same event the window
+  already listens to.
+- The note is cleared when the row is claimed, beside the error: both describe an
+  attempt that is over.
+
+**Amended 2026-09-07: bulk verbs for a queue full of failures** *(asked for directly:
+"there should probably be a hamburger menu or similar that has clear failed, retry
+failed")*. `requeue_failed` and `clear_failed` on the queue, `retry_failed_transfers`
+and `clear_failed_transfers` as commands, both writing the file once for the whole
+sweep. `Status::finished()` is **unchanged** — `Failed` is still not finished, and
+`clearing_finished_leaves_the_active_ones` still says why: a failed row carries a Retry
+the user has not pressed. Having an explicit `Clear failed` does not weaken that
+argument, it answers the need that would have driven someone to weaken it. Bulk retry
+is only safe because of the amendment above: re-queueing 260 rows against nothing used
+to be 260 instant failures, which is the storm the user already lived through.
+
 #### E13-S4 — Download / Upload verbs — **Done**
 
 *2026-09-03; the recursive walk 2026-09-05.*
@@ -5538,7 +5575,7 @@ check in the bundled app, with two windows (⌘N) on two mounts:
 
 ### E26 — Finder parity in the browser
 
-#### E26-S1 — Sidebar: Favorites and Locations
+#### E26-S1 — Sidebar: Favorites and Locations — **Partly done (Favorites; This Mac untouched)**
 **AC**
 - Design spike. Then: **Favorites** (drag a folder from any mount into the sidebar to
   pin it, as Finder does), **This Mac** (Home, Desktop, Documents, Downloads, and every
@@ -5546,6 +5583,34 @@ check in the bundled app, with two windows (⌘N) on two mounts:
   `DiskArbitration`-free poll of `/Volumes` is enough), and the existing **Shares**.
   Local defaults are present on first run so the empty state is never the first thing
   a user of "this machine" sees.
+
+**Amended 2026-09-07: the favourites are connected at startup** *(asked for directly:
+"all of the local favorites should be preconnected on startup")*.
+
+- [x] A new `SessionManager::preconnect` holds a share with **no window on it** and
+  without becoming `recent`: a folder the user never opened must not become the answer
+  to "the share this app is working with", and a second window running the same startup
+  step must not replace a session the first one is browsing (so it is a no-op on an id
+  already held).
+- [x] Driven from the **frontend**, in `App.tsx` beside the code that loads the
+  section. The list lives in `favorites.json` through the store plugin and the mount's
+  id is `bookmarkId`'s rule; the engine reading that file would be the engine learning
+  a frontend store's format *and* re-deriving an id it has to match exactly, in a
+  second place, for ever — and getting it wrong there is a preconnect that mounts
+  something no queued row is waiting for, silently. The timing objection (a window
+  exists only after the engine has drained its restored queue) is answered rather than
+  dodged by E13-S3's amendment: a row whose share is missing now waits, and a mount
+  reaching `Ready` drains the queue again.
+- [x] Only folders that are actually there, and every failure dropped. An ejected disk
+  produces no banner and no failed row — `preconnect` puts no window on the mount, so
+  the session event names nobody.
+- [ ] **This Mac** and `/Volumes`. Untouched by this pass.
+
+**Results**
+
+- Nothing on screen changed, which is the point: the section looks the same and opening
+  a favourite still goes through the bookmark route. What moved is that the folder is
+  already held when the queue asks for it.
 
 #### E26-S2 — Keyboard navigation — **Done**
 
