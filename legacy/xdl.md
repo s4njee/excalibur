@@ -128,16 +128,32 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E1-S2 — Where a download comes from and goes to
 
-- [ ] **Do.** Give `Transfer` an origin that is not a mount. Today a row is
-  `direction` plus one `mount`; a download has no mount at all.
+- [x] **Do.** Give `Transfer` an origin that is not a mount. Today a row is
+  `direction` plus one `mount`; a download has no mount at all. *(Built
+  2026-09-07: the `from`/`to: Endpoint` shape landed with S1 (`excalibur
+  72ef808`); this story proves both ACs and changes no routing — `http.rs`
+  keeps matching explicitly-set endpoints, and share rows keep upgrading
+  lazily through `from_endpoint`/`to_endpoint`. The `Direction` removal stays
+  E22-S3's. Proven as `excalibur a5fb184`.)*
 
 **AC**
-- [ ] A row can be *from a URL, to a local folder* without pretending to be a
+- [x] A row can be *from a URL, to a local folder* without pretending to be a
   `Direction::Down` off a share. E22-S3's `from: Endpoint` / `to: Endpoint`
   change is the same change; this story either does it or waits for it, and
-  does not invent a parallel field.
-- [ ] The existing rows migrate without a queue file rewrite, and a queue
-  written by today's build still loads.
+  does not invent a parallel field. *(Done: `Transfer::http`/`new_http` carry
+  `direction: None` with `Http`/`Local` endpoints; the worker drains such rows
+  with no share connected — `tests/http_download.rs` drives them through a
+  `BackendSource` that panics on backend resolution — and an endpoint-native
+  row round-trips through JSON with `direction` null,
+  `tests/transfer_model.rs: endpoint_native_rows_round_trip_with_direction_absent`.)*
+- [x] The existing rows migrate without a queue file rewrite, and a queue
+  written by today's build still loads. *(Done: `from`/`to`/`direction`/`mount`
+  and the rest are `#[serde(default)]`; legacy down and up rows upgrade lazily
+  (`tests/transfer_model.rs`), and a pre-endpoint `transfers.json` opens
+  through `TransferQueue::open` with rows re-queued and both ends derived
+  (`tests/queue.rs: a_queue_written_before_endpoints_still_loads_and_names_share_ends`);
+  an endpoint-native download row persists and restores with its absent
+  direction intact (`: an_endpoint_native_download_row_survives_a_restart_without_a_direction`).)*
 
 ---
 

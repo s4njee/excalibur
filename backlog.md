@@ -126,8 +126,9 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-1 of the 25 stories in `legacy/xdl.md` is built — **E1-S1** (the HTTP route,
-2026-09-07, `72ef808`); the rest are unchecked. The engine is
+2 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
+2026-09-07, `72ef808`) and **E1-S2** (origin-not-a-mount plus queue migration,
+2026-09-07); the rest are unchecked. The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
 
@@ -140,6 +141,13 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
     names sanitised; permanent HTTP failures (404, refused URL) fail the row
     fast instead of spending the worker's 30s of backoff.
     (`legacy/xdl.md:105`)
+  - **E1-S2 done** (2026-09-07): no routing change — S1's `from`/`to: Endpoint`
+    shape already gave downloads an origin that is not a mount. S2 proves both
+    ACs: HTTP rows carry `direction: None` through the queue file and drain
+    with no share connected; pre-endpoint queue files open with legacy rows
+    re-queued and both ends derived lazily. `Direction` removal stays E22-S3's.
+    (`legacy/xdl.md:129`, `crates/engine/tests/queue.rs`,
+    `crates/engine/tests/transfer_model.rs`)
 - **XDL-E2** — the tab: where it lives in the window (S1), the table with its
   five status badges and redacted origin host (S2), the indeterminate row (S3,
   blocked on xsync XD-E1-S5), the footer sparkline (S4). 10,000 rows must scroll
