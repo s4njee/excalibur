@@ -65,3 +65,56 @@ export function filterByCategory(
   if (category === "all") return transfers;
   return transfers.filter((transfer) => categorize(transfer.status) === category);
 }
+
+/**
+ * The hostname of a URL with any credentials removed, for display under the
+ * row's filename (XDL-E2-S2). `URL.hostname` strips userinfo by construction;
+ * the manual path is for strings it refuses, and strips the same way — the
+ * last `@` ends the credentials, never the host.
+ */
+export function redactUrlHost(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "" ? null : hostname;
+  } catch {
+    const authority = url.split("://")[1]?.split(/[/:?#]/)[0] ?? "";
+    if (authority === "") return null;
+    const host = authority.includes("@") ? (authority.split("@").pop() ?? "") : authority;
+    return host === "" ? null : host;
+  }
+}
+
+/**
+ * Where a row comes from, in one line for the table's file cell (XDL-E2-S2):
+ * the origin host for downloads, the share's host for share rows, This Mac
+ * for local origins. Legacy rows without endpoints resolve through the same
+ * direction and mount the worker routes on.
+ *
+ * `null` only when nothing names an origin at all, which the cell draws as
+ * "—" rather than inventing one.
+ */
+export function originHost(transfer: Transfer): string | null {
+  const from = transfer.from;
+  if (from !== undefined && from !== null) {
+    switch (from.kind) {
+      case "http":
+        return redactUrlHost(from.url);
+      case "share": {
+        const host = from.mount?.split(":")[1];
+        return host === undefined || host === "" ? "Share" : host;
+      }
+      case "local":
+        return "This Mac";
+    }
+  }
+  switch (transfer.direction) {
+    case "down": {
+      const host = transfer.mount?.split(":")[1];
+      return host === undefined || host === "" ? "Share" : host;
+    }
+    case "up":
+      return "This Mac";
+    default:
+      return null;
+  }
+}

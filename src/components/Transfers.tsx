@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import styles from "./transfers.module.css";
 import { ContextMenu } from "./ContextMenu";
+import { DownloadsTable, transferRemountable } from "./DownloadsTable";
 import { formatRate, formatSize, formatTransferStatus } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
@@ -99,7 +100,7 @@ export function Transfers(props: {
 
   return (
     <div
-      class={styles.panel}
+      class={`${styles.panel} ${props.embedded ? styles.panelEmbedded : ""}`}
       role={props.embedded ? "region" : "dialog"}
       aria-label={props.embedded ? "Downloads" : "Transfers"}
     >
@@ -142,35 +143,51 @@ export function Transfers(props: {
         )}
       </Show>
 
-      <div class={styles.rows}>
-        <Show
-          when={props.transfers.length > 0}
-          fallback={<div class={styles.empty}>Nothing transferring</div>}
-        >
-          <For each={shown()}>
-            {(transfer) => (
-              <Row
-                transfer={transfer}
-                onPause={() => props.onPause(transfer.id)}
-                onCancel={() => props.onCancel(transfer.id)}
-                onRetry={() => props.onRetry(transfer.id)}
-                onRemount={props.onRemount}
-              />
-            )}
-          </For>
-          {/* A queue this long is a batch of individual files, and every row
-              carries a bar and a caption — rendering all of them is seconds of
-              a frozen window, which is exactly what the panel opening on launch
-              used to cost. Bounded rather than virtualised because these rows
-              are not one height: a finished row drops its bar. The rest are one
-              click away, and the click is the user accepting the wait. */}
-          <Show when={props.transfers.length > shown().length}>
-            <button class={styles.showAll} onClick={() => setCap(Infinity)}>
-              Show {props.transfers.length - shown().length} more
-            </button>
-          </Show>
-        </Show>
-      </div>
+      {/* The tab is the reference's table; the sheet keeps its compact rows.
+          Two densities for two jobs, sharing the header, the bulk menu and
+          the footer above and below (XDL-E2-S2). */}
+      <Show
+        when={props.embedded}
+        fallback={
+          <div class={styles.rows}>
+            <Show
+              when={props.transfers.length > 0}
+              fallback={<div class={styles.empty}>Nothing transferring</div>}
+            >
+              <For each={shown()}>
+                {(transfer) => (
+                  <Row
+                    transfer={transfer}
+                    onPause={() => props.onPause(transfer.id)}
+                    onCancel={() => props.onCancel(transfer.id)}
+                    onRetry={() => props.onRetry(transfer.id)}
+                    onRemount={props.onRemount}
+                  />
+                )}
+              </For>
+              {/* A queue this long is a batch of individual files, and every row
+                  carries a bar and a caption — rendering all of them is seconds of
+                  a frozen window, which is exactly what the panel opening on launch
+                  used to cost. Bounded rather than virtualised because these rows
+                  are not one height: a finished row drops its bar. The rest are one
+                  click away, and the click is the user accepting the wait. */}
+              <Show when={props.transfers.length > shown().length}>
+                <button class={styles.showAll} onClick={() => setCap(Infinity)}>
+                  Show {props.transfers.length - shown().length} more
+                </button>
+              </Show>
+            </Show>
+          </div>
+        }
+      >
+        <DownloadsTable
+          transfers={props.transfers}
+          onPause={props.onPause}
+          onCancel={props.onCancel}
+          onRetry={props.onRetry}
+          onRemount={props.onRemount}
+        />
+      </Show>
 
       <div class={styles.footer}>
         <span>
@@ -197,11 +214,8 @@ function Row(props: {
   // The engine decides this: it knows whether the failure was a permission
   // problem on an upload, which is the only case reconnecting read-write
   // would fix. Offering it on a timeout would be a button that changes
-  // nothing.
-  const remountable = () =>
-    failed() &&
-    props.transfer.direction === "up" &&
-    /read-only|permission/i.test(props.transfer.error ?? "");
+  // nothing. Shared with the downloads table, which offers the same action.
+  const remountable = () => transferRemountable(props.transfer);
 
   const fraction = () =>
     props.transfer.bytesTotal > 0

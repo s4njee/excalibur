@@ -79,6 +79,21 @@
   --error-chip-bg: #fdeaea;
   --chip-accent-bg: #e8effd;
   --chip-neutral-bg: #f0f0f2;
+  /*
+   * Download status badges (XDL-E2-S2). Pastel fills with text dark enough to
+   * read on them: the global `--success` and `--accent` never reach 4.5:1 on
+   * a light fill (`#2f9e5f` tops out at 3.34:1 on white), and `--error` fails
+   * on its own dark fill — so each badge state names its text explicitly
+   * rather than borrowing a semantic that cannot hold. Every pair below is
+   * held to 4.5:1 in `contrast.test.ts`.
+   */
+  --success-chip-bg: #e5f4ea;
+  --warning: #8a5a11;
+  --warning-chip-bg: #f6e7cb;
+  --badge-downloading-text: #1d4fc4;
+  --badge-success-text: #1e6b3e;
+  --badge-error-text: #c0392b;
+  --badge-muted-text: #6a6a70;
   --badge-ro-bg: #4a4b50;
   --badge-ro-text: #e8e8ea;
 
@@ -164,6 +179,13 @@
   --chip-neutral-bg: #35363a;
   --chip-accent-bg: #1f3358;
   --error-chip-bg: #3a2222;
+  --success-chip-bg: #1d3527;
+  --warning: #e8b34b;
+  --warning-chip-bg: #3a2f18;
+  --badge-downloading-text: #8fb4ff;
+  --badge-success-text: #3fcf96;
+  --badge-error-text: #f07575;
+  --badge-muted-text: #a7a8ad;
 
   color-scheme: dark;
 }

@@ -60,6 +60,20 @@ const GLYPH_PAIRS: [string, string[]][] = [
 ];
 
 /**
+ * Download status badges (XDL-E2-S2): badge text on its fill, both themes.
+ * The fills are pastel by design, so each state names a text dark or light
+ * enough to read on it — the global `--success` and `--accent` never reach
+ * 4.5:1 on a light fill, which is why the badge tokens exist at all.
+ */
+const BADGE_PAIRS: [string, string][] = [
+  ["--badge-downloading-text", "--chip-accent-bg"],
+  ["--warning", "--warning-chip-bg"],
+  ["--badge-muted-text", "--chip-neutral-bg"],
+  ["--badge-success-text", "--success-chip-bg"],
+  ["--badge-error-text", "--error-chip-bg"],
+];
+
+/**
  * The one pair that does not meet 4.5:1, and why it is not simply fixed.
  *
  * `--text-tertiary` is the third tier of a three-tier grey scale. In *both*
@@ -105,6 +119,15 @@ describe("token contrast", () => {
             const ratio = contrast(theme[text] ?? "", theme[background] ?? "");
             expect(ratio, `${text} on ${background} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(2.9);
           }
+        }
+      });
+
+      it("puts every download badge at 4.5:1 or better", () => {
+        for (const [text, background] of BADGE_PAIRS) {
+          const ratio = contrast(theme[text] ?? "", theme[background] ?? "");
+          expect(ratio, `${text} on ${background} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+            4.5,
+          );
         }
       });
 
