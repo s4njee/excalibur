@@ -241,16 +241,28 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E2-S3 — A row that does not know its size
 
-- [ ] **Do.** The indeterminate case, which the reference does not draw and
-  which this app already got wrong once.
+- [x] **Do.** The indeterminate case, which the reference does not draw and
+  which this app already got wrong once. *(Built 2026-09-07: one rule shared
+  by both bars, proven as `excalibur 5c9da99`.)*
 
 **AC**
-- [ ] A download whose length the server never declared shows an indeterminate
+- [x] A download whose length the server never declared shows an indeterminate
   bar, not a bar at zero. `Transfer::fraction()` already returns `Option<f64>`
   and says why in its doc comment; the frontend uses it rather than
   reimplementing it — the bug fixed for folder scans, not repeated here.
-- [ ] The status line reads a growing byte count with no denominator, and does
-  not claim a percentage it cannot compute.
+  *(Done: `fractionOf()` is that rule — `null` while `bytes_total` is 0,
+  clamped `0.0..=1.0` otherwise — and both the downloads table and the sheet
+  rows read it. Unknown renders as a 40%-width block sliding across the
+  track, transform-only so it stays on the compositor, with a
+  `prefers-reduced-motion` rest. The engine has no sizeless path yet
+  (`XD-E1-S5`, xsync refuses rather than guesses), so the row is drawn for
+  the day the engine grows one — the frontend already reads the shape it
+  will emit.)*
+- [x] The status line reads a growing byte count with no denominator, and does
+  not claim a percentage it cannot compute. *(Done: the table's right-hand
+  figure is `formatSize(bytes_done)` and the status line joins a plain count
+  with the rate — asserted to contain no percentage and no size separator;
+  the only `/` is the rate's own.)*
 
 #### XDL-E2-S4 — The footer
 

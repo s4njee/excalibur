@@ -41,6 +41,12 @@ adds a narrow actions column the reference does not draw, because its
 right-click menu has no equivalent here and the rows must keep their
 Pause/Cancel/Resume/Retry.
 
+**Amended 2026-09-07 (XDL-E2-S3): the indeterminate bar the reference does
+not draw.** A download with no declared length needs a liveness signal, so
+unknown renders a 40%-width block sliding across the track (transform-only,
+with a reduced-motion rest) beside a growing byte count with no denominator.
+The reference has no sizeless state at all.
+
 ## Remount as RW, in the status bar *(E9-S3, 2026-09-03)*
 
 **The mock** puts `Remount as RW` on a failed row in the transfer queue
