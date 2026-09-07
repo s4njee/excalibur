@@ -87,7 +87,7 @@ function watchable(): Backend & {
 
 function open(
   backend: Backend,
-  self: { label: string; mount: string | null; path: string },
+  self: { label: string; mount: string | null; path: string; view: "browse" },
 ) {
   const saveStore = { load: async () => saved, save: async () => undefined };
   dispose = render(
@@ -116,6 +116,7 @@ describe("a window opened by ⌘N", () => {
       label: "browser-2",
       mount: "smb:nas.local:media",
       path: "Films/2016",
+      view: "browse",
     });
 
     // The folder, not the share root: ⌘N is for looking at two places in one
@@ -143,7 +144,7 @@ describe("a window opened by ⌘N", () => {
     // per-window empty state is not a special case: it is what a window with
     // no mount is, whether or not another window has one.
     const backend = fixtureBackend({ disconnected: true });
-    await open(backend, { label: "browser-2", mount: null, path: "" });
+    await open(backend, { label: "browser-2", mount: null, path: "", view: "browse" });
     expect(host.textContent).toContain("No share connected");
   });
 });
@@ -158,7 +159,7 @@ describe("two windows on one share", () => {
           backend={backend}
           prefs={memoryPrefs()}
           bookmarks={{ load: async () => saved, save: async () => undefined }}
-          window={{ label: "browser-2", mount: "smb:nas.local:media", path: "" }}
+          window={{ label: "browser-2", mount: "smb:nas.local:media", path: "", view: "browse" }}
         />
       ),
       host,
@@ -190,7 +191,7 @@ describe("two windows on one share", () => {
           backend={backend}
           prefs={memoryPrefs()}
           bookmarks={{ load: async () => saved, save: async () => undefined }}
-          window={{ label: "browser-2", mount: "smb:nas.local:media", path: "" }}
+          window={{ label: "browser-2", mount: "smb:nas.local:media", path: "", view: "browse" }}
         />
       ),
       host,

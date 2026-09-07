@@ -118,7 +118,7 @@ function open(
           save: async () => undefined,
         }}
         favorites={favorites}
-        window={{ label: "main", mount: options.mount ?? null, path: "" }}
+        window={{ label: "main", mount: options.mount ?? null, path: "", view: "browse" }}
       />
     ),
     host,

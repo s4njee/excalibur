@@ -13,6 +13,8 @@ import {
 import styles from "./shell.module.css";
 
 import type { Bookmark, Category, Entry, MountInfo, RowLayout, SortColumn } from "../state/types";
+import type { WindowView } from "../state/window";
+import type { DownloadCategory } from "../state/downloads";
 import type { Sort } from "../state/sort";
 import {
   ROW_HEIGHTS,
@@ -47,14 +49,26 @@ import { Glyph } from "./Glyph";
  * (E1-S6). The design draws no first-run title, and the alternative — keeping
  * the last share's name, or the demo's — would title the window after a share
  * it is not showing.
+ *
+ * `title` names a view that is not a share (XDL-E2-S1: the download queue),
+ * which has no host to pair with.
  */
-export function TitleBar(props: { share: string | null; host: string | null }) {
+export function TitleBar(props: {
+  share: string | null;
+  host: string | null;
+  title?: string;
+}) {
   return (
     <div class={styles.titlebar}>
-      <Show when={props.share !== null && props.host !== null}>
-        <span class={styles.title}>
-          {props.share} — {props.host}
-        </span>
+      <Show
+        when={
+          props.title ??
+          (props.share !== null && props.host !== null
+            ? `${props.share} — ${props.host}`
+            : null)
+        }
+      >
+        {(text) => <span class={styles.title}>{text()}</span>}
       </Show>
     </div>
   );
@@ -218,6 +232,8 @@ export function Banner(props: {
 export function Toolbar(props: {
   /** Absent when nothing is mounted; every verb is then refused (E1-S6). */
   mount?: MountInfo;
+  /** On downloads the share verbs are absent, not disabled (XDL-E2-S1). */
+  view: WindowView;
   scheme: string | null;
   host: string | null;
   segments: string[];
@@ -307,10 +323,11 @@ export function Toolbar(props: {
           listing can go stale for reasons this app never hears about — another
           machine writing to the share, a transfer landing somewhere it is not
           watching. Disabled from `mount` rather than a `can` prop: relisting
-          is not a permission, it is only meaningless with nothing mounted. */}
+          is not a permission, it is only meaningless with nothing mounted.
+          On downloads the queue is always worth re-reading, mount or none. */}
       <button
         class={styles.button}
-        disabled={props.mount === undefined}
+        disabled={props.view === "downloads" ? false : props.mount === undefined}
         aria-label="Refresh"
         title={shortcuts.tooltip("refresh")}
         onClick={props.onRefresh}
@@ -319,10 +336,17 @@ export function Toolbar(props: {
       </button>
       {/* An empty field rather than `://` over a blank crumb: with nothing
           mounted there is no path, and half a URI would read as one that
-          failed to load (E1-S6). */}
+          failed to load (E1-S6). On downloads the field names the view, which
+          is not a path and offers no crumbs. */}
       <Show
-        when={props.scheme !== null && props.host !== null}
-        fallback={<div class={styles.pathField} />}
+        when={props.view === "browse" && props.scheme !== null && props.host !== null}
+        fallback={
+          props.view === "downloads" ? (
+            <div class={styles.pathField}>Downloads</div>
+          ) : (
+            <div class={styles.pathField} />
+          )
+        }
       >
         <PathField
           scheme={props.scheme ?? ""}
@@ -331,55 +355,64 @@ export function Toolbar(props: {
           onCrumb={props.onCrumb}
         />
       </Show>
-      <div class={styles.verbs}>
-        {/* Every verb goes through `gate`. None of them reads `writable`
-            directly: an inline condition here is exactly how a write affordance
-            ends up gated on something that is not the mount. */}
-        <Verb
-          affordance="quickLook"
-          context={context()}
-          label="Quick Look"
-          shortcut="quickLook"
-          onClick={props.onQuickLook}
+      {/* The share verbs act on the file list. On downloads there is no list,
+          so they are absent rather than a row of buttons that can never apply
+          (XDL-E2-S1) — a toolbar that changes, not one that greys out. */}
+      <Show when={props.view === "browse"}>
+        <div class={styles.verbs}>
+          {/* Every verb goes through `gate`. None of them reads `writable`
+              directly: an inline condition here is exactly how a write affordance
+              ends up gated on something that is not the mount. */}
+          <Verb
+            affordance="quickLook"
+            context={context()}
+            label="Quick Look"
+            shortcut="quickLook"
+            onClick={props.onQuickLook}
+          />
+          <Verb
+            affordance="edit"
+            context={context()}
+            label="Edit"
+            shortcut="edit"
+            onClick={props.onEdit}
+          />
+          <Verb
+            affordance="download"
+            context={context()}
+            label="Download"
+            shortcut="download"
+            onClick={props.onDownload}
+          />
+          <Verb
+            affordance="upload"
+            context={context()}
+            label="Upload"
+            shortcut="upload"
+            primary
+            onClick={props.onUpload}
+          />
+        </div>
+      </Show>
+      {/* The filter searches the file list, so it goes with the verbs: on
+          downloads there is nothing for it to search (XDL-E2-S1). */}
+      <Show when={props.view === "browse"}>
+        {/* A filename is not prose. WKWebView capitalises, autocorrects and
+            spell-checks a text input by default, and a filter that quietly
+            became `Arrival` after `arrival` matches nothing (E3-S5). */}
+        <input
+          ref={props.filterRef}
+          class={styles.filter}
+          placeholder="Filter"
+          title={shortcuts.tooltip("focusFilter")}
+          value={props.filter}
+          autocapitalize="none"
+          autocorrect="off"
+          autocomplete="off"
+          spellcheck={false}
+          onInput={(event) => props.onFilter(event.currentTarget.value)}
         />
-        <Verb
-          affordance="edit"
-          context={context()}
-          label="Edit"
-          shortcut="edit"
-          onClick={props.onEdit}
-        />
-        <Verb
-          affordance="download"
-          context={context()}
-          label="Download"
-          shortcut="download"
-          onClick={props.onDownload}
-        />
-        <Verb
-          affordance="upload"
-          context={context()}
-          label="Upload"
-          shortcut="upload"
-          primary
-          onClick={props.onUpload}
-        />
-      </div>
-      {/* A filename is not prose. WKWebView capitalises, autocorrects and
-          spell-checks a text input by default, and a filter that quietly
-          became `Arrival` after `arrival` matches nothing (E3-S5). */}
-      <input
-        ref={props.filterRef}
-        class={styles.filter}
-        placeholder="Filter"
-        title={shortcuts.tooltip("focusFilter")}
-        value={props.filter}
-        autocapitalize="none"
-        autocorrect="off"
-        autocomplete="off"
-        spellcheck={false}
-        onInput={(event) => props.onFilter(event.currentTarget.value)}
-      />
+      </Show>
     </div>
   );
 }
@@ -407,6 +440,15 @@ export function Sidebar(props: {
   onFavoriteMenu: (path: string, at: { x: number; y: number }) => void;
   /** Whether a drag is over the section, so the whole of it highlights. */
   dropFavorites?: boolean;
+  /**
+   * The queue grouped the way the reference groups it (XDL-E2-S1). Counts are
+   * live from the window's transfer signal; the rows switch the window onto
+   * downloads the way a double-clicked bookmark switches it onto a share.
+   */
+  categories: { id: DownloadCategory; label: string; count: number }[];
+  /** The category the window is showing, when it is showing downloads. */
+  activeCategory: DownloadCategory | null;
+  onOpenCategory: (id: DownloadCategory) => void;
 }) {
   const mounted = createMemo(() => props.bookmarks.filter((bookmark) => bookmark.mounted));
   const saved = createMemo(() => props.bookmarks.filter((bookmark) => !bookmark.mounted));
@@ -503,6 +545,45 @@ export function Sidebar(props: {
                   title={bookmarkSubtitle(bookmark)}
                 >
                   {bookmarkSubtitle(bookmark)}
+                </div>
+              </div>
+            </div>
+          );
+        }}
+      </For>
+
+      {/* CATEGORIES (XDL-E2-S1). After MOUNTED rather than at the top the way
+          the reference lays out its own sidebar: here the section shares a
+          sidebar with favourites and shares, and the rows it switches between
+          are window locations — mounts above, queue below. Recorded in
+          `docs/design-gaps.md`. A row is a live count, not a badge: the number
+          is the reason to look, and a zero is an answer rather than an empty
+          seat. */}
+      <div class={`${styles.sectionHeader} ${styles.sectionHeaderSpaced}`}>Categories</div>
+      <For each={props.categories}>
+        {(category) => {
+          const active = () => category.id === props.activeCategory;
+          return (
+            <div
+              class={`${styles.sidebarRow} ${active() ? styles.sidebarRowActive : ""}`}
+              data-category={category.id}
+              role="button"
+              tabindex="0"
+              title={`${category.count} ${category.label.toLowerCase()}`}
+              onClick={() => props.onOpenCategory(category.id)}
+            >
+              <div class={styles.sidebarText}>
+                <div
+                  class={`${styles.sidebarName} ${active() ? styles.sidebarNameActive : ""}`}
+                >
+                  {category.label}
+                </div>
+                <div
+                  class={`${styles.sidebarSubtitle} ${
+                    active() ? styles.sidebarSubtitleActive : ""
+                  }`}
+                >
+                  {category.count}
                 </div>
               </div>
             </div>

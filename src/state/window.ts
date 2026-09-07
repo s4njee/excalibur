@@ -14,6 +14,9 @@
 // round trip for either would mean a frame of the empty state in a window that
 // is not empty.
 
+/** What a browser window is looking at: a share, or the download queue. */
+export type WindowView = "browse" | "downloads";
+
 /** How a browser window was opened. */
 export interface WindowParams {
   /**
@@ -34,10 +37,18 @@ export interface WindowParams {
   mount: string | null;
   /** The folder to open in. Empty is the share root. */
   path: string;
+  /**
+   * What the window opened on (XDL-E2-S1). `browse` is the file list; anything
+   * else is the shell telling a restored window where it was, which is the
+   * record E23-S2 will persist per window. In-window switching (the sidebar's
+   * CATEGORIES section) overrides this after load and remembers its own
+   * answer — see `App`'s view signal.
+   */
+  view: WindowView;
 }
 
 /** The first window, and what a browser preview is. */
-export const FIRST_WINDOW: WindowParams = { label: "main", mount: null, path: "" };
+export const FIRST_WINDOW: WindowParams = { label: "main", mount: null, path: "", view: "browse" };
 
 /**
  * Read a window's parameters out of its query string.
@@ -50,6 +61,7 @@ export function parseWindowParams(search: string): WindowParams {
   const parameters = new URLSearchParams(search);
   const label = parameters.get("label");
   const mount = parameters.get("mount");
+  const view = parameters.get("view");
   return {
     label: label === null || label === "" ? FIRST_WINDOW.label : label,
     // An empty `mount` is "no mount", not a share whose id is the empty
@@ -57,6 +69,9 @@ export function parseWindowParams(search: string): WindowParams {
     // nothing to say leaves the value empty rather than the key out.
     mount: mount === null || mount === "" ? null : mount,
     path: parameters.get("path") ?? FIRST_WINDOW.path,
+    // Anything but an explicit `downloads` is the file list: an unknown value
+    // is a newer shell than this webview, not a third view.
+    view: view === "downloads" ? "downloads" : FIRST_WINDOW.view,
   };
 }
 

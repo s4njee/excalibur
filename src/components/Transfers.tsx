@@ -22,10 +22,18 @@ const ROW_CAP = 200;
  * (default) or slide-down sheet (preference)"; this is the sheet, and the
  * preference that would offer the other has nowhere to live until E17.
  * Recorded in `docs/design-gaps.md`.
+ *
+ * `embedded` draws the same queue as the window's downloads view instead
+ * (XDL-E2-S1): a region titled Downloads with no Close button, because there
+ * is no panel to dismiss — leaving is the sidebar's job. The rows, the bulk
+ * menu and the footer are untouched, so the sheet and the tab cannot disagree.
  */
 export function Transfers(props: {
   transfers: Transfer[];
-  onClose: () => void;
+  /** Absent in the embedded view, where leaving is the sidebar's job. */
+  onClose?: () => void;
+  /** Draw as the downloads view rather than the sheet. */
+  embedded?: boolean;
   onPauseAll: () => void;
   onClearFinished: () => void;
   onRetryFailed: () => void;
@@ -90,9 +98,13 @@ export function Transfers(props: {
   };
 
   return (
-    <div class={styles.panel} role="dialog" aria-label="Transfers">
+    <div
+      class={styles.panel}
+      role={props.embedded ? "region" : "dialog"}
+      aria-label={props.embedded ? "Downloads" : "Transfers"}
+    >
       <div class={styles.header}>
-        <span class={styles.title}>Transfers</span>
+        <span class={styles.title}>{props.embedded ? "Downloads" : "Transfers"}</span>
         {/* The bulk actions live behind one control (asked for directly,
             2026-09-07). The handoff draws three buttons in this header and
             there are now four verbs, two of them about failures — recorded in
@@ -108,9 +120,13 @@ export function Transfers(props: {
         >
           ☰
         </button>
-        <button class={styles.headerAction} aria-label="Close" onClick={props.onClose}>
-          ✕
-        </button>
+        <Show when={!props.embedded && props.onClose}>
+          {(close) => (
+            <button class={styles.headerAction} aria-label="Close" onClick={() => close()()}>
+              ✕
+            </button>
+          )}
+        </Show>
       </div>
 
       <Show when={menuAt()}>
