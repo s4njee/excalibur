@@ -246,3 +246,54 @@ describe("the sheet's rows", () => {
     stop();
   });
 });
+
+describe("the footer (XDL-E2-S4)", () => {
+  function open(transfers: Transfer[]) {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const stop = render(
+      () => (
+        <Transfers
+          transfers={transfers}
+          onPause={() => undefined}
+          onCancel={() => undefined}
+          onRetry={() => undefined}
+          onPauseAll={() => undefined}
+          onClearFinished={() => undefined}
+          onRetryFailed={() => undefined}
+          onClearFailed={() => undefined}
+          onClose={() => undefined}
+        />
+      ),
+      root,
+    );
+    return { root, stop };
+  }
+
+  it("shows the active count, remaining bytes and aggregate rate", () => {
+    const { root, stop } = open([
+      row("a", "running", { bytesDone: 40, bytesTotal: 100, rate: 1_000_000 }),
+      row("b", "paused", { rate: 9_000_000 }),
+    ]);
+    const footer = root.textContent ?? "";
+    expect(footer).toContain("1 active");
+    expect(footer).toContain("60 B remaining");
+    expect(footer).toContain("1 MB/s aggregate");
+    // The paused row's made-up 9 MB/s is not part of the total.
+    expect(footer).not.toContain("9 MB/s");
+    stop();
+  });
+
+  it("draws the decorative sparkline next to the numbers", () => {
+    const { root, stop } = open([
+      row("a", "running", { rate: 1_000_000 }),
+      row("b", "running", { rate: 2_000_000 }),
+    ]);
+    // One real-time sample has been taken (the timer runs in the test too);
+    // the sparkline is present and is aria-hidden decoration.
+    const svg = root.querySelector("svg");
+    expect(svg).not.toBeNull();
+    expect(svg?.getAttribute("aria-hidden")).toBe("true");
+    stop();
+  });
+});

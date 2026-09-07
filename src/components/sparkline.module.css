@@ -1,0 +1,15 @@
+/* The downloads footer's sparkline (XDL-E2-S4). Decorative, so it follows the
+   accent and draws no text. */
+
+.sparkline {
+  flex: none;
+  overflow: visible;
+}
+
+.line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}

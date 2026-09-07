@@ -1,8 +1,10 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import styles from "./transfers.module.css";
 import { ContextMenu } from "./ContextMenu";
 import { DownloadsTable, transferRemountable } from "./DownloadsTable";
+import { Sparkline } from "./Sparkline";
 import { fractionOf } from "../state/downloads";
+import { activeCount, aggregateRate, pushSample, remainingBytes } from "../state/throughput";
 import { formatRate, formatSize, formatTransferStatus } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
@@ -46,19 +48,24 @@ export function Transfers(props: {
   /** Offered on a failed upload that a writable mount would fix. */
   onRemount?: () => void;
 }) {
-  const counts = () => {
-    const active = props.transfers.filter((t) => t.status === "running").length;
-    const queued = props.transfers.filter((t) => t.status === "queued").length;
-    const failed = props.transfers.filter((t) => t.status === "failed").length;
-    return { active, queued, failed };
-  };
-
   // The aggregate is of what is *moving*. Including paused rows at zero would
   // drag it down and misdescribe the link.
-  const aggregate = () =>
-    props.transfers
-      .filter((transfer) => transfer.status === "running")
-      .reduce((total, transfer) => total + (transfer.rate ?? 0), 0);
+  const aggregate = () => aggregateRate(props.transfers);
+
+  /**
+   * The sparkline's ring (XDL-E2-S4): the last 60 one-second samples of the
+   * aggregate rate. Sampled on a timer rather than on every transfer event —
+   * a rate can change without a new event, and the reference's "last 60s" is
+   * a time window, not a count of messages. Drawn from the queue the window
+   * already holds; no second data source.
+   */
+  const [samples, setSamples] = createSignal<number[]>([]);
+  onMount(() => {
+    const timer = setInterval(() => {
+      setSamples((current) => pushSample(current, aggregate()));
+    }, 1000);
+    onCleanup(() => clearInterval(timer));
+  });
 
   /** How many rows are drawn before the panel offers the rest. */
   const [cap, setCap] = createSignal<number>(ROW_CAP);
@@ -191,12 +198,22 @@ export function Transfers(props: {
       </Show>
 
       <div class={styles.footer}>
-        <span>
-          {counts().active} active · {counts().queued} queued · {counts().failed} failed
+        <span class={styles.footerStats}>
+          {/* The reference's "3 active · 48 connections". The count we have is
+              active rows; the connection count is the engine's and unplumbed
+              to the row (XD-E2-S4), so the footer says nothing rather than
+              invent one (XDL-E2-S4). */}
+          <span class={styles.footerMono}>
+            {activeCount(props.transfers)} active
+          </span>
+          <span class={styles.footerMono}>
+            {formatSize(remainingBytes(props.transfers))} remaining
+          </span>
         </span>
         <Show when={aggregate() > 0}>
           <span class={styles.aggregate}>{formatRate(aggregate())} aggregate</span>
         </Show>
+        <Sparkline samples={samples()} />
       </div>
     </div>
   );

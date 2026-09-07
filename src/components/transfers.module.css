@@ -225,8 +225,9 @@
 .footer {
   display: flex;
   align-items: center;
+  gap: 12px;
   flex: none;
-  height: 24px;
+  height: 28px;
   padding: 0 10px;
   background: var(--statusbar-bg);
   border-top: 1px solid var(--hairline-chrome);
@@ -234,10 +235,23 @@
   color: var(--text-secondary);
 }
 
+.footerStats {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.footerMono {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
 .aggregate {
   margin-left: auto;
   font-family: var(--font-mono);
   font-size: 10px;
+  color: var(--accent);
 }
 
 /* The rest of a long queue, one click away. A row rather than a control in the
