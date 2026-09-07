@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import styles from "./transfers.module.css";
 import { ContextMenu } from "./ContextMenu";
 import { DownloadsTable, transferRemountable } from "./DownloadsTable";
+import { fractionOf } from "../state/downloads";
 import { formatRate, formatSize, formatTransferStatus } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
@@ -216,11 +217,10 @@ function Row(props: {
   // would fix. Offering it on a timeout would be a button that changes
   // nothing. Shared with the downloads table, which offers the same action.
   const remountable = () => transferRemountable(props.transfer);
-
-  const fraction = () =>
-    props.transfer.bytesTotal > 0
-      ? Math.min(1, props.transfer.bytesDone / props.transfer.bytesTotal)
-      : 0;
+  // The engine's rule (XDL-E2-S3): null while the size is unknown, so an
+  // unfinished row that cannot name a total draws indeterminate rather than
+  // a bar parked at zero.
+  const fraction = () => fractionOf(props.transfer);
 
   return (
     <div
@@ -273,10 +273,29 @@ function Row(props: {
         }
       >
         {/* Queued rows show an empty track, per the design: the row is there
-            and its bar has not started, which is exactly the state. */}
-        <div class={styles.track}>
-          <div class={styles.fill} style={{ width: `${fraction() * 100}%` }} />
-        </div>
+            and its bar has not started, which is exactly the state. A row
+            that cannot name a total draws indeterminate instead — a bar at
+            zero for a whole transfer looks broken (XDL-E2-S3). */}
+        {fraction() === null ? (
+          <div
+            class={styles.track}
+            role="progressbar"
+            aria-label={`${props.transfer.name} progress, size unknown`}
+          >
+            <div class={styles.fillIndeterminate} />
+          </div>
+        ) : (
+          <div
+            class={styles.track}
+            role="progressbar"
+            aria-label={`${props.transfer.name} progress`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round((fraction() ?? 0) * 100)}
+          >
+            <div class={styles.fill} style={{ width: `${(fraction() ?? 0) * 100}%` }} />
+          </div>
+        )}
       </Show>
 
       <div class={styles.rowBottom}>

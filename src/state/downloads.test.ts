@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DOWNLOAD_CATEGORIES, categorize, countByCategory, filterByCategory, originHost } from "./downloads";
+import {
+  DOWNLOAD_CATEGORIES,
+  categorize,
+  countByCategory,
+  filterByCategory,
+  fractionOf,
+  originHost,
+} from "./downloads";
 import type { Transfer, TransferStatus } from "./types";
 
 function row(id: string, status: TransferStatus): Transfer {
@@ -73,6 +80,21 @@ describe("download categories", () => {
       "completed",
       "failed",
     ]);
+  });
+});
+
+describe("fractionOf", () => {
+  it("is null while the size is unknown, like the engine's fraction", () => {
+    // `Transfer::fraction` returns None when bytes_total is 0, and the two
+    // must not disagree about what counts as knowing.
+    expect(fractionOf({ bytesDone: 0, bytesTotal: 0 })).toBeNull();
+    expect(fractionOf({ bytesDone: 512, bytesTotal: 0 })).toBeNull();
+  });
+
+  it("is a clamped ratio otherwise", () => {
+    expect(fractionOf({ bytesDone: 25, bytesTotal: 100 })).toBe(0.25);
+    expect(fractionOf({ bytesDone: 200, bytesTotal: 100 })).toBe(1);
+    expect(fractionOf({ bytesDone: -5, bytesTotal: 100 })).toBe(0);
   });
 });
 

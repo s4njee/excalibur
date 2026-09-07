@@ -102,9 +102,38 @@
   background: var(--accent);
 }
 
+/*
+ * A row that cannot name a total (XDL-E2-S3). A block sliding across the
+ * track rather than a bar parked at zero: the motion is the liveness signal,
+ * and transform-only animation stays on the compositor. Still honours
+ * reduced motion, where it rests as a static block.
+ */
+.fillIndeterminate {
+  height: 100%;
+  width: 40%;
+  border-radius: 3px;
+  background: var(--accent);
+  animation: indeterminate-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fillIndeterminate {
+    animation: none;
+  }
+}
+
 .percent {
   flex: none;
-  width: 40px;
+  min-width: 40px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);

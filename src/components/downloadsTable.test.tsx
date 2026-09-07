@@ -5,6 +5,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render } from "solid-js/web";
 import { DownloadsTable, downloadWindow, DOWNLOAD_ROW_HEIGHT } from "./DownloadsTable";
+import { Transfers } from "./Transfers";
 import type { Transfer, TransferStatus } from "../state/types";
 
 let dispose: (() => void) | undefined;
@@ -90,13 +91,25 @@ describe("columns", () => {
     expect(table).toContain("1m 15s");
   });
 
-  it("reads unknown sizes as em-dashes rather than zeroes", () => {
-    // The indeterminate treatment is XDL-E2-S3's; until then the row is
-    // honest about what it cannot compute instead of drawing a bar at zero.
+  it("draws an indeterminate bar and a growing count while the size is unknown", () => {
+    // XDL-E2-S3: not a bar at zero, no percentage, no denominator — the count
+    // climbs as bytes land and the motion says it is alive.
     open([row("stream", "running", { bytesTotal: 0, bytesDone: 512 })]);
-    const table = host().textContent ?? "";
-    expect(table).not.toContain("0%");
-    expect(table).toContain("—");
+    const stream = host().querySelector('[data-transfer="stream"]');
+    expect(stream).not.toBeNull();
+    const bar = stream?.querySelector('[role="progressbar"]');
+    expect(bar).not.toBeNull();
+    expect(bar?.getAttribute("aria-valuenow")).toBeNull();
+    expect(stream?.textContent).toContain("512 B");
+    expect(stream?.textContent).not.toContain("%");
+  });
+
+  it("keeps a measured bar on rows that name a total", () => {
+    open([row("big.iso", "running", { bytesDone: 25, bytesTotal: 100 })]);
+    const bar = host()
+      .querySelector('[data-transfer="big.iso"]')
+      ?.querySelector('[role="progressbar"]');
+    expect(bar?.getAttribute("aria-valuenow")).toBe("25");
   });
 });
 
@@ -202,5 +215,34 @@ describe("virtualisation", () => {
   it("says nothing is transferring for an empty category", () => {
     open([]);
     expect(host().textContent).toContain("Nothing transferring");
+  });
+});
+
+describe("the sheet's rows", () => {
+  it("draws the same indeterminate bar for an unknown size", () => {
+    // S3 covers both bars: the sheet keeps its compact rows, and they must
+    // not disagree with the table about what counts as knowing.
+    const root = document.createElement("div");
+    document.body.append(root);
+    const stop = render(
+      () => (
+        <Transfers
+          transfers={[row("stream", "running", { bytesTotal: 0, bytesDone: 512 })]}
+          onPause={() => undefined}
+          onCancel={() => undefined}
+          onRetry={() => undefined}
+          onPauseAll={() => undefined}
+          onClearFinished={() => undefined}
+          onRetryFailed={() => undefined}
+          onClearFailed={() => undefined}
+          onClose={() => undefined}
+        />
+      ),
+      root,
+    );
+    const bar = root.querySelector('[data-transfer="stream"] [role="progressbar"]');
+    expect(bar).not.toBeNull();
+    expect(bar?.getAttribute("aria-valuenow")).toBeNull();
+    stop();
   });
 });

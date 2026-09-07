@@ -67,6 +67,21 @@ export function filterByCategory(
 }
 
 /**
+ * How far through a row is, or `null` when the size is unknown (XDL-E2-S3).
+ *
+ * This is the engine's `Transfer::fraction` rule rather than a second one:
+ * `None` when `bytes_total` is 0, clamped to `0.0..=1.0` otherwise, because a
+ * bar that sits at zero for a whole transfer looks broken where an
+ * indeterminate one is honest about not knowing. Both the sheet rows and the
+ * downloads table read this, so the two cannot disagree about what counts as
+ * knowing.
+ */
+export function fractionOf(transfer: { bytesDone: number; bytesTotal: number }): number | null {
+  if (transfer.bytesTotal === 0) return null;
+  return Math.min(1, Math.max(0, transfer.bytesDone / transfer.bytesTotal));
+}
+
+/**
  * The hostname of a URL with any credentials removed, for display under the
  * row's filename (XDL-E2-S2). `URL.hostname` strips userinfo by construction;
  * the manual path is for strings it refuses, and strips the same way — the

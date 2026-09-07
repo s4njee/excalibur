@@ -2,7 +2,7 @@ import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid
 import styles from "./downloadsTable.module.css";
 import { visibleRange } from "../state/virtual";
 import { formatDuration, formatRate, formatSize } from "../state/format";
-import { originHost } from "../state/downloads";
+import { fractionOf, originHost } from "../state/downloads";
 import type { Transfer } from "../state/types";
 
 /**
@@ -132,10 +132,9 @@ export function DownloadsTable(props: {
         <For each={rows()}>
           {(transfer) => {
             const state = badge(transfer);
-            const known = transfer.bytesTotal > 0;
-            const percent = known
-              ? Math.min(100, Math.round((transfer.bytesDone / transfer.bytesTotal) * 100))
-              : 0;
+            // The engine's rule, not a second one: null while the size is
+            // unknown, a clamped fraction otherwise (XDL-E2-S3).
+            const fraction = fractionOf(transfer);
             const origin = originHost(transfer);
             return (
               <div class={`${styles.grid} ${styles.row}`} role="row" data-transfer={transfer.id}>
@@ -147,17 +146,38 @@ export function DownloadsTable(props: {
                     {origin ?? "—"}
                   </div>
                 </div>
-                <div class={`${styles.numeric} ${known ? "" : styles.dim}`}>
-                  {known ? formatSize(transfer.bytesTotal) : "—"}
+                <div class={`${styles.numeric} ${fraction !== null ? "" : styles.dim}`}>
+                  {fraction !== null ? formatSize(transfer.bytesTotal) : "—"}
                 </div>
                 <div class={styles.progress}>
-                  <div class={styles.track}>
-                    <div class={styles.fill} style={{ width: `${percent}%` }} />
-                  </div>
-                  {/* Unknown size reads "—", not 0%: a bar at zero for a whole
-                      transfer looks broken, and the indeterminate treatment is
-                      XDL-E2-S3's story to tell. */}
-                  <span class={styles.percent}>{known ? `${percent}%` : "—"}</span>
+                  {fraction === null ? (
+                    <div
+                      class={styles.track}
+                      role="progressbar"
+                      aria-label={`${transfer.name} progress, size unknown`}
+                    >
+                      <div class={styles.fillIndeterminate} />
+                    </div>
+                  ) : (
+                    <div
+                      class={styles.track}
+                      role="progressbar"
+                      aria-label={`${transfer.name} progress`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(fraction * 100)}
+                    >
+                      <div class={styles.fill} style={{ width: `${fraction * 100}%` }} />
+                    </div>
+                  )}
+                  {/* Unknown reads the growing byte count with no denominator
+                      and no percentage — never a bar at zero claiming 0%
+                      (XDL-E2-S3). */}
+                  <span class={styles.percent}>
+                    {fraction === null
+                      ? formatSize(transfer.bytesDone)
+                      : `${Math.round(fraction * 100)}%`}
+                  </span>
                 </div>
                 <div
                   class={`${styles.numeric} ${

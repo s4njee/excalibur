@@ -130,6 +130,17 @@ describe("transfer row strings", () => {
     ).toBe("41.2 GB");
   });
 
+  it("counts up with no denominator and no percentage while the size is unknown", () => {
+    // XDL-E2-S3: the status line of a row that cannot name a total. The rate
+    // is fair game — bytes are still moving — but a percentage or a total
+    // would be claims about something nobody measured.
+    const status = formatTransferStatus({ ...running, bytesTotal: 0, etaSeconds: null });
+    expect(status).toBe("41.2 GB · 112 MB/s");
+    expect(status).not.toContain("%");
+    // The only `/` is the rate's own — no size denominator.
+    expect(status).not.toContain(" / ");
+  });
+
   it("says how far through a folder it is, because one row is the whole tree", () => {
     // E22-S3: a folder is one row, so the bytes alone cannot say whether the
     // copy is on its tenth file or its ten-thousandth. The count is the
