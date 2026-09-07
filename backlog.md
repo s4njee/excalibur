@@ -126,13 +126,20 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-Nothing in `legacy/xdl.md` is built — all 25 stories are unchecked. The engine is
+1 of the 25 stories in `legacy/xdl.md` is built — **E1-S1** (the HTTP route,
+2026-09-07, `72ef808`); the rest are unchecked. The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
 
 - **XDL-E1** — a download is a `Transfer`: a third route in `Worker::attempt`
   (S1) and an origin that is not a mount (S2), migrating existing rows without a
   queue-file rewrite. (`legacy/xdl.md:103`)
+  - **E1-S1 done** (2026-09-07, `72ef808`): HTTP → local routes through
+    `sync_endpoints` with `HttpSource` + `LocalSink`; `from`/`to: Endpoint`
+    land on `Transfer` with `#[serde(default)]`; hostile `Content-Disposition`
+    names sanitised; permanent HTTP failures (404, refused URL) fail the row
+    fast instead of spending the worker's 30s of backoff.
+    (`legacy/xdl.md:105`)
 - **XDL-E2** — the tab: where it lives in the window (S1), the table with its
   five status badges and redacted origin host (S2), the indeterminate row (S3,
   blocked on xsync XD-E1-S5), the footer sparkline (S4). 10,000 rows must scroll

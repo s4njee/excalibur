@@ -104,24 +104,26 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E1-S1 — The HTTP route
 
-- [ ] **Do.** A third route in `Worker::attempt`, beside E22-S1's wire protocol
+- [x] **Do.** A third route in `Worker::attempt`, beside E22-S1's wire protocol
   and E22-S2's `ShareSource`/`ShareSink`: an `HttpSource` from
   `xsync-download` paired with the `ShareSink` that already exists, so a
   download lands through the same staged, verified, resumable write path as
-  every other transfer.
+  every other transfer. *(Built 2026-09-07; the destination is xsync's
+  `LocalSink`, which keeps the resume journal's restart proof. Committed as
+  `excalibur 72ef808`.)*
 
 **AC**
-- [ ] A `Transfer` can name an HTTP(S) URL as its source. `Transfer` gains the
+- [x] A `Transfer` can name an HTTP(S) URL as its source. `Transfer` gains the
   shape for it without breaking the queue file — `#[serde(default)]`, the way
   `mount`, `verified`, `files_done` and `files_total` were all added.
-- [ ] The row is driven by the same `sync_endpoints` session, so cancellation,
+- [x] The row is driven by the same `sync_endpoints` session, so cancellation,
   the resume journal, BLAKE3 verification and the progress stream are the ones
   already tested — not a second implementation.
-- [ ] The destination filename comes from `xsync-download`'s `name::`, never
+- [x] The destination filename comes from `xsync-download`'s `name::`, never
   from the URL's last path segment directly. A server that offers
   `../../../.ssh/authorized_keys` in `Content-Disposition` writes a file called
   something safe inside the chosen folder, and a test says so.
-- [ ] Nothing about an existing share transfer changes. The endpoint tests and
+- [x] Nothing about an existing share transfer changes. The endpoint tests and
   the throughput harness both still pass, and the harness gains a download row.
 
 #### XDL-E1-S2 — Where a download comes from and goes to
