@@ -197,24 +197,47 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E2-S2 — The list
 
-- [ ] **Do.** The reference's table, in Excalibur's palette: file, size,
-  progress, speed, ETA, status.
+- [x] **Do.** The reference's table, in Excalibur's palette: file, size,
+  progress, speed, ETA, status. *(Built 2026-09-07 as `DownloadsTable`: the
+  tab's rows, while the sheet keeps its compact rows — two densities sharing
+  the header, bulk menu and footer. Proven as `excalibur 4e3abf3`.)*
 
 **AC**
-- [ ] Columns are the reference's set, and the *type rule* is taken wholesale
+- [x] Columns are the reference's set, and the *type rule* is taken wholesale
   because it is the best thing in the reference: **language is sans, machine
   values are mono.** Sizes, speeds, ETAs, percentages, hostnames and status
-  badges are all mono, right-aligned where numeric.
-- [ ] Surfaces are Excalibur's greys. The reference's white card, `#FAFBFB`
+  badges are all mono, right-aligned where numeric. *(Done: file/size/progress/
+  speed/ETA/status grid plus a narrow actions column for the row's own
+  Pause/Cancel/Resume/Retry — the reference's right-click menu has no
+  equivalent here, and losing the actions was not an option. Vitest resolves
+  CSS to empty, so classes are asserted by token use and the contrast test,
+  not by name: every machine value reads `var(--font-mono)` and every numeric
+  column aligns right.)*
+- [x] Surfaces are Excalibur's greys. The reference's white card, `#FAFBFB`
   header and `#ECEEEF` canvas map onto existing tokens, and the tab is legible
   in both themes with no colour introduced that is not already a token.
-- [ ] Status badges carry the reference's five states, in Excalibur's own
-  success/warning/danger tokens rather than its hexes.
-- [ ] A row shows the origin host under the filename, redacted — a URL with
+  *(Done: list bg, statusbar bg header, hairline rows, segment-track fills.
+  Seven badge tokens added with dark values — success and warning fills plus
+  per-state text — because the global `--success` tops out at 3.34:1 on white
+  and `--error` fails on its own dark fill; the premise needed saying out
+  loud, so it is written on the tokens and held in `contrast.test.ts`.)*
+- [x] Status badges carry the reference's five states, in Excalibur's own
+  success/warning/danger tokens rather than its hexes. *(Done: Downloading/
+  accent, Queued/warning, Paused/muted, Completed/success, Failed/error, plus
+  Cancelled/muted. Every text-on-fill pair is held to 4.5:1 in both themes.)*
+- [x] A row shows the origin host under the filename, redacted — a URL with
   userinfo never renders its credentials, and a test with
-  `https://user:pw@host/f` says so.
-- [ ] 10,000 rows scroll at the same frame rate the file list manages (E8-S2's
-  bar), which means the same virtualisation and not a second one.
+  `https://user:pw@host/f` says so. *(Done: `originHost()` — HTTP hosts via
+  `URL.hostname`, the share's host from the mount id, This Mac for local
+  origins, legacy rows through direction and mount. The engine refuses
+  credentialed URLs, but display does not trust the file.)*
+- [x] 10,000 rows scroll at the same frame rate the file list manages (E8-S2's
+  bar), which means the same virtualisation and not a second one. *(Done: the
+  table calls the file list's `visibleRange` over its own 52px rows —
+  `downloadWindow()` is the whole of it. A 10,000-row unit case windows to
+  under 40 rows, and a 10,000-row render commits a bounded slice. Frame rate
+  itself is not assertable in vitest; sharing the arithmetic is the guarantee
+  the story asked for.)*
 
 #### XDL-E2-S3 — A row that does not know its size
 

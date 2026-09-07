@@ -31,6 +31,16 @@ session, and that is E23-S2's job.
 reference tops its sidebar, and whether the downloads toolbar wants its own
 verbs (Add, Pause all) rather than the current quiet bar with Refresh.
 
+**Amended 2026-09-07 (XDL-E2-S2): the tab is the reference's table now, and
+the sheet kept its compact rows.** One queue, two densities: the tab draws
+file/size/progress/speed/ETA/status columns with the reference's mono type
+rule, the sheet keeps the denser rows it always had, and both share the
+header, bulk menu and footer. The five badges needed their own text tokens —
+the global success green never reaches 4.5:1 on a light fill — and the table
+adds a narrow actions column the reference does not draw, because its
+right-click menu has no equivalent here and the rows must keep their
+Pause/Cancel/Resume/Retry.
+
 ## Remount as RW, in the status bar *(E9-S3, 2026-09-03)*
 
 **The mock** puts `Remount as RW` on a failed row in the transfer queue

@@ -126,10 +126,10 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-3 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
+4 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
 2026-09-07, `72ef808`), **E1-S2** (origin-not-a-mount plus queue migration,
-2026-09-07, `a5fb184`) and **E2-S1** (the tab lives, 2026-09-07); the rest are
-unchecked. The engine is
+2026-09-07, `a5fb184`), **E2-S1** (the tab lives, 2026-09-07, `a62fcd2`) and
+**E2-S2** (the reference table, 2026-09-07); the rest are unchecked. The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
 
@@ -152,7 +152,9 @@ unchecked. The engine is
 - **XDL-E2** — the tab: where it lives in the window (S1, done 2026-09-07 — the
   window has a browse/downloads view, CATEGORIES with live counts, share verbs
   absent on downloads, view remembered per window label), the table with its
-  five status badges and redacted origin host (S2), the indeterminate row (S3,
+  five status badges and redacted origin host (S2, done 2026-09-07 — reference
+  columns in this palette, mono type rule, badge tokens held to 4.5:1, same
+  `visibleRange` virtualisation as the file list), the indeterminate row (S3,
   blocked on xsync XD-E1-S5), the footer sparkline (S4). 10,000 rows must scroll
   at E8-S2's frame rate. (`legacy/xdl.md:160`)
 - **XDL-E3** — add dialog (S1), server probe (S2, blocked on XD-E2-S1),
