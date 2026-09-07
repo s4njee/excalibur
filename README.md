@@ -41,8 +41,8 @@ pnpm tauri dev    # the desktop app
 The frontend serves the design's two screens from one component tree, so they
 can be compared against the mock without a server:
 
-- <http://localhost:5173/?screen=1a> — light, read-write
-- <http://localhost:5173/?screen=1b> — dark, read-only
+- <http://localhost:7188/?screen=1a> — light, read-write
+- <http://localhost:7188/?screen=1b> — dark, read-only
 
 `?screen=1b` is the one worth looking at: it is the same tree with
 `mount.writable` false, and it disables Edit and Upload while leaving Quick Look

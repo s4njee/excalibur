@@ -6,7 +6,7 @@ import solid from "vite-plugin-solid";
 export default defineConfig({
   plugins: [solid()],
   clearScreen: false,
-  server: { port: 5173, strictPort: true },
+  server: { port: 7188, strictPort: true },
   build: { target: "safari15", sourcemap: true },
   test: { environment: "jsdom" },
 });
