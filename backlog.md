@@ -126,9 +126,10 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-2 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
-2026-09-07, `72ef808`) and **E1-S2** (origin-not-a-mount plus queue migration,
-2026-09-07); the rest are unchecked. The engine is
+3 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
+2026-09-07, `72ef808`), **E1-S2** (origin-not-a-mount plus queue migration,
+2026-09-07, `a5fb184`) and **E2-S1** (the tab lives, 2026-09-07); the rest are
+unchecked. The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
 
@@ -148,10 +149,12 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
     re-queued and both ends derived lazily. `Direction` removal stays E22-S3's.
     (`legacy/xdl.md:129`, `crates/engine/tests/queue.rs`,
     `crates/engine/tests/transfer_model.rs`)
-- **XDL-E2** — the tab: where it lives in the window (S1), the table with its
+- **XDL-E2** — the tab: where it lives in the window (S1, done 2026-09-07 — the
+  window has a browse/downloads view, CATEGORIES with live counts, share verbs
+  absent on downloads, view remembered per window label), the table with its
   five status badges and redacted origin host (S2), the indeterminate row (S3,
   blocked on xsync XD-E1-S5), the footer sparkline (S4). 10,000 rows must scroll
-  at E8-S2's frame rate. (`legacy/xdl.md:142`)
+  at E8-S2's frame rate. (`legacy/xdl.md:160`)
 - **XDL-E3** — add dialog (S1), server probe (S2, blocked on XD-E2-S1),
   connection picker honouring `--max-per-host` (S3), mirrors (S4, blocked on
   XD-E5-S1/S3). (`legacy/xdl.md:212`)

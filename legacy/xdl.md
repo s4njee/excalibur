@@ -161,23 +161,39 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E2-S1 — Where the tab lives
 
-- [ ] **Do.** Decide and build how a window shows downloads instead of a share.
+- [x] **Do.** Decide and build how a window shows downloads instead of a share.
   The reference is a whole app; this is a tab in a window that already has a
-  sidebar, a toolbar, a path field and a status bar.
+  sidebar, a toolbar, a path field and a status bar. *(Built 2026-09-07: the
+  window has a view — browse or downloads — carried in `WindowParams`,
+  switched from the sidebar, and remembered per window label. The downloads
+  view shows the same `Transfers` queue as the sheet (rows, bulk menu, footer)
+  filtered to the chosen category; E2-S2 restyles it into the reference's
+  table. Placement recorded in `docs/design-gaps.md`.)*
 
 **AC**
-- [ ] A window can be *on downloads* the way it is on a mount, and the choice
-  survives a restart per window (E23-S2's job, same mechanism).
-- [ ] The toolbar's share verbs (Quick Look, Edit, Download, Upload) are not
+- [x] A window can be *on downloads* the way it is on a mount, and the choice
+  survives a restart per window (E23-S2's job, same mechanism). *(Done for the
+  windows the shell creates: an explicit `?view=` wins, a ⌘N mount wins, and a
+  window opened onto nothing restores its remembered view and category from
+  `window-view:<label>` in the prefs store. Restoring every window's mount and
+  path is still E23-S2's — a share needs its session, downloads need none —
+  and the view rides the same `WindowParams` record it will persist.)*
+- [x] The toolbar's share verbs (Quick Look, Edit, Download, Upload) are not
   merely disabled but *absent* — a toolbar of greyed-out buttons that can never
-  apply is a worse answer than a toolbar that changes.
-- [ ] The sidebar keeps FAVORITES and MOUNTED, and gains the reference's
+  apply is a worse answer than a toolbar that changes. *(Done: the verbs, the
+  path field crumbs and the filter render only in the browse view; the
+  downloads bar keeps Refresh (re-reads the queue), the sidebar toggle and
+  preferences. The matching shortcuts return early on downloads.)*
+- [x] The sidebar keeps FAVORITES and MOUNTED, and gains the reference's
   CATEGORIES section — All / Downloading / Paused / Completed / Failed, each
   with a live count. Recorded in `docs/design-gaps.md`: the reference puts
   categories at the top of its own sidebar, and here they share one with
-  favourites and shares.
-- [ ] Nothing about the browsing window regresses; the multi-window tests still
-  pass.
+  favourites and shares. *(Done: CATEGORIES sits after MOUNTED, counts come
+  live off the window's transfer signal, cancelled rows belong to All alone.)*
+- [x] Nothing about the browsing window regresses; the multi-window tests still
+  pass. *(Done: 528 vitest green, tsc clean — the browse tree renders exactly
+  as before when the view is browse, and `multiWindow.test.tsx` is untouched
+  apart from the new required `view` field.)*
 
 #### XDL-E2-S2 — The list
 

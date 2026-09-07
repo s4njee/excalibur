@@ -8,6 +8,29 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## Downloads as a tab, not the reference's whole app *(XDL-E2-S1, 2026-09-07)*
+
+**The reference** (`design_handoff_aria2_download_manager/`) is a whole app:
+its CATEGORIES sit at the top of their own sidebar, its toolbar holds
+download verbs, and its table is the only content. Here the sidebar is shared
+with FAVORITES and shares, so CATEGORIES sits *after* MOUNTED: the rows above
+it answer "which share is this window on" and the rows in it answer "which
+slice of the queue is this window on", and the two read as one location list.
+The queue itself is the window's content when a category is open — the same
+`Transfers` rows, actions and footer as the sheet, not a second list — and
+the toolbar's share verbs (Quick Look, Edit, Download, Upload) are absent
+there rather than greyed out, with the path field naming the view.
+
+**Stepping stone, not the destination:** the tab reuses the sheet's rows until
+XDL-E2-S2 draws the reference's table (file, size, progress, speed, ETA,
+status) in this palette. Being on downloads — and which category — is
+remembered per window; restoring the *share* behind the browse view needs its
+session, and that is E23-S2's job.
+
+**For the designer:** whether CATEGORIES belongs above MOUNTED the way the
+reference tops its sidebar, and whether the downloads toolbar wants its own
+verbs (Add, Pause all) rather than the current quiet bar with Refresh.
+
 ## Remount as RW, in the status bar *(E9-S3, 2026-09-03)*
 
 **The mock** puts `Remount as RW` on a failed row in the transfer queue
