@@ -34,6 +34,51 @@ fn legacy_rows_load_and_lazily_become_share_endpoints() {
 }
 
 #[test]
+fn legacy_upload_rows_upgrade_to_local_then_share_endpoints() {
+    let row = serde_json::json!({
+        "id": "old-up",
+        "direction": "up",
+        "mount": "office",
+        "name": "notes.txt",
+        "sourcePath": "/local/notes.txt",
+        "destPath": "remote/notes.txt",
+        "bytesDone": 0,
+        "bytesTotal": 9,
+        "rate": null,
+        "etaSeconds": null,
+        "status": "queued",
+        "error": null,
+        "queuedAtMs": 2
+    });
+    let transfer: Transfer = serde_json::from_value(row).expect("legacy row");
+    assert_eq!(transfer.direction, Some(Direction::Up));
+    assert_eq!(
+        transfer.from_endpoint(),
+        Some(Endpoint::Local {
+            path: "/local/notes.txt".to_owned()
+        })
+    );
+    assert_eq!(
+        transfer.to_endpoint(),
+        Some(Endpoint::Share {
+            mount: Some("office".to_owned()),
+            path: "remote/notes.txt".to_owned()
+        })
+    );
+}
+
+#[test]
+fn endpoint_native_rows_round_trip_with_direction_absent() {
+    let transfer =
+        Transfer::http("download", "https://example.test/f", "/tmp/downloads").expect("valid URL");
+    let text = serde_json::to_value(&transfer).expect("serialize");
+    assert_eq!(text["direction"], serde_json::Value::Null);
+    let back: Transfer = serde_json::from_value(text).expect("restore");
+    assert_eq!(back, transfer);
+    assert_eq!(back.direction, None);
+}
+
+#[test]
 fn http_constructor_is_endpoint_native_and_uses_safe_url_name() {
     let transfer = Transfer::new_http(
         "download",

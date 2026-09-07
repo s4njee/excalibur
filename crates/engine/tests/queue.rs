@@ -1,7 +1,7 @@
 //! The transfer queue: ordering, persistence, and what a restart does to it.
 
 use excalibur_engine::transfer::queue::TransferQueue;
-use excalibur_engine::transfer::{Direction, Status, Transfer};
+use excalibur_engine::transfer::{Direction, Endpoint, Status, Transfer};
 
 fn transfer(id: &str, at: i64) -> Transfer {
     let mut transfer = Transfer::new(
@@ -170,6 +170,130 @@ async fn an_unreadable_queue_file_is_an_empty_queue() {
     let path = directory.path().join("transfers.json");
     std::fs::write(&path, b"{ not json at all").expect("write");
     assert!(TransferQueue::open(&path).all().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_queue_written_before_endpoints_still_loads_and_names_share_ends() {
+    // XDL-E1-S2, second AC: no queue-file rewrite. This is the shape a build
+    // before `from`/`to` wrote — no endpoint keys, no mount, no verified, no
+    // file counts — and it must open as share rows, re-queued, with both ends
+    // derived lazily rather than invented.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("transfers.json");
+    std::fs::write(
+        &path,
+        serde_json::json!([
+            {
+                "id": "old-down",
+                "direction": "down",
+                "name": "file.bin",
+                "sourcePath": "remote/file.bin",
+                "destPath": "/local/file.bin",
+                "bytesDone": 40,
+                "bytesTotal": 100,
+                "rate": 1_000_000,
+                "etaSeconds": 9,
+                "status": "running",
+                "error": null,
+                "queuedAtMs": 100
+            },
+            {
+                "id": "old-up",
+                "direction": "up",
+                "name": "notes.txt",
+                "sourcePath": "/local/notes.txt",
+                "destPath": "remote/notes.txt",
+                "bytesDone": 0,
+                "bytesTotal": 9,
+                "rate": null,
+                "etaSeconds": null,
+                "status": "queued",
+                "error": null,
+                "queuedAtMs": 200
+            }
+        ])
+        .to_string(),
+    )
+    .expect("write");
+
+    let restored = TransferQueue::open(&path);
+    let all = restored.all().await;
+    assert_eq!(all.len(), 2);
+
+    let down = &all[0];
+    assert_eq!(down.status, Status::Queued);
+    assert_eq!(down.bytes_done, 40);
+    assert_eq!(down.rate, None);
+    assert_eq!(
+        down.from_endpoint(),
+        Some(Endpoint::Share {
+            mount: None,
+            path: "remote/file.bin".to_owned()
+        })
+    );
+    assert_eq!(
+        down.to_endpoint(),
+        Some(Endpoint::Local {
+            path: "/local/file.bin".to_owned()
+        })
+    );
+
+    let up = &all[1];
+    assert_eq!(
+        up.from_endpoint(),
+        Some(Endpoint::Local {
+            path: "/local/notes.txt".to_owned()
+        })
+    );
+    assert_eq!(
+        up.to_endpoint(),
+        Some(Endpoint::Share {
+            mount: None,
+            path: "remote/notes.txt".to_owned()
+        })
+    );
+}
+
+#[tokio::test]
+async fn an_endpoint_native_download_row_survives_a_restart_without_a_direction() {
+    // The other half of XDL-E1-S2: a row from a URL to a local folder keeps
+    // its endpoints and its absent direction through the file, so the next
+    // launch drains it as a download rather than a share row.
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("transfers.json");
+    let destination = directory.path().join("downloads");
+    {
+        let queue = TransferQueue::open(&path);
+        queue
+            .add(
+                Transfer::http(
+                    "http",
+                    "https://example.test/f",
+                    destination.to_str().unwrap(),
+                )
+                .expect("valid URL"),
+            )
+            .await;
+    }
+    let restored = TransferQueue::open(&path);
+    let all = restored.all().await;
+    assert_eq!(all.len(), 1);
+    let row = &all[0];
+    assert_eq!(row.status, Status::Queued);
+    assert_eq!(row.direction, None);
+    assert_eq!(row.mount, None);
+    assert_eq!(
+        row.from,
+        Some(Endpoint::Http {
+            url: "https://example.test/f".to_owned()
+        })
+    );
+    assert_eq!(
+        row.to,
+        Some(Endpoint::Local {
+            path: destination.to_str().unwrap().to_owned()
+        })
+    );
 }
 
 /// What is on disk right now, or `""` when nothing has been written.
