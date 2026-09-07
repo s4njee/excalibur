@@ -848,6 +848,20 @@ async fn enqueue_downloads(
     Ok(ids)
 }
 
+/// Queue an HTTP resource without requiring a mounted share (XDL-E1).
+#[tauri::command]
+async fn enqueue_http_download(
+    state: tauri::State<'_, AppState>,
+    url: String,
+    destination: String,
+) -> std::result::Result<String, CommandError> {
+    let id = new_id();
+    let transfer = Transfer::http(id.clone(), url, destination)?;
+    state.transfers.add(transfer).await;
+    run_queue(&state);
+    Ok(id)
+}
+
 /// Put something the walk could not do in the queue, already failed.
 ///
 /// A row rather than an error from the command: one unreadable subdirectory
@@ -2404,6 +2418,7 @@ pub fn run() {
             forget_host_key,
             transfers,
             enqueue_downloads,
+            enqueue_http_download,
             enqueue_uploads,
             pause_transfer,
             cancel_transfer,

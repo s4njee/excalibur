@@ -141,6 +141,8 @@ export interface Backend {
    * — the drop is happening in one window about a share held by another.
    */
   enqueueDownloads(paths: string[], destination: string, mount?: string): Promise<string[]>;
+  /** Queue a URL into a local folder without a mounted share (XDL-E1). */
+  enqueueHttpDownload(url: string, destination: string): Promise<string>;
   /** Queue an upload of each local path into a share folder. `mount` as above. */
   enqueueUploads(paths: string[], destination: string, mount?: string): Promise<string[]>;
   pauseTransfer(id: string): Promise<void>;
@@ -465,6 +467,9 @@ export function fixtureBackend(
     async enqueueDownloads(): Promise<string[]> {
       throw new Error("not connected to the engine — run the desktop app");
     },
+    async enqueueHttpDownload(): Promise<string> {
+      throw new Error("not connected to the engine — run the desktop app");
+    },
     async enqueueUploads(): Promise<string[]> {
       throw new Error("not connected to the engine — run the desktop app");
     },
@@ -693,6 +698,10 @@ function tauriBackend(): Backend {
     ): Promise<string[]> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<string[]>("enqueue_downloads", { paths, destination, mount });
+    },
+    async enqueueHttpDownload(url: string, destination: string): Promise<string> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string>("enqueue_http_download", { url, destination });
     },
     async enqueueUploads(
       paths: string[],

@@ -307,7 +307,7 @@ fn remount_is_offered_only_where_it_would_help() {
     assert!(!transfer.needs_write_access());
 
     // Nor about a download.
-    transfer.direction = Direction::Down;
+    transfer.direction = Some(Direction::Down);
     transfer.error = Some("permission denied: /srv".to_owned());
     assert!(!transfer.needs_write_access());
 }

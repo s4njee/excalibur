@@ -15,6 +15,7 @@
 
 pub mod conflict;
 pub mod endpoint;
+pub mod http;
 pub mod plan;
 pub mod queue;
 pub mod rate;
@@ -33,6 +34,21 @@ pub enum Direction {
     Up,
     /// From the share to this machine.
     Down,
+}
+
+/// One end of a transfer.
+///
+/// The optional `mount` on a share is intentional: restored legacy rows may
+/// have meant the active share rather than naming one explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Endpoint {
+    /// A path on this machine.
+    Local { path: String },
+    /// A path in a mounted share.
+    Share { mount: Option<String>, path: String },
+    /// An HTTP(S) resource.
+    Http { url: String },
 }
 
 /// Where a transfer is in its life.
@@ -86,13 +102,25 @@ impl Status {
 pub struct Transfer {
     /// Stable across restarts, so a restored row is the same row.
     pub id: String,
-    pub direction: Direction,
+    /// Legacy direction, absent for endpoint-native routes such as HTTP →
+    /// local. Defaulting it keeps queue files written before endpoint routes
+    /// readable.
+    #[serde(default)]
+    pub direction: Option<Direction>,
     /// Base name, for the row's title.
     pub name: String,
     /// Where the bytes come from.
+    #[serde(default)]
     pub source_path: String,
     /// Where they are going.
+    #[serde(default)]
     pub dest_path: String,
+    /// Canonical source and destination. Legacy rows use the path fields and
+    /// are upgraded lazily by [`Self::from_endpoint`] and [`Self::to_endpoint`].
+    #[serde(default)]
+    pub from: Option<Endpoint>,
+    #[serde(default)]
+    pub to: Option<Endpoint>,
     pub bytes_done: u64,
     /// `0` when the size is not known yet, which a progress bar must handle.
     pub bytes_total: u64,
@@ -174,10 +202,12 @@ impl Transfer {
             .to_owned();
         Self {
             id: id.into(),
-            direction,
+            direction: Some(direction),
             name,
             source_path,
             dest_path,
+            from: None,
+            to: None,
             bytes_done: 0,
             bytes_total,
             rate: None,
@@ -205,6 +235,101 @@ impl Transfer {
         self
     }
 
+    /// Create an HTTP(S) download into `destination`.
+    ///
+    /// The URL is retained as entered only after validation. Credential-bearing
+    /// userinfo and query/fragment credentials are refused until the
+    /// keychain-backed credential story exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::EngineError::Unsupported`] when the URL is not
+    /// HTTP(S), carries credentials it must not, or names a non-absolute
+    /// destination folder.
+    pub fn new_http(
+        id: impl Into<String>,
+        url: impl Into<String>,
+        destination: impl Into<String>,
+        bytes_total: u64,
+    ) -> Result<Self, crate::error::EngineError> {
+        let url = url.into();
+        validate_http_url(&url)?;
+        let directory = destination.into();
+        if !std::path::Path::new(&directory).is_absolute() {
+            return Err(crate::error::EngineError::Unsupported(
+                "download destination must be an absolute local folder".to_owned(),
+            ));
+        }
+        let name = xsync_download::name::from_url(&url);
+        let dest_path = std::path::Path::new(&directory).join(&name);
+        let dest_path = dest_path.to_string_lossy().into_owned();
+        Ok(Self {
+            id: id.into(),
+            direction: None,
+            name,
+            source_path: url.clone(),
+            dest_path: dest_path.clone(),
+            from: Some(Endpoint::Http { url }),
+            to: Some(Endpoint::Local { path: directory }),
+            bytes_done: 0,
+            bytes_total,
+            rate: None,
+            eta_seconds: None,
+            status: Status::Queued,
+            error: None,
+            queued_at_ms: now_ms(),
+            mount: None,
+            verified: false,
+            note: None,
+            files_done: 0,
+            files_total: 0,
+        })
+    }
+
+    /// Create an HTTP download whose length is not known until probing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::EngineError::Unsupported`] for the same reasons
+    /// as [`Self::new_http`].
+    pub fn http(
+        id: impl Into<String>,
+        url: impl Into<String>,
+        destination: impl Into<String>,
+    ) -> Result<Self, crate::error::EngineError> {
+        Self::new_http(id, url, destination, 0)
+    }
+
+    /// Canonical source, falling back to the legacy fields for old rows.
+    #[must_use]
+    pub fn from_endpoint(&self) -> Option<Endpoint> {
+        self.from.clone().or_else(|| match self.direction {
+            Some(Direction::Up) => Some(Endpoint::Local {
+                path: self.source_path.clone(),
+            }),
+            Some(Direction::Down) => Some(Endpoint::Share {
+                mount: self.mount.clone(),
+                path: self.source_path.clone(),
+            }),
+            None => None,
+        })
+    }
+
+    /// Canonical destination, falling back to the legacy fields for old rows.
+    #[must_use]
+    pub fn to_endpoint(&self) -> Option<Endpoint> {
+        self.to.clone().or_else(|| match self.direction {
+            Some(Direction::Up) => Some(Endpoint::Share {
+                mount: self.mount.clone(),
+                path: self.dest_path.clone(),
+            }),
+            Some(Direction::Down) => Some(Endpoint::Local {
+                path: self.dest_path.clone(),
+            }),
+            None => None,
+        })
+    }
+
     /// Fraction complete in `0.0..=1.0`, or `None` when the size is unknown.
     ///
     /// `None` rather than zero: a bar that sits at zero for a whole transfer
@@ -226,12 +351,43 @@ impl Transfer {
     #[must_use]
     pub fn needs_write_access(&self) -> bool {
         self.status == Status::Failed
-            && self.direction == Direction::Up
+            && self.direction == Some(Direction::Up)
             && self
                 .error
                 .as_deref()
                 .is_some_and(|error| error.contains("read-only") || error.contains("permission"))
     }
+}
+
+pub(crate) fn validate_http_url(url: &str) -> Result<(), crate::error::EngineError> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://"))
+        || url.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(crate::error::EngineError::Unsupported(
+            "download URL must be HTTP or HTTPS".to_owned(),
+        ));
+    }
+    let authority = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+        .unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return Err(crate::error::EngineError::Unsupported(
+            "download URL credentials are not supported".to_owned(),
+        ));
+    }
+    if url.contains(['?', '#']) {
+        return Err(crate::error::EngineError::Unsupported(
+            "download URL query and fragment credentials are not supported".to_owned(),
+        ));
+    }
+    if xsync_download::redact_url(url) != url {
+        return Err(crate::error::EngineError::Unsupported(
+            "download URL credentials are not supported".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn now_ms() -> i64 {

@@ -80,6 +80,17 @@ afterEach(() => {
 });
 
 describe("the transfers panel's overflow menu", () => {
+  it("shows an HTTP origin without presenting it as a share download", async () => {
+    await open([{
+      ...row("http", "queued"),
+      direction: null,
+      from: { kind: "http", url: "https://example.com/http.bin" },
+      to: { kind: "local", path: "/Users/dorian/Downloads" },
+    }]);
+    expect(host.textContent).toContain("↓ HTTP");
+    expect(host.textContent).not.toContain("↓ DOWN");
+  });
+
   it("keeps only Close in the header and puts the queue's verbs behind one control", async () => {
     // The panel's own verb stays a button; everything that acts on the *queue*
     // moved. A header of five buttons is what this replaced.

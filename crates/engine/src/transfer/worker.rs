@@ -293,7 +293,13 @@ impl Worker {
         let mut running = Vec::new();
         let mut waiting: HashSet<String> = HashSet::new();
         while let Some(transfer) = self.queue.next_queued_except(&waiting).await {
-            if !self.backends.is_connected(transfer.mount.as_deref()).await {
+            // HTTP downloads have no share to wait for. Checking the backend
+            // here would leave them queued forever when the app has no mount.
+            // Any row whose source is HTTP takes the HTTP route, including a
+            // malformed one: it must attempt and fail loudly, not wait for an
+            // unrelated share that will never arrive.
+            let is_http = matches!(transfer.from_endpoint(), Some(super::Endpoint::Http { .. }));
+            if !is_http && !self.backends.is_connected(transfer.mount.as_deref()).await {
                 waiting.insert(transfer.id);
                 continue;
             }
@@ -430,6 +436,40 @@ impl Worker {
     /// pair.
     async fn attempt(&self, transfer: &Transfer, stop: &AtomicBool) -> Result<()> {
         let flag = self.flag_for(transfer, stop).await;
+        // Route HTTP before looking up a share. URL and endpoint validation is
+        // repeated by the route at execution time so restored/deserialised
+        // rows cannot bypass it.
+        if matches!(transfer.from_endpoint(), Some(super::Endpoint::Http { .. })) {
+            let (url, destination) = super::http::endpoints(transfer)?;
+            let queue = Arc::clone(&self.queue);
+            let id = transfer.id.clone();
+            return self
+                .settle_session(
+                    transfer,
+                    super::http::run(
+                        url,
+                        destination,
+                        Arc::clone(&flag),
+                        move |resolved| {
+                            let name = resolved
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("download")
+                                .to_owned();
+                            tokio::spawn(async move {
+                                queue
+                                    .update(&id, |item| {
+                                        item.name = name;
+                                        item.dest_path = resolved.to_string_lossy().into_owned();
+                                    })
+                                    .await;
+                            });
+                        },
+                        self.pump(transfer),
+                    ),
+                )
+                .await;
+        }
         if let Some(route) = self.backends.xsync_route(transfer.mount.as_deref()).await {
             if let Some(remote_is_dir) = self.routable(transfer).await {
                 return self
@@ -483,7 +523,7 @@ impl Worker {
     /// to the adapter — the path that will produce a real error for whatever is
     /// actually wrong with that file.
     async fn routable(&self, transfer: &Transfer) -> Option<bool> {
-        if transfer.direction == Direction::Up {
+        if transfer.direction == Some(Direction::Up) {
             // The far end is the destination and the session's root is its
             // parent directory either way, so nothing has to be asked.
             return Some(false);

@@ -206,7 +206,9 @@ function Row(props: {
             failed() ? styles.chipFailed : props.transfer.direction === "up" ? styles.chipUp : styles.chipDown
           }`}
         >
-          {props.transfer.direction === "up" ? "↑ UP" : "↓ DOWN"}
+          {props.transfer.from?.kind === "http"
+            ? "↓ HTTP"
+            : props.transfer.direction === "up" ? "↑ UP" : "↓ DOWN"}
         </span>
         <span
           class={`${styles.name} ${props.transfer.status === "running" ? styles.nameActive : ""}`}

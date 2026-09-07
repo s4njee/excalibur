@@ -46,8 +46,53 @@ use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::transfer::{Direction, Status, Transfer};
 use excalibur_engine::Result;
 
+#[path = "support/http_origin.rs"]
+mod http_origin;
+
 /// What `src-tauri` uses for `Worker::new`'s third argument.
 const APP_CONCURRENCY: usize = 3;
+
+struct HttpOnly;
+
+#[async_trait]
+impl BackendSource for HttpOnly {
+    async fn active(&self) -> Result<Arc<dyn ShareBackend>> {
+        panic!("HTTP must not need a mounted share");
+    }
+}
+
+/// The new route in the same queue, against a controlled loopback origin.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "throughput measurement"]
+async fn an_http_download() {
+    let bytes = vec![7_u8; 32 * 1024 * 1024];
+    let origin = http_origin::Origin::start(bytes.clone(), None, true, Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let queue = Arc::new(TransferQueue::in_memory());
+    let worker = Arc::new(Worker::new(
+        Arc::clone(&queue),
+        Arc::new(HttpOnly),
+        APP_CONCURRENCY,
+    ));
+    queue
+        .add(Transfer::http("http", &origin.url, directory.path().to_str().unwrap()).unwrap())
+        .await;
+    let start = Instant::now();
+    worker.drain().await;
+    let elapsed = start.elapsed();
+    let transfer = queue.all().await.remove(0);
+    assert_eq!(transfer.status, Status::Done, "{:?}", transfer.error);
+    assert_eq!(std::fs::read(&transfer.dest_path).unwrap(), bytes);
+    assert!(origin.sent.load(Ordering::SeqCst) >= bytes.len());
+    header("HTTP loopback, 32 MiB");
+    Row {
+        label: "app: HTTP to local folder".to_owned(),
+        elapsed,
+        bytes: bytes.len() as u64,
+        first_byte: None,
+    }
+    .print();
+}
 
 /// One shape of tree: how many files of what size.
 #[derive(Clone, Copy)]

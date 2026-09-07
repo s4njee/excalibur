@@ -90,12 +90,19 @@ export interface MountEvent {
 }
 
 export type TransferDirection = "up" | "down";
+export type TransferEndpoint =
+  | { kind: "local"; path: string }
+  | { kind: "share"; mount: string | null; path: string }
+  | { kind: "http"; url: string };
 export type TransferStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
 /** One item moving in one direction — a file, or a whole folder (E22-S3). */
 export interface Transfer {
   id: string;
-  direction: TransferDirection;
+  /** Legacy share direction; HTTP rows have an explicit from/to pair. */
+  direction: TransferDirection | null;
+  from?: TransferEndpoint | null;
+  to?: TransferEndpoint | null;
   name: string;
   sourcePath: string;
   destPath: string;

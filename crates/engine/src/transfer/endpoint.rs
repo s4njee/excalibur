@@ -1155,7 +1155,7 @@ impl Ends {
         read_depth: usize,
     ) -> Result<Self> {
         match transfer.direction {
-            Direction::Down => {
+            Some(Direction::Down) => {
                 let attrs = share.stat(&transfer.source_path).await?;
                 let destination = std::path::PathBuf::from(&transfer.dest_path);
                 if attrs.kind == EntryKind::Dir {
@@ -1178,7 +1178,7 @@ impl Ends {
                     read_depth,
                 })
             }
-            Direction::Up => {
+            Some(Direction::Up) => {
                 let source = std::path::PathBuf::from(&transfer.source_path);
                 let metadata = std::fs::symlink_metadata(&source).map_err(|error| {
                     EngineError::Io(format!("inspect {}: {error}", source.display()))
@@ -1203,6 +1203,9 @@ impl Ends {
                     destination: parent_of(transfer.dest_path.trim_end_matches('/')).to_owned(),
                 })
             }
+            None => Err(EngineError::Io(
+                "this transfer does not name a share direction".to_owned(),
+            )),
         }
     }
 }

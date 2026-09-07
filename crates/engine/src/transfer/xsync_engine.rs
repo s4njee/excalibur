@@ -264,7 +264,9 @@ impl Plan {
     ///   file's own basename is its wire path. Renaming a file needs
     ///   [`Staging`], because that basename is not ours to choose.
     fn build(route: &XsyncRoute, transfer: &Transfer, remote_is_dir: bool) -> Result<Self> {
-        match transfer.direction {
+        match transfer.direction.ok_or_else(|| {
+            EngineError::Io("this transfer does not name a share direction".to_owned())
+        })? {
             // Local → xsync. The remote path is the destination.
             Direction::Up => {
                 let source = PathBuf::from(&transfer.source_path);
@@ -898,7 +900,7 @@ pub async fn run(
 ) -> Result<Settled> {
     // The seam rule, and here the only gate there is: `--read-only` on the
     // remote does not stop a v1/v2 push.
-    if transfer.direction == Direction::Up && !route.writable {
+    if transfer.direction == Some(Direction::Up) && !route.writable {
         return Err(EngineError::Io(format!(
             "this share is read-only: {}",
             route.reason
@@ -929,7 +931,9 @@ pub async fn run(
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel::<LocalEvent>();
 
     let session = spawn_session(
-        transfer.direction,
+        transfer.direction.ok_or_else(|| {
+            EngineError::Io("this transfer does not name a share direction".to_owned())
+        })?,
         plan.local_root.clone(),
         plan.remote_root.clone(),
         plan.trailing_slash,
