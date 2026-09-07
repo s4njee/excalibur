@@ -47,6 +47,13 @@ unknown renders a 40%-width block sliding across the track (transform-only,
 with a reduced-motion rest) beside a growing byte count with no denominator.
 The reference has no sizeless state at all.
 
+**Amended 2026-09-07 (XDL-E2-S4): the footer omits the connection count.**
+The reference's "3 active · 48 connections" names a per-download connection
+count, which the queue's `Transfer` does not carry — it is the engine's
+(`xsync-download` XD-E2-S4), unplumbed to the row. The footer shows active,
+remaining and aggregate rate truthfully and leaves the count out rather than
+inventing one; it appears when the engine grows the field.
+
 ## Remount as RW, in the status bar *(E9-S3, 2026-09-03)*
 
 **The mock** puts `Remount as RW` on a failed row in the transfer queue

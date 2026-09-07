@@ -266,15 +266,28 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E2-S4 — The footer
 
-- [ ] **Do.** The reference's status footer: aggregate speed, a sparkline, and
-  a count of what is in flight.
+- [x] **Do.** The reference's status footer: aggregate speed, a sparkline, and
+  a count of what is in flight. *(Built 2026-09-07 as the downloads view's own
+  status bar — the footer the tab already had, enriched rather than a second
+  bar. Proven as `excalibur 49a22b1`.)*
 
 **AC**
-- [ ] Total speed, active count, connection count and remaining bytes, in the
-  window's existing status bar rather than a second one.
-- [ ] The sparkline is the last 60 samples of aggregate throughput, drawn from
+- [x] Total speed, active count, connection count and remaining bytes, in the
+  window's existing status bar rather than a second one. *(Done for the three
+  the queue can truthfully name — active count of running rows, remaining
+  bytes over known sizes, aggregate rate — in the tab's existing status bar,
+  with the numbers in mono beside the accent aggregate. **Connection count is
+  the seam:** the queue's `Transfer` carries no per-download connection state
+  — that is xsync's `XD-E2-S4`, unplumbed to the row — so the footer says
+  nothing rather than invent one, the same honesty rule S3 used. Noted in
+  `docs/design-gaps.md`.)*
+- [x] The sparkline is the last 60 samples of aggregate throughput, drawn from
   data the app already has. It is decorative and is not the only place a number
-  appears.
+  appears. *(Done: a one-second sampler keeps a 60-sample ring of the same
+  aggregate the footer's number reads, drawn as an accent `aria-hidden` SVG
+  line beside that number. Pure `pushSample`/`sparklinePath` in
+  `state/throughput.ts`, unit-tested: capped ring, empty-under-two, scaled to
+  the samples' own peak.)*
 
 ---
 

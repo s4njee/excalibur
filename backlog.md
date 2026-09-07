@@ -126,11 +126,12 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-5 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
+6 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
 2026-09-07, `72ef808`), **E1-S2** (origin-not-a-mount plus queue migration,
 2026-09-07, `a5fb184`), **E2-S1** (the tab lives, 2026-09-07, `a62fcd2`),
-**E2-S2** (the reference table, 2026-09-07) and **E2-S3** (the indeterminate
-row, 2026-09-07); the rest are unchecked. The engine is
+**E2-S2** (the reference table, 2026-09-07), **E2-S3** (the indeterminate
+row, 2026-09-07) and **E2-S4** (the footer, 2026-09-07); the rest are
+unchecked. The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
 
@@ -157,8 +158,10 @@ row, 2026-09-07); the rest are unchecked. The engine is
   columns in this palette, mono type rule, badge tokens held to 4.5:1, same
   `visibleRange` virtualisation as the file list), the indeterminate row (S3,
   done 2026-09-07 — unknown size draws a sliding block and a growing count,
-  never a bar at zero), the footer sparkline (S4). 10,000 rows must scroll
-  at E8-S2's frame rate. (`legacy/xdl.md:160`)
+  never a bar at zero), the footer (S4, done 2026-09-07 — active/remaining/
+  aggregate in the tab's status bar plus a 60-sample sparkline; the connection
+  count is the XD-E2-S4 seam). 10,000 rows must scroll at E8-S2's frame rate.
+  (`legacy/xdl.md:160`)
 - **XDL-E3** — add dialog (S1), server probe (S2, blocked on XD-E2-S1),
   connection picker honouring `--max-per-host` (S3), mirrors (S4, blocked on
   XD-E5-S1/S3). (`legacy/xdl.md:212`)
