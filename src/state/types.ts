@@ -96,6 +96,36 @@ export type TransferEndpoint =
   | { kind: "http"; url: string };
 export type TransferStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
+/** Per-file overrides; mirror indices include the primary URL at index zero. */
+export interface HttpDownloadOptions {
+  connections?: number | null;
+  /** Alternate URLs for this same object, not additional download jobs. */
+  mirrors?: string[];
+  preferredMirror?: number | null;
+  retry?: HttpRetryPolicy | null;
+}
+
+export interface HttpRetryPolicy {
+  maxAttempts: number;
+  initialWaitSeconds: number;
+  maxWaitSeconds: number;
+}
+
+/** Limits enforced by the native download route, shared across windows/jobs. */
+export interface HttpDownloadLimits {
+  maxConnections: number;
+  maxPerHost: number;
+}
+
+/** A probe is advisory. Unknown size/range support never prevents Start. */
+export interface HttpProbe {
+  length: number | null;
+  ranges: boolean | null;
+  filename: string | null;
+  finalUrl: string | null;
+  warning: string | null;
+}
+
 /** One item moving in one direction — a file, or a whole folder (E22-S3). */
 export interface Transfer {
   id: string;
@@ -135,6 +165,8 @@ export interface Transfer {
    */
   filesDone?: number;
   filesTotal?: number;
+  /** Absent on legacy queues and ordinary share transfers. */
+  httpOptions?: HttpDownloadOptions | null;
 }
 
 /** A destination that already exists, awaiting a decision. */

@@ -9,6 +9,9 @@ import fixture from "./fixture.json";
 import type {
   Conflict,
   EditSession,
+  HttpDownloadLimits,
+  HttpDownloadOptions,
+  HttpProbe,
   Listing,
   MountEvent,
   MountInfo,
@@ -142,11 +145,19 @@ export interface Backend {
    */
   enqueueDownloads(paths: string[], destination: string, mount?: string): Promise<string[]>;
   /** Queue a URL into a local folder without a mounted share (XDL-E1). */
-  enqueueHttpDownload(url: string, destination: string): Promise<string>;
+  enqueueHttpDownload(url: string, destination: string, options?: HttpDownloadOptions): Promise<string>;
+  /** Advisory metadata from the engine's probe; never writes a destination. */
+  probeHttpDownload(url: string): Promise<HttpProbe>;
+  /** Actual native limits, not a frontend estimate of available connections. */
+  downloadLimits(): Promise<HttpDownloadLimits>;
   /** Queue an upload of each local path into a share folder. `mount` as above. */
   enqueueUploads(paths: string[], destination: string, mount?: string): Promise<string[]>;
   pauseTransfer(id: string): Promise<void>;
   cancelTransfer(id: string): Promise<void>;
+  /** Remove a queue row, stopping it first when it is active. */
+  removeTransfer(id: string): Promise<void>;
+  /** Ask the native shell to reveal the parent directory of a local output. */
+  openTransferFolder(destination: string): Promise<void>;
   /** Put a paused or failed transfer back in the queue. */
   retryTransfer(id: string): Promise<void>;
   pauseAllTransfers(): Promise<void>;
@@ -157,6 +168,8 @@ export interface Backend {
   clearFailedTransfers(): Promise<void>;
   /** Where downloads land by default. */
   downloadFolder(): Promise<string>;
+  /** Read bounded URL lines from `.txt` files the user dropped on the window. */
+  downloadUrlsFromFiles(paths: string[]): Promise<string[]>;
   /** Where this platform keeps the folders FAVORITES is seeded from (E27-S1). */
   userFolders(): Promise<UserFolders>;
   /**
@@ -470,11 +483,25 @@ export function fixtureBackend(
     async enqueueHttpDownload(): Promise<string> {
       throw new Error("not connected to the engine — run the desktop app");
     },
+    async probeHttpDownload(): Promise<HttpProbe> {
+      return {
+        length: null,
+        ranges: null,
+        filename: null,
+        finalUrl: null,
+        warning: "Server probing is available in the desktop app",
+      };
+    },
+    async downloadLimits(): Promise<HttpDownloadLimits> {
+      throw new Error("Download limits are available in the desktop app");
+    },
     async enqueueUploads(): Promise<string[]> {
       throw new Error("not connected to the engine — run the desktop app");
     },
     async pauseTransfer(): Promise<void> {},
     async cancelTransfer(): Promise<void> {},
+    async removeTransfer(): Promise<void> {},
+    async openTransferFolder(): Promise<void> {},
     async retryTransfer(): Promise<void> {},
     async pauseAllTransfers(): Promise<void> {},
     async clearFinishedTransfers(): Promise<void> {},
@@ -482,6 +509,9 @@ export function fixtureBackend(
     async clearFailedTransfers(): Promise<void> {},
     async downloadFolder(): Promise<string> {
       return "~/Downloads";
+    },
+    async downloadUrlsFromFiles(): Promise<string[]> {
+      throw new Error("Dropped URL files are available in the desktop app");
     },
     // The same argument `DEMO_BOOKMARKS` makes: a browser has no filesystem,
     // and answering with nothing would leave FAVORITES empty in the preview —
@@ -699,9 +729,21 @@ function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<string[]>("enqueue_downloads", { paths, destination, mount });
     },
-    async enqueueHttpDownload(url: string, destination: string): Promise<string> {
+    async enqueueHttpDownload(
+      url: string,
+      destination: string,
+      options?: HttpDownloadOptions,
+    ): Promise<string> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<string>("enqueue_http_download", { url, destination });
+      return invoke<string>("enqueue_http_download", { url, destination, options });
+    },
+    async probeHttpDownload(url: string): Promise<HttpProbe> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<HttpProbe>("probe_http_download", { url });
+    },
+    async downloadLimits(): Promise<HttpDownloadLimits> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<HttpDownloadLimits>("download_limits");
     },
     async enqueueUploads(
       paths: string[],
@@ -718,6 +760,14 @@ function tauriBackend(): Backend {
     async cancelTransfer(id: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("cancel_transfer", { id });
+    },
+    async removeTransfer(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("remove_transfer", { id });
+    },
+    async openTransferFolder(destination: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("open_transfer_folder", { destination });
     },
     async retryTransfer(id: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -742,6 +792,10 @@ function tauriBackend(): Backend {
     async downloadFolder(): Promise<string> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<string>("download_folder");
+    },
+    async downloadUrlsFromFiles(paths: string[]): Promise<string[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string[]>("download_urls_from_files", { paths });
     },
     async userFolders(): Promise<UserFolders> {
       const { invoke } = await import("@tauri-apps/api/core");

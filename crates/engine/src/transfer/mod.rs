@@ -19,12 +19,50 @@ pub mod http;
 pub mod plan;
 pub mod queue;
 pub mod rate;
+pub mod schedule;
 pub mod worker;
 pub mod xsync_engine;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+/// The queue every transfer written before named queues existed belongs to.
+pub const DEFAULT_QUEUE_ID: &str = "default";
+
+/// The app-level policy for a group of transfers.
+///
+/// This is deliberately a small model. The worker's process-wide semaphore is
+/// still the hard ceiling; `concurrency` only limits how many rows from this
+/// queue may occupy that ceiling at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedQueue {
+    /// Stable across restarts and safe to use as a row foreign key.
+    pub id: String,
+    /// Label shown in the queue picker.
+    pub name: String,
+    /// A palette token or other UI colour identifier.
+    pub color: String,
+    /// Maximum number of rows this queue may run at once.
+    pub concurrency: usize,
+    /// Position among the named queues. Lower values run first.
+    pub order: u64,
+}
+
+impl NamedQueue {
+    /// The built-in queue used by legacy rows and new rows without a choice.
+    #[must_use]
+    pub fn default_queue() -> Self {
+        Self {
+            id: DEFAULT_QUEUE_ID.to_owned(),
+            name: "Default".to_owned(),
+            color: "gray".to_owned(),
+            concurrency: 1,
+            order: 0,
+        }
+    }
+}
 
 /// Which way the bytes are going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +87,51 @@ pub enum Endpoint {
     Share { mount: Option<String>, path: String },
     /// An HTTP(S) resource.
     Http { url: String },
+}
+
+/// HTTP download controls persisted with a queue row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HttpDownloadOptions {
+    /// Requested ranged reads. `None` lets the downloader choose.
+    pub connections: Option<usize>,
+    /// Alternate URLs for the same object, excluding the primary URL.
+    pub mirrors: Vec<String>,
+    /// Zero is the primary URL; subsequent values index `mirrors`.
+    pub preferred_mirror: Option<usize>,
+    /// Per-download transient failure policy. `None` uses provider defaults.
+    pub retry: Option<HttpRetryPolicy>,
+}
+
+/// Serializable retry controls accepted by the HTTP provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpRetryPolicy {
+    /// Total attempts, including the first request.
+    pub max_attempts: u32,
+    /// Wait before the second attempt, in seconds.
+    pub initial_wait_seconds: u64,
+    /// Ceiling for exponential waits and `Retry-After`, in seconds.
+    pub max_wait_seconds: u64,
+}
+
+/// Effective HTTP limits advertised by the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpDownloadLimits {
+    pub max_connections: usize,
+    pub max_per_host: usize,
+}
+
+/// Result of the synchronous HTTP capability probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpProbe {
+    pub length: Option<u64>,
+    pub ranges: Option<bool>,
+    pub filename: Option<String>,
+    pub final_url: Option<String>,
+    pub warning: Option<String>,
 }
 
 /// Where a transfer is in its life.
@@ -179,6 +262,21 @@ pub struct Transfer {
     pub files_done: u64,
     #[serde(default)]
     pub files_total: u64,
+    /// Optional HTTP-specific controls; absent in queues written before E3.
+    #[serde(default)]
+    pub http_options: Option<HttpDownloadOptions>,
+    /// The named queue responsible for this row.
+    #[serde(default = "default_queue_id")]
+    pub queue_id: String,
+    /// Optional explicit priority within [`queue_id`]. Lower values run first.
+    /// `None` retains enqueue time ordering, which keeps legacy rows and rows
+    /// added before the first drag reorder stable.
+    #[serde(default)]
+    pub queue_position: Option<u64>,
+}
+
+fn default_queue_id() -> String {
+    DEFAULT_QUEUE_ID.to_owned()
 }
 
 impl Transfer {
@@ -220,6 +318,9 @@ impl Transfer {
             note: None,
             files_done: 0,
             files_total: 0,
+            http_options: None,
+            queue_id: default_queue_id(),
+            queue_position: None,
         }
     }
 
@@ -283,6 +384,9 @@ impl Transfer {
             note: None,
             files_done: 0,
             files_total: 0,
+            http_options: None,
+            queue_id: default_queue_id(),
+            queue_position: None,
         })
     }
 
@@ -298,6 +402,25 @@ impl Transfer {
         destination: impl Into<String>,
     ) -> Result<Self, crate::error::EngineError> {
         Self::new_http(id, url, destination, 0)
+    }
+
+    /// Create an HTTP download with explicit connection and mirror controls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the primary URL, a mirror URL, the destination,
+    /// connection count, or preferred mirror index is invalid.
+    pub fn http_with_options(
+        id: impl Into<String>,
+        url: impl Into<String>,
+        destination: impl Into<String>,
+        options: HttpDownloadOptions,
+    ) -> Result<Self, crate::error::EngineError> {
+        let mut transfer = Self::http(id, url, destination)?;
+        let primary = transfer.from_endpoint();
+        validate_http_options(primary.as_ref(), &options)?;
+        transfer.http_options = Some(options);
+        Ok(transfer)
     }
 
     /// Canonical source, falling back to the legacy fields for old rows.
@@ -386,6 +509,51 @@ pub(crate) fn validate_http_url(url: &str) -> Result<(), crate::error::EngineErr
         return Err(crate::error::EngineError::Unsupported(
             "download URL credentials are not supported".to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_http_options(
+    primary: Option<&Endpoint>,
+    options: &HttpDownloadOptions,
+) -> Result<(), crate::error::EngineError> {
+    if options.connections == Some(0) {
+        return Err(crate::error::EngineError::Unsupported(
+            "HTTP connection count must be at least one".to_owned(),
+        ));
+    }
+    if let Some(retry) = options.retry {
+        if retry.max_attempts == 0 || retry.max_attempts > 10 {
+            return Err(crate::error::EngineError::Unsupported(
+                "HTTP retry attempts must be between one and ten".to_owned(),
+            ));
+        }
+        if retry.initial_wait_seconds > retry.max_wait_seconds || retry.max_wait_seconds > 300 {
+            return Err(crate::error::EngineError::Unsupported(
+                "HTTP retry waits must increase and stay within five minutes".to_owned(),
+            ));
+        }
+    }
+    let primary_url = match primary {
+        Some(Endpoint::Http { url }) => url,
+        _ => "",
+    };
+    for (index, mirror) in options.mirrors.iter().enumerate() {
+        validate_http_url(mirror).map_err(|_| {
+            crate::error::EngineError::Unsupported(format!("invalid mirror URL at index {index}"))
+        })?;
+        if mirror == primary_url {
+            return Err(crate::error::EngineError::Unsupported(
+                "mirror URL duplicates the primary URL".to_owned(),
+            ));
+        }
+    }
+    if let Some(index) = options.preferred_mirror {
+        if index > options.mirrors.len() {
+            return Err(crate::error::EngineError::Unsupported(
+                "preferred mirror index is out of range".to_owned(),
+            ));
+        }
     }
     Ok(())
 }

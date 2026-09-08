@@ -1,0 +1,170 @@
+/* The Add Download dialog's own pieces (XDL-E3-S1). The chrome — scrim,
+   dialog, form grid, labels, inputs, actions — is the connection dialog's
+   `dialog.module.css`, so every overlay rule the suite checks stays one place.
+   This file holds only what a URL box needs beyond that. No rule here covers
+   the window, so nothing here needs a z-index. */
+
+.urlField {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.clipboard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 2;
+  margin: -2px 0 0;
+  padding: 4px 6px 4px 8px;
+  border: 1px dashed var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--chip-accent-bg);
+}
+
+.clipboardText {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.probes,
+.connections,
+.modeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  grid-column: 2;
+  min-width: 0;
+}
+
+.probeRow {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.probeUrl {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.modeRow label,
+.connections label,
+.mirrorOrder label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.mirrorOrder {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 7px 8px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+}
+
+.mirrorOrder legend {
+  padding: 0 4px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.mirrorOrder label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.autoConnection {
+  flex-basis: 100%;
+}
+
+.connectionScale {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+.connectionChoice {
+  position: relative;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 38px;
+  min-height: 36px;
+  padding: 4px 5px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  cursor: pointer;
+}
+
+.connectionChoice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--chip-accent-bg);
+}
+
+.connectionChoice:has(input:disabled) {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.connectionChoice input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  opacity: 0;
+}
+
+.connectionCount {
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.connectionBars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
+  min-height: 12px;
+}
+
+.connectionBars i {
+  display: block;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.connectionHint {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}

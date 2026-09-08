@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use excalibur_engine::backend::ShareBackend;
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
-use excalibur_engine::transfer::{Endpoint, Status, Transfer};
+use excalibur_engine::transfer::{Endpoint, HttpDownloadOptions, Status, Transfer};
 use excalibur_engine::Result;
 use http_origin::Origin;
 
@@ -213,4 +213,102 @@ async fn cancelling_an_http_download_never_changes_the_row_to_done() {
         .unwrap();
     assert_eq!(queue.all().await[0].status, Status::Cancelled);
     assert!(!directory.path().join("object.bin").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mirror_urls_are_one_job_and_fall_back_before_transfer() {
+    let unavailable = Origin::start(vec![1], None, true, Duration::ZERO);
+    let bytes = patterned(512 * 1024);
+    let fallback = Origin::start(bytes.clone(), None, true, Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let queue = Arc::new(TransferQueue::in_memory());
+    let options = HttpDownloadOptions {
+        connections: Some(3),
+        mirrors: vec![fallback.url.clone()],
+        preferred_mirror: Some(0),
+        retry: None,
+    };
+    queue
+        .add(
+            Transfer::http_with_options(
+                "mirrors",
+                unavailable.url.replace("object.bin", "missing"),
+                directory.path().to_str().unwrap(),
+                options,
+            )
+            .unwrap(),
+        )
+        .await;
+
+    drain(&worker(&queue)).await;
+
+    let rows = queue.all().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, Status::Done, "{:?}", rows[0].error);
+    assert_eq!(std::fs::read(&rows[0].dest_path).unwrap(), bytes);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preferred_mirror_is_tried_first() {
+    let first = Origin::start(patterned(256 * 1024), None, true, Duration::ZERO);
+    let preferred_bytes = vec![42; 256 * 1024];
+    let preferred = Origin::start(preferred_bytes.clone(), None, true, Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let queue = Arc::new(TransferQueue::in_memory());
+    queue
+        .add(
+            Transfer::http_with_options(
+                "preferred",
+                &first.url,
+                directory.path().to_str().unwrap(),
+                HttpDownloadOptions {
+                    connections: None,
+                    mirrors: vec![preferred.url.clone()],
+                    preferred_mirror: Some(1),
+                    retry: None,
+                },
+            )
+            .unwrap(),
+        )
+        .await;
+
+    drain(&worker(&queue)).await;
+
+    let row = queue.all().await.remove(0);
+    assert_eq!(row.status, Status::Done, "{:?}", row.error);
+    assert_eq!(std::fs::read(&row.dest_path).unwrap(), preferred_bytes);
+    assert_eq!(first.max_active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requested_connections_share_the_per_origin_cap_across_jobs() {
+    let bytes = patterned(20 * 1024 * 1024);
+    let origin = Origin::start(bytes, None, true, Duration::from_millis(2));
+    let directory = tempfile::tempdir().unwrap();
+    let queue = Arc::new(TransferQueue::in_memory());
+    for (id, name) in [("first", "object.bin"), ("second", "other.bin")] {
+        queue
+            .add(
+                Transfer::http_with_options(
+                    id,
+                    origin.url.replace("object.bin", name),
+                    directory.path().to_str().unwrap(),
+                    HttpDownloadOptions {
+                        connections: Some(16),
+                        ..HttpDownloadOptions::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .await;
+    }
+
+    drain(&worker(&queue)).await;
+
+    assert!(queue
+        .all()
+        .await
+        .iter()
+        .all(|row| row.status == Status::Done));
+    assert!(origin.max_active.load(Ordering::SeqCst) <= 4);
 }

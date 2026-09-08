@@ -23,9 +23,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Notify, RwLock};
 
-use super::{Status, Transfer};
+use super::{NamedQueue, Status, Transfer, DEFAULT_QUEUE_ID};
 use crate::error::{EngineError, Result};
 
 /// A change worth telling the window about.
@@ -36,10 +36,30 @@ pub struct QueueEvent {
     pub transfer: Transfer,
 }
 
+/// A durable change to the named queue definitions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueDefinitionsEvent {
+    pub queues: Vec<NamedQueue>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedQueue {
+    #[serde(default)]
+    transfers: Vec<Transfer>,
+    #[serde(default)]
+    queues: Vec<NamedQueue>,
+}
+
 /// Every transfer the app knows about.
 pub struct TransferQueue {
     items: Arc<RwLock<HashMap<String, Transfer>>>,
+    queues: Arc<RwLock<HashMap<String, NamedQueue>>>,
+    running: Arc<RwLock<HashMap<String, usize>>>,
+    queue_notify: Arc<Notify>,
     events: broadcast::Sender<QueueEvent>,
+    queue_events: broadcast::Sender<QueueDefinitionsEvent>,
     /// Where the queue is written. `None` keeps it in memory, for tests.
     path: Option<PathBuf>,
 }
@@ -54,24 +74,42 @@ impl TransferQueue {
     /// start the app because of it is not.
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let restored = std::fs::read_to_string(&path)
+        let (restored, queues) = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|text| serde_json::from_str::<Vec<Transfer>>(&text).ok())
+            .and_then(|text| {
+                serde_json::from_str::<PersistedQueue>(&text)
+                    .map(|state| (state.transfers, state.queues))
+                    .or_else(|_| {
+                        serde_json::from_str::<Vec<Transfer>>(&text).map(|rows| (rows, Vec::new()))
+                    })
+                    .ok()
+            })
             .unwrap_or_default();
-        Self::from_parts(restore(restored), Some(path))
+        Self::from_parts(restore(restored), queues, Some(path))
     }
 
     /// An in-memory queue, for tests.
     #[must_use]
     pub fn in_memory() -> Self {
-        Self::from_parts(HashMap::new(), None)
+        Self::from_parts(HashMap::new(), Vec::new(), None)
     }
 
-    fn from_parts(items: HashMap<String, Transfer>, path: Option<PathBuf>) -> Self {
+    fn from_parts(
+        mut items: HashMap<String, Transfer>,
+        queues: Vec<NamedQueue>,
+        path: Option<PathBuf>,
+    ) -> Self {
+        let queues = normalize_queues(queues);
+        normalize_positions(&mut items, &queues);
         let (events, _) = broadcast::channel(256);
+        let (queue_events, _) = broadcast::channel(64);
         Self {
             items: Arc::new(RwLock::new(items)),
+            queues: Arc::new(RwLock::new(queues)),
+            running: Arc::new(RwLock::new(HashMap::new())),
+            queue_notify: Arc::new(Notify::new()),
             events,
+            queue_events,
             path,
         }
     }
@@ -82,15 +120,245 @@ impl TransferQueue {
         self.events.subscribe()
     }
 
+    /// Subscribe to named queue changes.
+    #[must_use]
+    pub fn queue_events(&self) -> broadcast::Receiver<QueueDefinitionsEvent> {
+        self.queue_events.subscribe()
+    }
+
+    /// Every named queue, in execution order.
+    pub async fn queues(&self) -> Vec<NamedQueue> {
+        let mut queues: Vec<NamedQueue> = self.queues.read().await.values().cloned().collect();
+        queues.sort_by_key(|queue| (queue.order, queue.id.clone()));
+        queues
+    }
+
+    /// Add a named queue at the end of the queue list.
+    ///
+    /// # Errors
+    /// Returns an error when the name or colour is empty or exceeds its bound.
+    pub async fn create_queue(
+        &self,
+        name: impl Into<String>,
+        color: impl Into<String>,
+        concurrency: usize,
+    ) -> Result<NamedQueue> {
+        let name = validate_queue_name(&name.into())?;
+        let color = validate_queue_color(&color.into())?;
+        let concurrency = concurrency.max(1);
+        let mut queues = self.queues.write().await;
+        let order = queues
+            .values()
+            .map(|queue| queue.order)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let queue = NamedQueue {
+            id: next_queue_id(&queues),
+            name,
+            color,
+            concurrency,
+            order,
+        };
+        queues.insert(queue.id.clone(), queue.clone());
+        drop(queues);
+        self.persist().await;
+        self.announce_queues().await;
+        Ok(queue)
+    }
+
+    /// Change a queue's label, colour, or row limit.
+    ///
+    /// # Errors
+    /// Returns an error when the name or colour is empty or exceeds its bound.
+    pub async fn update_queue(
+        &self,
+        id: &str,
+        name: impl Into<String>,
+        color: impl Into<String>,
+        concurrency: usize,
+    ) -> Result<Option<NamedQueue>> {
+        let name = validate_queue_name(&name.into())?;
+        let color = validate_queue_color(&color.into())?;
+        let mut queues = self.queues.write().await;
+        let Some(queue) = queues.get_mut(id) else {
+            return Ok(None);
+        };
+        queue.name = name;
+        queue.color = color;
+        queue.concurrency = concurrency.max(1);
+        let queue = queue.clone();
+        drop(queues);
+        self.persist().await;
+        self.announce_queues().await;
+        self.queue_notify.notify_one();
+        Ok(Some(queue))
+    }
+
+    /// Apply the visible order of the named queues.
+    pub async fn reorder_queues(&self, ids: &[String]) -> bool {
+        let mut queues = self.queues.write().await;
+        let mut order = 0;
+        for id in ids {
+            let Some(queue) = queues.get_mut(id) else {
+                continue;
+            };
+            queue.order = order;
+            order = order.saturating_add(1);
+        }
+        drop(queues);
+        self.persist().await;
+        self.announce_queues().await;
+        self.queue_notify.notify_one();
+        true
+    }
+
+    /// Remove a named queue, moving its rows to the built-in queue.
+    pub async fn delete_queue(&self, id: &str) -> Option<NamedQueue> {
+        if id == DEFAULT_QUEUE_ID {
+            return None;
+        }
+        let removed = self.queues.write().await.remove(id);
+        removed.as_ref()?;
+        let default = DEFAULT_QUEUE_ID.to_owned();
+        let mut items = self.items.write().await;
+        let next = items
+            .values()
+            .filter(|transfer| transfer.queue_id == default)
+            .filter_map(|transfer| transfer.queue_position)
+            .max()
+            .unwrap_or(0);
+        let mut position = next;
+        for transfer in items
+            .values_mut()
+            .filter(|transfer| transfer.queue_id == id)
+        {
+            transfer.queue_id.clone_from(&default);
+            position = position.saturating_add(1);
+            transfer.queue_position = Some(position);
+            let _ = self.events.send(QueueEvent {
+                transfer: transfer.clone(),
+            });
+        }
+        drop(items);
+        self.persist().await;
+        self.announce_queues().await;
+        self.queue_notify.notify_one();
+        removed
+    }
+
+    /// Move one row to a named queue, appending it at that queue's tail.
+    pub async fn move_to_queue(&self, id: &str, queue_id: &str) -> Option<Transfer> {
+        if !self.queues.read().await.contains_key(queue_id) {
+            return None;
+        }
+        let mut items = self.items.write().await;
+        let position = items
+            .values()
+            .filter(|transfer| transfer.queue_id == queue_id)
+            .filter_map(|transfer| transfer.queue_position)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let transfer = items.get_mut(id)?;
+        transfer.queue_id = queue_id.to_owned();
+        transfer.queue_position = Some(position);
+        let transfer = transfer.clone();
+        drop(items);
+        self.announce(transfer.clone(), true).await;
+        self.queue_notify.notify_one();
+        Some(transfer)
+    }
+
+    /// Apply the visible order of rows in one named queue.
+    pub async fn reorder_queue(&self, queue_id: &str, ids: &[String]) -> bool {
+        if !self.queues.read().await.contains_key(queue_id) {
+            return false;
+        }
+        let mut items = self.items.write().await;
+        let mut position = 0;
+        for id in ids {
+            let Some(transfer) = items.get_mut(id) else {
+                continue;
+            };
+            if transfer.queue_id != queue_id {
+                continue;
+            }
+            transfer.queue_position = Some(position);
+            position = position.saturating_add(1);
+            let _ = self.events.send(QueueEvent {
+                transfer: transfer.clone(),
+            });
+        }
+        drop(items);
+        self.persist().await;
+        true
+    }
+
+    /// Atomically reserve one running row in a named queue.
+    pub async fn try_claim_queue(&self, queue_id: &str) -> bool {
+        self.try_claim_queue_with_ceiling(queue_id, usize::MAX)
+            .await
+    }
+
+    /// Reserve a row while treating the built-in queue's configured value as
+    /// the worker-wide setting. That keeps the existing global preference in
+    /// force for legacy rows while named queues retain their own limits.
+    pub async fn try_claim_queue_with_ceiling(&self, queue_id: &str, ceiling: usize) -> bool {
+        let limit = self.queues.read().await.get(queue_id).map_or(1, |queue| {
+            if queue_id == DEFAULT_QUEUE_ID {
+                ceiling.max(1)
+            } else {
+                queue.concurrency.max(1)
+            }
+        });
+        let mut running = self.running.write().await;
+        let active = running.entry(queue_id.to_owned()).or_default();
+        if *active >= limit {
+            return false;
+        }
+        *active += 1;
+        true
+    }
+
+    /// Release a previously claimed row.
+    pub async fn release_queue(&self, queue_id: &str) {
+        let mut running = self.running.write().await;
+        if let Some(active) = running.get_mut(queue_id) {
+            *active = active.saturating_sub(1);
+        }
+        self.queue_notify.notify_one();
+    }
+
+    /// Wait until a running row releases a named queue slot or its policy
+    /// changes. This keeps a queue capped without polling or recursive drains.
+    pub async fn wait_for_queue_change(&self) {
+        self.queue_notify.notified().await;
+    }
+
     /// Every transfer, oldest first.
     pub async fn all(&self) -> Vec<Transfer> {
         let mut all: Vec<Transfer> = self.items.read().await.values().cloned().collect();
-        all.sort_by_key(|transfer| (transfer.queued_at_ms, transfer.id.clone()));
+        let queues = self.queues.read().await;
+        all.sort_by_key(|transfer| {
+            (
+                queues
+                    .get(&transfer.queue_id)
+                    .map_or(u64::MAX, |queue| queue.order),
+                transfer.queue_position.unwrap_or(u64::MAX),
+                transfer.queued_at_ms,
+                transfer.id.clone(),
+            )
+        });
         all
     }
 
     /// Add a transfer and announce it.
     pub async fn add(&self, transfer: Transfer) {
+        let mut transfer = transfer;
+        if !self.queues.read().await.contains_key(&transfer.queue_id) {
+            DEFAULT_QUEUE_ID.clone_into(&mut transfer.queue_id);
+        }
         self.items
             .write()
             .await
@@ -170,11 +438,21 @@ impl TransferQueue {
     /// that ends.
     pub async fn next_queued_except(&self, skip: &HashSet<String>) -> Option<Transfer> {
         let items = self.items.read().await;
+        let queues = self.queues.read().await;
         items
             .values()
             .filter(|transfer| transfer.status == Status::Queued)
             .filter(|transfer| !skip.contains(&transfer.id))
-            .min_by_key(|transfer| (transfer.queued_at_ms, transfer.id.clone()))
+            .min_by_key(|transfer| {
+                (
+                    queues
+                        .get(&transfer.queue_id)
+                        .map_or(u64::MAX, |queue| queue.order),
+                    transfer.queue_position.unwrap_or(u64::MAX),
+                    transfer.queued_at_ms,
+                    transfer.id.clone(),
+                )
+            })
             .cloned()
     }
 
@@ -332,11 +610,20 @@ impl TransferQueue {
         let Some(path) = self.path.as_ref() else {
             return;
         };
-        let all = self.all().await;
-        let Ok(text) = serde_json::to_string_pretty(&all) else {
+        let state = PersistedQueue {
+            transfers: self.all().await,
+            queues: self.queues().await,
+        };
+        let Ok(text) = serde_json::to_string_pretty(&state) else {
             return;
         };
         let _ = write_atomically(path, &text);
+    }
+
+    async fn announce_queues(&self) {
+        let _ = self.queue_events.send(QueueDefinitionsEvent {
+            queues: self.queues().await,
+        });
     }
 }
 
@@ -395,4 +682,58 @@ fn restore(transfers: Vec<Transfer>) -> HashMap<String, Transfer> {
             (transfer.id.clone(), transfer)
         })
         .collect()
+}
+
+fn normalize_queues(queues: Vec<NamedQueue>) -> HashMap<String, NamedQueue> {
+    let mut normalized: HashMap<String, NamedQueue> = queues
+        .into_iter()
+        .filter(|queue| !queue.id.is_empty())
+        .map(|queue| (queue.id.clone(), queue))
+        .collect();
+    normalized
+        .entry(DEFAULT_QUEUE_ID.to_owned())
+        .or_insert_with(NamedQueue::default_queue);
+    normalized
+}
+
+fn normalize_positions(
+    items: &mut HashMap<String, Transfer>,
+    queues: &HashMap<String, NamedQueue>,
+) {
+    for transfer in items.values_mut() {
+        if !queues.contains_key(&transfer.queue_id) {
+            DEFAULT_QUEUE_ID.clone_into(&mut transfer.queue_id);
+        }
+    }
+}
+
+fn validate_queue_name(name: &str) -> Result<String> {
+    let name = name.trim().to_owned();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(EngineError::Unsupported(
+            "queue name must contain between 1 and 80 characters".to_owned(),
+        ));
+    }
+    Ok(name)
+}
+
+fn validate_queue_color(color: &str) -> Result<String> {
+    let color = color.trim().to_owned();
+    if color.is_empty() || color.chars().count() > 32 {
+        return Err(EngineError::Unsupported(
+            "queue colour must contain between 1 and 32 characters".to_owned(),
+        ));
+    }
+    Ok(color)
+}
+
+fn next_queue_id(queues: &HashMap<String, NamedQueue>) -> String {
+    let mut index = queues.len();
+    loop {
+        let id = format!("queue-{index}");
+        if !queues.contains_key(&id) {
+            return id;
+        }
+        index = index.saturating_add(1);
+    }
 }

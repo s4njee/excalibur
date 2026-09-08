@@ -93,21 +93,40 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
   second resume journal, a second verification story, a second scheduler and two
   answers to "is anything running" (Decisions 1 and 2).
 - **Current state.** The library stories xdl asked for are **done on xsync's side
-  as of 2026-09-06** and now live in `../xsync/legacy/xsync-downloader.md`. xdl's
+  as of 2026-09-06**, except for the XD-E6-S4 residue, and now live in
+  `../xsync/legacy/xsync-downloader.md`. xdl's
   dependency table (`legacy/xdl.md:58`) marks as available: `HttpSource`
   (XD-E1-S1), `xs get` (XD-E1-S3), safe output naming (XD-E1-S4), streaming and
   no-`Range` servers (XD-E1-S6), parallel segments (XD-E2-S2), connection count
   chosen not asked (XD-E2-S4), preallocation (XD-E2-S5), bounded under-delivery
   (XD-E3-S4), per-origin cap (XD-E6-S1), batch input (XD-E6-S2), session
   save/restore (XD-E6-S3), retry/backoff (XD-E7-S2), proxies/auth/headers
-  (XD-E7-S3). **Re-verify that table against the downloader doc before starting
-  XDL-E1** — it was written against a moving target.
+  (XD-E7-S3), the standalone probe (XDL-S3), and ordered mirror fallback with
+  an explicit first source (XDL-S8).
+- **Consumed here.** XDL-E3-S2–S4 now use XDL-S3 and XDL-S8 without changing
+  xsync. The Excalibur IPC/queue shape is
+  `HttpDownloadOptions { connections, mirrors, preferredMirror, retry }`; it is
+  optional and `#[serde(default)]`, so older rows and callers keep the engine
+  choice. Real adapter tests cover the IPC shape, and loopback engine tests
+  cover fallback, preferred selection, safe output, and an aggregate
+  four-request per-origin cap across concurrent jobs.
+- **App-owned policy.** XDL-E6 now has an engine/native foundation for named
+  queue definitions, per-row queue membership and ordering, with each queue's
+  concurrency enforced beneath the existing worker-wide ceiling. Its 7×24
+  schedule currently has a validated two-state domain model only; no runtime
+  or UI claims are made yet. XDL-E7-S1 carries default connections and bounded
+  retry settings through the persisted HTTP options into `HttpSource`.
 - **Still missing there** (xsync story → blocked Excalibur story): XD-E6-S4
-  per-download progress detail → XDL-E4 lanes and block map; XD-E6-S5 control
+  per-download progress detail → XDL-E4 lanes and block map. The HTTP route
+  calls the local planner, which emits `Progress` only on file completion;
+  the provider must emit chunk events, and Excalibur must carry their
+  `stream`, `offset`, `length`, `written`, `retries`, and `redirects` fields
+  through `Tally`/`Moved`, queue events, and TypeScript state. XD-E6-S5 control
   while running → XDL-E5-S1; XD-E7-S1 rate limiting → XDL-E6-S2; XD-E3-S2 resume
-  across process death → XDL-E5-S3; XD-E2-S1 capability probe → XDL-E3-S2;
-  XD-E5-S1/S3 mirrors → XDL-E3-S4; XD-E7-S4/S5/S6 TLS trust and hostile responses
-  → XDL-E9; XD-E1-S5 no declared length → XDL-E2-S3.
+  across process death → XDL-E5-S3; XD-E5-S1/S3 cross-mirror segments and
+  measured runtime mirror choice → future multi-source behavior beyond E3;
+  XD-E7-S4/S5/S6 TLS trust and hostile responses → XDL-E9; XD-E1-S5 no declared
+  length → XDL-E2-S3.
 - **The rule.** Nothing in the xdl plan may be built by reaching into `../xsync`
   and changing it; a story that needs one of the above says so and stops at the
   seam. (`legacy/xdl.md:100`)

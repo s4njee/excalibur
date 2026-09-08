@@ -1,9 +1,11 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import styles from "./downloadsTable.module.css";
+import { ContextMenu } from "./ContextMenu";
 import { visibleRange } from "../state/virtual";
 import { formatDuration, formatRate, formatSize } from "../state/format";
 import { fractionOf, originHost } from "../state/downloads";
 import type { Transfer } from "../state/types";
+import { downloadMenu, type DownloadMenuAction } from "../state/menu";
 
 /**
  * Every table row is one height, which is what keeps the virtual window
@@ -63,6 +65,9 @@ export function DownloadsTable(props: {
   onPause: (id: string) => void;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
+  onRemove?: (id: string) => void;
+  onOpenFolder?: (path: string) => void;
+  onCopyUrl?: (url: string) => void;
   /** Offered on a failed upload that a writable mount would fix. */
   onRemount?: () => void;
 }) {
@@ -70,6 +75,7 @@ export function DownloadsTable(props: {
   // window needs — same as the file list, which owns the same two signals.
   const [scrollTop, setScrollTop] = createSignal(0);
   const [viewport, setViewport] = createSignal(0);
+  const [menu, setMenu] = createSignal<{ transfer: Transfer; x: number; y: number } | null>(null);
   let scroller: HTMLDivElement | undefined;
 
   onMount(() => {
@@ -107,6 +113,41 @@ export function DownloadsTable(props: {
   const padTop = () => range().start * DOWNLOAD_ROW_HEIGHT;
   const padBottom = () => (props.transfers.length - range().end) * DOWNLOAD_ROW_HEIGHT;
 
+  const chooseMenu = (action: DownloadMenuAction) => {
+    const current = menu();
+    setMenu(null);
+    if (!current) return;
+    const transfer = current.transfer;
+    switch (action) {
+      case "pause": props.onPause(transfer.id); break;
+      case "resume": props.onRetry(transfer.id); break;
+      case "moveToQueue": break;
+      case "remove": {
+        const wording =
+          transfer.status === "done" || transfer.status === "cancelled"
+            ? "Remove this completed download from the queue?"
+            : "Remove this download and delete its partial file?";
+        if (window.confirm(wording)) props.onRemove?.(transfer.id);
+        break;
+      }
+      case "openFolder": props.onOpenFolder?.(transfer.destPath); break;
+      case "copyUrl":
+        if (transfer.from?.kind === "http") {
+          try {
+            const safe = new URL(transfer.from.url);
+            safe.username = "";
+            safe.password = "";
+            props.onCopyUrl?.(safe.toString());
+          } catch {
+            // Invalid legacy rows still get a useful best-effort copy, with
+            // the authority credentials removed before the clipboard sees it.
+            props.onCopyUrl?.(transfer.from.url.replace(/\/\/[^/@]+@/, "//"));
+          }
+        }
+        break;
+    }
+  };
+
   return (
     <div class={styles.table} ref={scroller} role="grid" aria-label="Download list">
       <div class={`${styles.grid} ${styles.head}`} role="row">
@@ -137,7 +178,15 @@ export function DownloadsTable(props: {
             const fraction = fractionOf(transfer);
             const origin = originHost(transfer);
             return (
-              <div class={`${styles.grid} ${styles.row}`} role="row" data-transfer={transfer.id}>
+              <div
+                class={`${styles.grid} ${styles.row}`}
+                role="row"
+                data-transfer={transfer.id}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenu({ transfer, x: event.clientX, y: event.clientY });
+                }}
+              >
                 <div class={styles.cellFile}>
                   <div class={styles.name} title={transfer.name}>
                     {transfer.name}
@@ -230,12 +279,35 @@ export function DownloadsTable(props: {
                       )}
                     </Show>
                   </Show>
+                  <button
+                    class={styles.action}
+                    onClick={() => {
+                      const wording =
+                        transfer.status === "done" || transfer.status === "cancelled"
+                          ? "Remove this completed download from the queue?"
+                          : "Remove this download and delete its partial file?";
+                      if (window.confirm(wording)) props.onRemove?.(transfer.id);
+                    }}
+                  >
+                    Remove
+                  </button>
                 </div>
               </div>
             );
           }}
         </For>
         <div style={{ height: `${padBottom()}px` }} />
+      </Show>
+      <Show when={menu()}>
+        {(current) => (
+          <ContextMenu
+            items={downloadMenu(current().transfer)}
+            at={{ x: current().x, y: current().y }}
+            label="Download actions"
+            onChoose={chooseMenu}
+            onClose={() => setMenu(null)}
+          />
+        )}
       </Show>
     </div>
   );

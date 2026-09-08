@@ -3,9 +3,12 @@ import {
   DOWNLOAD_CATEGORIES,
   categorize,
   countByCategory,
+  downloadUrlLines,
   filterByCategory,
   fractionOf,
   originHost,
+  validDownloadDrop,
+  validateDownloadUrl,
 } from "./downloads";
 import type { Transfer, TransferStatus } from "./types";
 
@@ -95,6 +98,51 @@ describe("fractionOf", () => {
     expect(fractionOf({ bytesDone: 25, bytesTotal: 100 })).toBe(0.25);
     expect(fractionOf({ bytesDone: 200, bytesTotal: 100 })).toBe(1);
     expect(fractionOf({ bytesDone: -5, bytesTotal: 100 })).toBe(0);
+  });
+});
+
+describe("validateDownloadUrl", () => {
+  it("accepts plain http and https URLs", () => {
+    expect(validateDownloadUrl("https://example.test/big.iso")).toBeNull();
+    expect(validateDownloadUrl("http://mirror.example:8080/a/b")).toBeNull();
+    expect(validateDownloadUrl("  https://example.test/big.iso  ")).toBeNull();
+  });
+
+  it("refuses non-http schemes, spaces and control characters", () => {
+    // The engine's `validate_http_url` refuses the same shape at enqueue
+    // time; the dialog says so before Start instead.
+    expect(validateDownloadUrl("ftp://example.test/f")).not.toBeNull();
+    expect(validateDownloadUrl("example.test/f")).not.toBeNull();
+    expect(validateDownloadUrl("https://example.test/my file.iso")).not.toBeNull();
+    expect(validateDownloadUrl("https://example.test/a\tb")).not.toBeNull();
+  });
+
+  it("refuses credentialed authorities", () => {
+    expect(validateDownloadUrl("https://user:pw@host/f")).not.toBeNull();
+    expect(validateDownloadUrl("https://host")).toBeNull();
+  });
+
+  it("refuses query and fragment outright, the way the engine does", () => {
+    expect(validateDownloadUrl("https://example.test/f?token=abc")).not.toBeNull();
+    expect(validateDownloadUrl("https://example.test/f#part")).not.toBeNull();
+  });
+});
+
+describe("download drops", () => {
+  it("reads one URL per line and ignores URI-list comments", () => {
+    expect(downloadUrlLines("# source\r\nhttps://a.test/one\n\nhttps://b.test/two\n")).toEqual([
+      "https://a.test/one",
+      "https://b.test/two",
+    ]);
+  });
+
+  it("recognises only a wholly valid browser text drop", () => {
+    expect(validDownloadDrop("https://a.test/one\nhttps://b.test/two")).toEqual([
+      "https://a.test/one",
+      "https://b.test/two",
+    ]);
+    expect(validDownloadDrop("some selected prose")).toEqual([]);
+    expect(validDownloadDrop("https://a.test/one\nnot a URL")).toEqual([]);
   });
 });
 

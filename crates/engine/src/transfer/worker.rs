@@ -290,62 +290,93 @@ impl Worker {
     /// reading "the next queued transfer" spins for ever, which is why the ones
     /// left behind are remembered here and excluded from the question.
     pub async fn drain(self: &Arc<Self>) {
-        let mut running = Vec::new();
-        let mut waiting: HashSet<String> = HashSet::new();
-        while let Some(transfer) = self.queue.next_queued_except(&waiting).await {
-            // HTTP downloads have no share to wait for. Checking the backend
-            // here would leave them queued forever when the app has no mount.
-            // Any row whose source is HTTP takes the HTTP route, including a
-            // malformed one: it must attempt and fail loudly, not wait for an
-            // unrelated share that will never arrive.
-            let is_http = matches!(transfer.from_endpoint(), Some(super::Endpoint::Http { .. }));
-            if !is_http && !self.backends.is_connected(transfer.mount.as_deref()).await {
-                waiting.insert(transfer.id);
-                continue;
-            }
-            // Before taking a permit, give back any the limit no longer
-            // allows. Done here rather than on release because a permit is
-            // returned by dropping it, which this type does not observe.
-            self.settle_debt();
-            let Ok(permit) = Arc::clone(&self.limit).acquire_owned().await else {
-                return;
-            };
-            // Claimed before the task starts, so a second pass of this loop
-            // cannot hand the same transfer to a second worker.
-            let claimed = self
-                .queue
-                .update(&transfer.id, |item| {
-                    if item.status == Status::Queued {
-                        item.status = Status::Running;
-                        item.error = None;
-                        // Both describe the attempt that is over — the reason
-                        // it stopped, or the reason it never started — and
-                        // neither is true of the one beginning now.
-                        item.note = None;
-                    }
-                })
-                .await;
-            if claimed.is_none_or(|item| item.status != Status::Running) {
-                continue;
-            }
+        loop {
+            let mut running = Vec::new();
+            let mut waiting: HashSet<String> = HashSet::new();
+            let mut skipped: HashSet<String> = HashSet::new();
+            let mut queue_blocked = false;
+            while let Some(transfer) = self.queue.next_queued_except(&skipped).await {
+                // HTTP downloads have no share to wait for. Checking the backend
+                // here would leave them queued forever when the app has no mount.
+                // Any row whose source is HTTP takes the HTTP route, including a
+                // malformed one: it must attempt and fail loudly, not wait for an
+                // unrelated share that will never arrive.
+                let is_http =
+                    matches!(transfer.from_endpoint(), Some(super::Endpoint::Http { .. }));
+                if !is_http && !self.backends.is_connected(transfer.mount.as_deref()).await {
+                    skipped.insert(transfer.id.clone());
+                    waiting.insert(transfer.id);
+                    continue;
+                }
+                // A named queue can be more restrictive than the process-wide
+                // worker. Keep the row queued and pass over it until one of that
+                // queue's running rows releases its claim.
+                if !self
+                    .queue
+                    .try_claim_queue_with_ceiling(&transfer.queue_id, self.concurrency())
+                    .await
+                {
+                    skipped.insert(transfer.id);
+                    queue_blocked = true;
+                    continue;
+                }
+                // Before taking a permit, give back any the limit no longer
+                // allows. Done here rather than on release because a permit is
+                // returned by dropping it, which this type does not observe.
+                self.settle_debt();
+                let Ok(permit) = Arc::clone(&self.limit).acquire_owned().await else {
+                    return;
+                };
+                // Claimed before the task starts, so a second pass of this loop
+                // cannot hand the same transfer to a second worker.
+                let mut did_claim = false;
+                let claimed = self
+                    .queue
+                    .update(&transfer.id, |item| {
+                        if item.status == Status::Queued {
+                            did_claim = true;
+                            item.status = Status::Running;
+                            item.error = None;
+                            // Both describe the attempt that is over — the reason
+                            // it stopped, or the reason it never started — and
+                            // neither is true of the one beginning now.
+                            item.note = None;
+                        }
+                    })
+                    .await;
+                if !did_claim || claimed.is_none_or(|item| item.status != Status::Running) {
+                    self.queue.release_queue(&transfer.queue_id).await;
+                    drop(permit);
+                    continue;
+                }
 
-            let worker = Arc::clone(self);
-            running.push(tokio::spawn(async move {
-                worker.run_one(&transfer.id).await;
-                drop(permit);
-            }));
-        }
-        // Once, at the end, rather than as each one is passed over: a queue
-        // restored against a share nothing has mounted is every row waiting,
-        // and `note_all` writes the file once for all of them. It also says
-        // nothing at all on the second drain over the same still-waiting
-        // queue, because the note is already what it would be set to.
-        if !waiting.is_empty() {
-            let ids: Vec<String> = waiting.into_iter().collect();
-            self.queue.note_all(&ids, WAITING_FOR_SHARE).await;
-        }
-        for task in running {
-            let _ = task.await;
+                let worker = Arc::clone(self);
+                let queue_id = transfer.queue_id.clone();
+                running.push(tokio::spawn(async move {
+                    worker.run_one(&transfer.id).await;
+                    worker.queue.release_queue(&queue_id).await;
+                    drop(permit);
+                }));
+            }
+            // Once, at the end, rather than as each one is passed over: a queue
+            // restored against a share nothing has mounted is every row waiting,
+            // and `note_all` writes the file once for all of them. It also says
+            // nothing at all on the second drain over the same still-waiting
+            // queue, because the note is already what it would be set to.
+            if !waiting.is_empty() {
+                let ids: Vec<String> = waiting.into_iter().collect();
+                self.queue.note_all(&ids, WAITING_FOR_SHARE).await;
+            }
+            for task in running {
+                let _ = task.await;
+            }
+            if !queue_blocked {
+                return;
+            }
+            // If this drain owns the active rows, their joins above released
+            // the slots. If another drain owns them, `notify_one` retains one
+            // permit until this await observes it.
+            self.queue.wait_for_queue_change().await;
         }
     }
 
@@ -443,6 +474,36 @@ impl Worker {
             let (url, destination) = super::http::endpoints(transfer)?;
             let queue = Arc::clone(&self.queue);
             let id = transfer.id.clone();
+            if let Some(http_options) = transfer.http_options.clone() {
+                return self
+                    .settle_session(
+                        transfer,
+                        super::http::run_with_options(
+                            url,
+                            destination,
+                            http_options,
+                            Arc::clone(&flag),
+                            move |resolved| {
+                                let name = resolved
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("download")
+                                    .to_owned();
+                                tokio::spawn(async move {
+                                    queue
+                                        .update(&id, |item| {
+                                            item.name = name;
+                                            item.dest_path =
+                                                resolved.to_string_lossy().into_owned();
+                                        })
+                                        .await;
+                                });
+                            },
+                            self.pump(transfer),
+                        ),
+                    )
+                    .await;
+            }
             return self
                 .settle_session(
                     transfer,

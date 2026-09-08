@@ -13,7 +13,7 @@
 
 import { gate, type Affordance, type Context } from "./permissions";
 import { editable } from "./preview";
-import type { Entry } from "./types";
+import type { Entry, Transfer } from "./types";
 
 /** Everything a context menu can ask the window to do. */
 export type MenuAction =
@@ -167,6 +167,33 @@ export function favoriteMenu(): MenuItem[] {
       disabled: false,
       reason: null,
     },
+  ];
+}
+
+/** Actions available from one download row (XDL-E5-S2). */
+export type DownloadMenuAction =
+  | "pause"
+  | "resume"
+  | "moveToQueue"
+  | "openFolder"
+  | "copyUrl"
+  | "remove";
+
+/**
+ * Build the download-row menu in the same module as the file-list menu.  The
+ * row component only renders this answer; it does not grow a second set of
+ * status rules that could drift from the keyboard and toolbar actions.
+ */
+export function downloadMenu(transfer: Transfer): MenuItem<DownloadMenuAction>[] {
+  const pause = transfer.status === "running" || transfer.status === "queued";
+  const resume = transfer.status === "paused";
+  return [
+    { action: "pause", label: "Pause", disabled: !pause, reason: pause ? null : "Download is not running" },
+    { action: "resume", label: "Resume", disabled: !resume, reason: resume ? null : "Download is not paused" },
+    { action: "moveToQueue", label: "Move to queue", disabled: true, reason: "Named queues are not available yet" },
+    { action: "openFolder", label: "Open folder", disabled: false, reason: null, separated: true },
+    { action: "copyUrl", label: "Copy URL", disabled: transfer.from?.kind !== "http", reason: "URL is unavailable", separated: true },
+    { action: "remove", label: "Remove", disabled: false, reason: null, separated: true },
   ];
 }
 

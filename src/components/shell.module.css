@@ -117,7 +117,8 @@
   color: var(--disabled-text);
 }
 
-/* Exactly one primary in the toolbar, and it is Upload. */
+/* Exactly one primary in the toolbar. It is Upload when browsing, and the
+   downloads view's Add URL when the queue is shown — never both (E2-S1). */
 .primary {
   background: var(--accent);
   border-color: var(--accent);

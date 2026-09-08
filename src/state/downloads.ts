@@ -100,6 +100,63 @@ export function redactUrlHost(url: string): string | null {
 }
 
 /**
+ * Whether the engine will accept this URL, said before Start is clicked
+ * (XDL-E3-S1).
+ *
+ * This is the engine's `validate_http_url` rule mirrored, so a row the dialog
+ * sends cannot be one the queue then refuses at enqueue time. The engine's
+ * stance is deliberately strict and is quoted verbatim:
+ *
+ * - http/https only, and no whitespace or control characters;
+ * - no credentials in the authority (`@`);
+ * - no query or fragment at all — the engine treats them as a
+ *   credential-smuggling vector and refuses the whole URL rather than a part.
+ *
+ * Returns the reason to show the user, or `null` when the URL is acceptable.
+ */
+export function validateDownloadUrl(url: string): string | null {
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
+  if (
+    !(lower.startsWith("http://") || lower.startsWith("https://")) ||
+    /[\s\u0000-\u001f\u007f-\u009f]/u.test(trimmed)
+  ) {
+    return "URL must start with http:// or https:// and contain no spaces";
+  }
+  const authority = trimmed.split("://")[1]?.split(/[/?#]/)[0] ?? "";
+  if (authority === "" || authority.includes("@")) {
+    return "download URL credentials are not supported";
+  }
+  if (trimmed.includes("?") || trimmed.includes("#")) {
+    return "query and fragment URLs are not supported (the engine refuses them)";
+  }
+  return null;
+}
+
+/**
+ * URL lines carried by a drop (XDL-E8-S1).
+ *
+ * `text/uri-list` permits comment lines beginning with `#`; plain text and
+ * dropped `.txt` files use the same one-item-per-line shape. Preserve invalid
+ * non-comment lines so the Add dialog can explain them instead of silently
+ * discarding part of a dropped batch.
+ */
+export function downloadUrlLines(text: string): string[] {
+  return text
+    .split(/[\r\n]+/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+/** A browser text drop is a download drop only when every line is a URL. */
+export function validDownloadDrop(text: string): string[] {
+  const urls = downloadUrlLines(text);
+  return urls.length > 0 && urls.every((url) => validateDownloadUrl(url) === null)
+    ? urls
+    : [];
+}
+
+/**
  * Where a row comes from, in one line for the table's file cell (XDL-E2-S2):
  * the origin host for downloads, the share's host for share rows, This Mac
  * for local origins. Legacy rows without endpoints resolve through the same

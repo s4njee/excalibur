@@ -54,6 +54,27 @@ count, which the queue's `Transfer` does not carry — it is the engine's
 remaining and aggregate rate truthfully and leaves the count out rather than
 inventing one; it appears when the engine grows the field.
 
+**Amended 2026-09-07 (XDL-E3-S1): the downloads toolbar gains the reference's
+primary control, "＋ Add URL", and not the rest of its verbs.** Add URL opens
+the dialog from the queue view only, keeping "exactly one primary" in the
+toolbar whichever view the window is on. The reference's selection verbs
+(Resume, Pause, Remove over checked rows) still have no equivalent: the
+table's rows carry their own actions, and the queue has no row-selection model
+yet. The dialog also drops the reference's "Save to / Queue" pair to "Save to"
+— the queue field waits for named queues (XDL-E6-S1) — with the folder
+remembered per window until then. Both are the "For the designer" questions
+above, answered provisionally in code.
+
+**Amended 2026-09-07 (XDL-E3-S2–S4): connection count is an override, and
+mirror mode means ordered fallback.** The picker uses the reference's growing
+bar array, but keeps a visible "Let the engine choose" default and stops at
+the engine's per-origin cap. A no-range source locks to one; in a mixed batch,
+only that source is locked. Several URLs can instead describe one object: the
+user chooses which source is tried first, and the remaining URLs are fallback
+sources checked before transfer. The dialog says that sources are not mixed
+during a download because the provider does not yet support cross-mirror
+segments or runtime throughput selection.
+
 ## Remount as RW, in the status bar *(E9-S3, 2026-09-03)*
 
 **The mock** puts `Remount as RW` on a failed row in the transfer queue

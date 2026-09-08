@@ -17,6 +17,12 @@ describe("settings", () => {
     await saveSetting(prefs, "foldersFirst", false);
     await saveSetting(prefs, "sidebarCollapsed", true);
     await saveSetting(prefs, "downloadFolder", "/Users/dorian/Downloads");
+    await saveSetting(prefs, "downloadConnections", 2);
+    await saveSetting(prefs, "downloadRetry", {
+      maxAttempts: 7,
+      initialWaitSeconds: 2,
+      maxWaitSeconds: 45,
+    });
     await saveSetting(prefs, "transferConcurrency", 5);
     await saveSetting(prefs, "conflictDefault", "keepBoth");
     await saveSetting(prefs, "sort", { column: "size", ascending: false });
@@ -27,6 +33,12 @@ describe("settings", () => {
     expect(settings.foldersFirst).toBe(false);
     expect(settings.sidebarCollapsed).toBe(true);
     expect(settings.downloadFolder).toBe("/Users/dorian/Downloads");
+    expect(settings.downloadConnections).toBe(2);
+    expect(settings.downloadRetry).toEqual({
+      maxAttempts: 7,
+      initialWaitSeconds: 2,
+      maxWaitSeconds: 45,
+    });
     expect(settings.transferConcurrency).toBe(5);
     expect(settings.conflictDefault).toBe("keepBoth");
     expect(settings.sort).toEqual({ column: "size", ascending: false });
@@ -81,6 +93,23 @@ describe("settings", () => {
     expect(sanitiseField("downloadFolder", "")).toBeNull();
     expect(sanitiseField("downloadFolder", "   ")).toBeNull();
     expect(sanitiseField("downloadFolder", 42)).toBeNull();
+  });
+
+  it("sanitises download defaults at the native provider limits", () => {
+    expect(sanitiseField("downloadConnections", 99)).toBe(16);
+    expect(sanitiseField("downloadConnections", 0)).toBe(1);
+    expect(sanitiseField("downloadConnections", "automatic")).toBeNull();
+    expect(sanitiseField("downloadRetry", {
+      maxAttempts: 99,
+      initialWaitSeconds: -2,
+      maxWaitSeconds: 1,
+    })).toEqual({ maxAttempts: 10, initialWaitSeconds: 0, maxWaitSeconds: 1 });
+    expect(sanitiseField("downloadRetry", {
+      maxAttempts: 3,
+      initialWaitSeconds: 9,
+      maxWaitSeconds: 2,
+    })).toEqual({ maxAttempts: 3, initialWaitSeconds: 9, maxWaitSeconds: 9 });
+    expect(sanitiseField("downloadRetry", { maxAttempts: 3 })).toEqual(DEFAULTS.downloadRetry);
   });
 
   it("rejects a half-valid sort rather than half-applying it", () => {

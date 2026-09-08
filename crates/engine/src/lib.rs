@@ -39,4 +39,4 @@ pub use error::{EngineError, Result};
 pub use hostkeys::{HostKey, KnownHosts, Trust};
 pub use secrets::{KeyringStore, Secret, SecretStore};
 pub use session::{Connector, HealthPolicy, SessionEvent, SessionManager};
-pub use transfer::{Direction, Status as TransferStatus, Transfer};
+pub use transfer::{Direction, NamedQueue, Status as TransferStatus, Transfer};

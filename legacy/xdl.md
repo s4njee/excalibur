@@ -57,7 +57,8 @@ Three consequences worth stating before any story:
 
 ## What `xsync-download` already gives us, and what it does not
 
-Grounded in `../xsync/xsync-downloader.md` as of 2026-09-06. This table is the
+Grounded in `../../xsync/legacy/xsync-downloader.md`, updated against the
+provider checkout on 2026-09-07. This table is the
 honest dependency list; several screens in the reference are gated on the right
 column.
 
@@ -81,17 +82,18 @@ column.
 | Retry, backoff, giving up *(library)* | XD-E7-S2 |
 | Proxies, auth, headers, cookies *(library)* | XD-E7-S3 |
 | Metalink parsing *(pieces not wired)* | XD-E5-S2 |
+| Standalone advisory capability probe | XDL-S3 |
+| Ordered mirror fallback and caller-selected first source | XDL-S8 |
 
-**Not available — and what it blocks here**
+**Still to integrate or not yet available — and what it blocks here**
 
 | Missing | Story | Blocks |
 |---|---|---|
-| **Per-download progress detail** | XD-E6-S4 | The connection-lane and block-map detail views (XDL-E4). Without per-segment offsets there is nothing honest to draw. |
-| **Control while running** | XD-E6-S5 | Pausing and resuming a *running* download (XDL-E5-S1). Cancel already works through the engine's `CancelToken`. |
-| **Rate limiting** | XD-E7-S1 | The speed-limiter card and every throttled cell in the scheduler (XDL-E6-S2). |
+| **Per-download progress detail** | XD-E6-S4, XDL-S2 | The provider now emits per-chunk progress and exposes snapshots; Excalibur still has to carry stream/range/rate/stall fields through its transfer events and state before it can draw connection lanes. A completed-piece bitfield for the optional block map is still absent. |
+| **Control while running** | XDL-S1 | The provider's owned transfer handle now supports pause/resume/cancel. Excalibur still drives `sync_endpoints` as a blocking call and must adopt and associate that handle with its persisted queue rows. |
+| **Rate limiting** | XD-E7-S1, XDL-S4 | The provider's live rate handle is available; Excalibur has not threaded it through active HTTP jobs or the weekly policy yet. |
 | Resume across process death | XD-E3-S2 | Resuming a download after a quit or crash (XDL-E5-S3). |
-| Server capability probe | XD-E2-S1 | The add dialog's "server supports ranges" line (XDL-E3-S2). |
-| Several URLs for one object, mirror choice | XD-E5-S1, XD-E5-S3 | Mirrors (XDL-E3-S4). |
+| Segments split across mirrors, Metalink pieces, measured mirror choice | XD-E5-S1, XD-E5-S3 | Multi-source transfer. XDL-E3-S4 uses XDL-S8's pre-transfer fallback and does not claim these semantics. |
 | TLS trust, redirects, hostile responses | XD-E7-S4/S5/S6 | XDL-E9. |
 | Downloads with no declared length | XD-E1-S5 | An indeterminate row (XDL-E2-S3). |
 
@@ -295,48 +297,94 @@ Where a story needs one of the above, it says so and stops at the seam.
 
 #### XDL-E3-S1 — The dialog
 
-- [ ] **Do.** The reference's screen 2, in Excalibur's dialog chrome.
+- [x] **Do.** The reference's screen 2, in Excalibur's dialog chrome. *(Built
+  2026-09-07: the toolbar's Add URL opens the dialog only where the queue is;
+  the queue field the reference draws next to Save to does not exist yet
+  (XDL-E6-S1), so Save to carries a per-window remembered folder instead —
+  the "rememberable per queue" of the AC, recorded to the prefs store under
+  `download-dest:<label>`.)*
 
 **AC**
-- [ ] One or more URLs, one per line. Destination folder, defaulting to the
-  configured download folder and rememberable per queue.
-- [ ] Built on the existing dialog and field components — the same focus ring,
+- [x] One or more URLs, one per line. Destination folder, defaulting to the
+  configured download folder and rememberable per queue. *(Done: each line
+  validated before Start with the engine's own `validate_http_url` rule
+  mirrored in `state/downloads.ts` — the queue refuses credentialed URLs,
+  queries and fragments, so the dialog says so rather than sending a row the
+  engine throws back. The default folder is the last-used destination, else
+  the configured download folder, else the OS one; validated in
+  `state/downloads.test.ts` and `addDownload.test.tsx`.)*
+- [x] Built on the existing dialog and field components — the same focus ring,
   the same button shapes, the same overlay stacking rule
-  (`components/overlays.test.ts` covers why that matters).
-- [ ] Paste-to-add: a URL on the clipboard when the tab is focused offers to
-  fill the field, and never acts without the user.
+  (`components/overlays.test.ts` covers why that matters). *(Done: the dialog
+  is `dialog.module.css`'s scrim/dialog/titlebar/form/actions — the connection
+  dialog's own chrome — with `aria-modal`, an Escape capture that closes one
+  thing, and an autofocused URL box. The URL box is a textarea, which exposed
+  a window keyboard rule that only counted `INPUT` as typing; a Backspace
+  there deleted the file selection behind the dialog. That rule now counts
+  `TEXTAREA` too, and a test types into the box and presses keys to say so.)*
+- [x] Paste-to-add: a URL on the clipboard when the tab is focused offers to
+  fill the field, and never acts without the user. *(Done: the dialog reads
+  the clipboard when it opens and when the window refocuses, and offers — with
+  the origin host redacted — a single usable URL under a "Use it" button that
+  fills rather than starts. A credentialed or multi-line clipboard offers
+  nothing.)*
 
 #### XDL-E3-S2 — What the server says before we start
 
-- [ ] **Do.** Probe the URL and report what came back.
+- [x] **Do.** Probe the URL and report what came back. *(Built 2026-09-07:
+  `probe_http_download` runs XDL-S3's standalone probe off the webview thread;
+  the dialog debounces edits, probes a pasted batch sequentially, and rejects
+  late answers from an older edit or a disposed dialog.)*
 
 **AC**
-- [ ] Resolving, resolved, or failed — with size and whether ranges are
-  supported. **Needs XD-E2-S1**; until then the dialog says what it knows and
-  does not draw the line at all rather than guessing.
-- [ ] A server with no range support locks the connection control to one and
-  says why, rather than offering a choice that will be ignored.
-- [ ] A failed probe does not block Start. The engine retries better than a
-  dialog can, and a HEAD that 405s is common and harmless.
+- [x] Resolving, resolved, or failed — with size and whether ranges are
+  supported. *(Done through XDL-S3: nullable facts stay "unknown" in the
+  TypeScript contract and fixture backend; a probe warning is a failed probe,
+  not a resolved one. `addDownload.test.tsx` covers all three states and
+  bounded batch probing.)*
+- [x] A server with no range support locks the connection control to one and
+  says why, rather than offering a choice that will be ignored. *(Done: a
+  single URL or selected mirror locks the whole picker; a mixed batch keeps
+  the override for range-capable rows and writes `connections: 1` only on the
+  rows that cannot range.)*
+- [x] A failed probe does not block Start. The engine retries better than a
+  dialog can, and a HEAD that 405s is common and harmless. *(Done for rejected
+  probes and advisory warnings; both leave Start enabled and carry no invented
+  size or range fact.)*
 
 #### XDL-E3-S3 — Connections
 
-- [ ] **Do.** The reference's bar-array connection picker, which doubles as its
-  own scale.
+- [x] **Do.** The reference's bar-array connection picker, which doubles as its
+  own scale. *(Built 2026-09-07 as an accessible radio group whose increasing
+  bar count is decoration beside the numeric value.)*
 
 **AC**
-- [ ] The control sets a per-download connection count within the engine's own
+- [x] The control sets a per-download connection count within the engine's own
   cap. `xsync-download` *chooses* a count already (XD-E2-S4), so this is an
-  override and is labelled as one — the default is "let it choose".
-- [ ] The per-origin cap (XD-E6-S1, `--max-per-host`, default 4) is honoured
+  override and is labelled as one — the default is "let it choose". *(Done:
+  the native limits command supplies the scale; the optional override crosses
+  Tauri, persists in `Transfer.http_options`, survives queue JSON, and reaches
+  `HttpSource::with_segments`. Absent remains the engine choice.)*
+- [x] The per-origin cap (XD-E6-S1, `--max-per-host`, default 4) is honoured
   and visible. Asking for 16 connections to a host capped at 4 must not read as
-  16.
+  16. *(Done: the dialog ends its scale at `min(maxConnections, maxPerHost)`
+  and names both limits. The engine reserves the selected source's actual
+  `read_concurrency` from one process-wide semaphore per origin, and the wait
+  observes cancellation. A loopback regression starts two 16-request jobs at
+  once and observes no more than four active requests at their shared origin.)*
 
 #### XDL-E3-S4 — Mirrors
 
-- [ ] **Do.** Several URLs for one object.
-- [ ] Blocked on **XD-E5-S1** and **XD-E5-S3**; `xsync-download` has failover
-  only, and Metalink pieces are not wired. Not started here.
+- [x] **Do.** Several URLs for one object. *(Built 2026-09-07: mirror mode
+  sends one enqueue with a primary URL, ordered alternatives and the user's
+  preferred starting index. The shape persists with the queue row.)*
+- [x] Use XDL-S8's available failover without claiming XD-E5-S1/S3's unfinished
+  multi-source behavior. *(Done: the engine tries the selected source first,
+  falls through the remaining sources during pre-transfer enumeration, then
+  downloads from the chosen `HttpSource`. The dialog says the sources are not
+  mixed during transfer. Loopback tests cover fallback, preferred selection,
+  one output row and the chosen source's bytes; segment mixing, Metalink pieces
+  and measured runtime mirror selection remain provider work.)*
 
 ---
 
@@ -351,8 +399,10 @@ geometry (Decision 5).*
 
 - [ ] **Do.** One row per connection, each lane starting at its own byte offset,
   with a playhead at its leading edge and a per-lane rate.
-- [ ] **Needs XD-E6-S4.** Until per-segment progress crosses the seam there is
-  nothing to draw. Do not approximate it.
+- [ ] **Integrate XDL-S2.** The provider now emits per-chunk progress and exposes
+  transfer snapshots with stream/range/rate/stall fields. Excalibur must carry
+  them through `Tally`/`Moved`, queue events and TypeScript transfer state
+  before drawing the lanes; do not approximate them from aggregate progress.
 
 **AC**
 - [ ] Each lane's fill begins where that segment's range begins, not at zero.
@@ -365,6 +415,9 @@ geometry (Decision 5).*
 - [ ] **Do.** The reference's 60-second throughput chart, under whichever detail
   view is shown.
 
+**Blocker.** This belongs inside the download detail surface introduced by
+XDL-E4-S1; that surface and its selected-download state do not exist yet.
+
 **AC**
 - [ ] Built from the same samples the footer sparkline uses, so two charts
   cannot disagree.
@@ -376,6 +429,9 @@ geometry (Decision 5).*
   the engine does not currently expose, and the lane view already answers the
   question better.
 
+**Blocker.** xsync exposes segment snapshots but no completed-piece bitfield,
+so Excalibur has no real mosaic geometry to render.
+
 ---
 
 ## XDL-E5 — Control
@@ -383,31 +439,53 @@ geometry (Decision 5).*
 #### XDL-E5-S1 — Pause, resume, remove
 
 - [ ] **Do.** The toolbar verbs, on a selection.
-- [ ] Pause/resume of a *running* download needs **XD-E6-S5**. Cancel works
-  today through `CancelToken`.
+- [ ] Pause/resume of a *running* download must adopt **XDL-S1**. Cancel works
+  today through `CancelToken`; xsync's owned transfer handle now supplies live
+  pause and resume.
+
+**Blocker for live pause/resume.** Excalibur still runs `sync_endpoints` as one
+blocking call and does not retain XDL-S1's handle by queue-row/session id. The
+provider capability is available; the consumer refactor is still required.
+
+Current bounded slice (2026-09-07): each queue row exposes Pause/Cancel and
+Resume for paused work in both the compact sheet and Downloads table. Remove
+asks whether to discard a partial or completed row and routes through the
+native queue; selection based toolbar actions remain open, as does the
+provider work needed for pausing a running HTTP stream.
 
 **AC**
 - [ ] Selection follows the file list's rules — click, shift-click, cmd-click —
   and the verbs act on the selection, disabled with nothing selected.
-- [ ] Remove asks before deleting a partial file, and never deletes a completed
+- [x] Remove asks before deleting a partial file, and never deletes a completed
   one without saying so.
 - [ ] A paused download's partial file is kept, and resuming continues rather
   than restarting, or the row says plainly that it will restart.
 
 #### XDL-E5-S2 — The context menu
 
-- [ ] **Do.** Pause, Resume, Move to queue, Open folder, Copy URL, Remove.
+- [x] **Do.** Pause, Resume, Move to queue, Open folder, Copy URL, Remove.
+  *(Built 2026-09-07: download rows use the shared `ContextMenu` and the
+  `downloadMenu` pure rule in `src/state/menu.ts`; status-refused actions stay
+  visible with a reason. Move to queue is visibly unavailable until XDL-E6-S1
+  creates named queues. Remove confirms before asking the queue to delete the
+  row, Open folder calls the native shell for the local destination's parent,
+  and Copy URL strips any credentials from legacy rows.)*
 
 **AC**
-- [ ] Built through the existing `state/menu.ts` gate, so what a row offers is
+- [x] Built through the existing `state/menu.ts` gate, so what a row offers is
   one pure function and testable — not a second menu implementation.
-- [ ] Copy URL copies the URL the user gave, redacted of credentials.
+- [x] Copy URL copies the URL the user gave, redacted of credentials.
 
 #### XDL-E5-S3 — Surviving a restart
 
 - [ ] **Do.** Downloads come back after a quit or a crash and continue.
 - [ ] Needs **XD-E3-S2**. The queue's own restore already re-queues unfinished
   rows; what is missing is HTTP-side resume against a validator.
+
+**Blocker.** xsync's resume work still lacks the accepted validator semantics:
+changed or absent validators must refuse unsafe continuation, and the
+`If-Range`/kill-and-restart evidence is incomplete. Excalibur cannot promise
+crash-safe continuation until that provider contract is closed.
 
 ---
 
@@ -422,16 +500,26 @@ an app-level layer. So does this.*
   belong to one.
 
 **AC**
-- [ ] A queue decides which of its rows are allowed to run; the worker's
+- [x] A queue decides which of its rows are allowed to run; the worker's
   existing concurrency limit stays the global ceiling.
 - [ ] Drag to reorder sets priority.
+
+Current bounded slice (2026-09-07): the engine now persists named queue
+definitions (name, colour, concurrency and order), assigns each transfer a
+queue and optional position, migrates the former flat queue file, enforces each
+queue's running-row ceiling below the worker's global semaphore, and exposes
+native commands/events for queue management, movement and ordering. The story
+remains open until the Downloads UI exposes those commands and drag reorder.
 
 #### XDL-E6-S2 — The weekly window
 
 - [ ] **Do.** The reference's 7×24 paintable grid: full speed, throttled, paused.
-- [ ] The *throttled* state needs **XD-E7-S1**. Until rate limiting exists the
-  grid is two-state, and says so, rather than offering a throttle that does
-  nothing.
+- [ ] The *throttled* state must integrate **XDL-S4**. Until Excalibur retains
+  and updates xsync's live rate handle, the grid is two-state and says so,
+  rather than offering a throttle that does nothing.
+
+**Blocker for Throttled cells.** xsync's live rate cap is available, but the
+active HTTP route exposes no rate handle to Excalibur's scheduler yet.
 
 **AC**
 - [ ] Policy applies at the hour boundary and does not interrupt a running
@@ -439,23 +527,33 @@ an app-level layer. So does this.*
 - [ ] The grid is keyboard-reachable. A paint-drag-only control is unusable
   without a pointer, which E16-S2 does not permit.
 
+Current bounded slice (2026-09-07): `transfer::schedule` defines and validates
+the Monday-first 168-slot policy with only Full speed and Paused states. It
+rejects malformed persisted grids and makes the hour-boundary rule a policy on
+starting queued work. Runtime enforcement, persistence and the keyboard
+reachable grid remain open; Throttled remains blocked on the missing consumer
+integration with XDL-S4.
+
 ---
 
 ## XDL-E7 — Settings
 
 #### XDL-E7-S1 — Download defaults
 
-- [ ] **Do.** A Downloads page in the existing Preferences: default folder,
-  default connections, global concurrency, retry policy.
+- [x] **Do.** A Downloads page in the existing Preferences: default folder,
+  default connections, global concurrency, retry policy. *(Built 2026-09-07:
+  the connection default and retry policy travel with each HTTP queue row and
+  are applied by `HttpSource`; global concurrency still configures the shared
+  worker, and the folder remains the native/default destination.)*
 
 **AC**
-- [ ] Every field goes through `state/settings.ts`'s sanitiser, whose
+- [x] Every field goes through `state/settings.ts`'s sanitiser, whose
   `default:` arm is a `never` binding — a new setting without a sanitiser is a
   compile error, and that property is kept.
-- [ ] Settings that are also engine options name the flag they map to, the way
+- [x] Settings that are also engine options name the flag they map to, the way
   the reference does. That is the one part of its Engine screen worth keeping:
   it teaches the user what the thing underneath is called.
-- [ ] **No RPC endpoint, no secret token, no Restart engine.** There is no
+- [x] **No RPC endpoint, no secret token, no Restart engine.** There is no
   daemon (Decision 1).
 
 #### XDL-E7-S2 — Proxies and credentials
@@ -475,23 +573,35 @@ an app-level layer. So does this.*
 
 #### XDL-E8-S1 — Drag and drop
 
-- [ ] **Do.** A URL or a `.txt` of URLs dropped on the window opens the dialog
+- [x] **Do.** A URL or a `.txt` of URLs dropped on the window opens the dialog
   pre-filled. The drop machinery exists (E24-S2); this is a new pasteboard type.
+  *(Built 2026-09-07: browser `text/uri-list`/plain URL drops and native `.txt`
+  path drops converge on the existing dialog. Text files are limited to 16 at
+  1 MiB each before IPC reads them; comments and blank lines are ignored, and
+  invalid URL lines remain visible for the dialog to explain. A drop only
+  opens the dialog and never starts a transfer.)*
 
 #### XDL-E8-S2 — Batch input
 
-- [ ] **Do.** Many URLs at once, `xsync-download`'s XD-E6-S2 shape.
+- [x] **Do.** Many URLs at once, `xsync-download`'s XD-E6-S2 shape. *(Built
+  2026-09-07: the Add Download dialog accepts one URL per line, validates and
+  probes them in a bounded sequence, and enqueues one persisted row per URL.)*
 
 #### XDL-E8-S3 — Watch the clipboard
 
-- [ ] **Do.** Offer to add a URL copied while the app is running. **Offer**, never
+- [x] **Do.** Offer to add a URL copied while the app is running. **Offer**, never
   act — a manager that starts downloads because something was copied is a
-  manager nobody trusts.
+  manager nobody trusts. *(Built 2026-09-07: the dialog checks on mount and
+  window focus, shows a redacted-host offer, and fills only after “Use it”.)*
 
 #### XDL-E8-S4 — Browser capture
 
 - [ ] Deliberately last, and possibly never (Decision 7). A browser extension is
   a separate product with its own review, packaging and threat model.
+
+**Blocker.** This needs a product decision plus a separately packaged browser
+extension, native-messaging host, security review and store-review plan. None
+of those artifacts or ownership decisions exists in this repository.
 
 ---
 
@@ -500,6 +610,10 @@ an app-level layer. So does this.*
 #### XDL-E9-S1 — Checksums
 
 - [ ] **Do.** Accept an expected digest and verify what landed.
+
+**Blocker.** xsync accepts expected digests, but its current workaround can
+publish and then move a bad final file to `.unverified`. This story requires a
+pre-commit verification hook so a mismatch can never receive the final name.
 
 **AC**
 - [ ] A file that fails verification is never published under its final name.
@@ -511,6 +625,10 @@ an app-level layer. So does this.*
 #### XDL-E9-S2 — What a server is allowed to do to us
 
 - [ ] **Do.** Bound it. Needs **XD-E7-S4/S5/S6**.
+
+**Blocker.** xsync has part of redirect handling, but consistent resolved URLs
+for segmented requests, classified TLS trust failures and hostile-response
+resource caps remain open in XD-E7-S4/S5/S6.
 
 **AC**
 - [ ] A redirect to another origin drops credentials, and to a non-HTTP scheme
@@ -530,9 +648,9 @@ an app-level layer. So does this.*
 |---|---|---|
 | **XDL-M1 It downloads** | XDL-E1-S1, XDL-E1-S2, XDL-E3-S1, XDL-E2-S2 | Paste an ISO URL, watch it arrive over many connections into a chosen folder, verified, in Excalibur's own list. |
 | **XDL-M2 It is a manager** | XDL-E2-S1/S3/S4, XDL-E5-S1/S2 | A Downloads tab with categories, counts, a footer, selection, and pause/remove that work. |
-| **XDL-M3 It shows its work** | XDL-E4-S1/S2, XDL-E3-S2/S3 | The lane view over real segment offsets; the add dialog reporting what the server actually supports. *(Gated on XD-E6-S4, XD-E2-S1.)* |
+| **XDL-M3 It shows its work** | XDL-E4-S1/S2, XDL-E3-S2/S3 | The lane view over real segment offsets; the add dialog reporting what the server actually supports. *(Provider progress is available; Excalibur's XDL-S2 event/state integration remains.)* |
 | **XDL-M4 It is trustworthy** | XDL-E9, XDL-E7-S2, XDL-E5-S3 | Checksums, hostile-response handling, credentials that never leak, and downloads that survive a crash. *(Gated on XD-E3-S2, XD-E7-S4/S5/S6.)* |
-| **XDL-M5 It is patient** | XDL-E6, XDL-E7-S1, XDL-E8 | Queues, a weekly window, and every way of getting a URL in. *(Throttling gated on XD-E7-S1.)* |
+| **XDL-M5 It is patient** | XDL-E6, XDL-E7-S1, XDL-E8 | Queues, a weekly window, and every way of getting a URL in. *(Throttling needs Excalibur's XDL-S4 live-rate integration.)* |
 
 ## Definition of done
 

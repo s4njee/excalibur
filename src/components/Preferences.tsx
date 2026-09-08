@@ -1,9 +1,18 @@
 import { Show } from "solid-js";
 
 import styles from "./dialog.module.css";
-import { MAX_CONCURRENCY, type ConflictDefault, type Settings, type ThemeChoice } from "../state/settings";
+import {
+  MAX_CONCURRENCY,
+  MAX_DOWNLOAD_ATTEMPTS,
+  MAX_DOWNLOAD_CONNECTIONS,
+  MAX_DOWNLOAD_WAIT_SECONDS,
+  type ConflictDefault,
+  type DownloadRetryPolicy,
+  type Settings,
+  type ThemeChoice,
+} from "../state/settings";
 import * as shortcuts from "../state/shortcuts";
-import type { RowLayout } from "../state/types";
+import type { HttpDownloadLimits, RowLayout } from "../state/types";
 
 /**
  * The preferences sheet (E17-S1).
@@ -24,7 +33,19 @@ export function Preferences(props: {
   onClose: () => void;
   /** Opens a folder picker. Absent in the browser preview, which has none. */
   onPickFolder?: () => void;
+  /** Native HTTP limits, when the shell has answered its capability query. */
+  downloadLimits?: HttpDownloadLimits;
 }) {
+  const connectionLimit = () =>
+    Math.max(
+      1,
+      Math.min(
+        MAX_DOWNLOAD_CONNECTIONS,
+        props.downloadLimits
+          ? Math.min(props.downloadLimits.maxConnections, props.downloadLimits.maxPerHost)
+          : MAX_DOWNLOAD_CONNECTIONS,
+      ),
+    );
   return (
     <div class={styles.scrim} onClick={props.onClose}>
       <div
@@ -109,7 +130,7 @@ export function Preferences(props: {
             </div>
 
             <label class={styles.label} for="concurrency">
-              Transfers at once
+              Global concurrency
             </label>
             <input
               id="concurrency"
@@ -122,6 +143,97 @@ export function Preferences(props: {
                 props.onChange("transferConcurrency", Number(event.currentTarget.value))
               }
             />
+
+            <p class={styles.fieldHint}>
+              Worker limit for all transfers (`transferConcurrency`).
+            </p>
+
+            <label class={styles.label} for="download-connections">
+              Download connections
+            </label>
+            <select
+              id="download-connections"
+              class={styles.input}
+              value={
+                props.settings.downloadConnections === null
+                  ? "auto"
+                  : String(props.settings.downloadConnections)
+              }
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                props.onChange(
+                  "downloadConnections",
+                  value === "auto" ? null : Number(value),
+                );
+              }}
+            >
+              <option value="auto">Automatic (engine chooses)</option>
+              {Array.from({ length: connectionLimit() }, (_, index) => index + 1).map((count) => (
+                <option value={count}>{count}</option>
+              ))}
+            </select>
+            <p class={styles.fieldHint}>
+              HTTP `connections`; the engine caps this at its per-origin
+              `max-per-host` limit.
+            </p>
+
+            <span class={styles.label}>Retry policy</span>
+            <div>
+              <label class={styles.checkRow} for="download-retry-attempts">
+                <span>Attempts</span>
+                <input
+                  id="download-retry-attempts"
+                  class={styles.input}
+                  type="number"
+                  min={1}
+                  max={MAX_DOWNLOAD_ATTEMPTS}
+                  value={props.settings.downloadRetry.maxAttempts}
+                  onChange={(event) =>
+                    props.onChange("downloadRetry", {
+                      ...props.settings.downloadRetry,
+                      maxAttempts: Number(event.currentTarget.value),
+                    } satisfies DownloadRetryPolicy)
+                  }
+                />
+              </label>
+              <label class={styles.checkRow} for="download-retry-initial-wait">
+                <span>Initial wait (seconds)</span>
+                <input
+                  id="download-retry-initial-wait"
+                  class={styles.input}
+                  type="number"
+                  min={0}
+                  max={MAX_DOWNLOAD_WAIT_SECONDS}
+                  value={props.settings.downloadRetry.initialWaitSeconds}
+                  onChange={(event) =>
+                    props.onChange("downloadRetry", {
+                      ...props.settings.downloadRetry,
+                      initialWaitSeconds: Number(event.currentTarget.value),
+                    } satisfies DownloadRetryPolicy)
+                  }
+                />
+              </label>
+              <label class={styles.checkRow} for="download-retry-max-wait">
+                <span>Maximum wait (seconds)</span>
+                <input
+                  id="download-retry-max-wait"
+                  class={styles.input}
+                  type="number"
+                  min={0}
+                  max={MAX_DOWNLOAD_WAIT_SECONDS}
+                  value={props.settings.downloadRetry.maxWaitSeconds}
+                  onChange={(event) =>
+                    props.onChange("downloadRetry", {
+                      ...props.settings.downloadRetry,
+                      maxWaitSeconds: Number(event.currentTarget.value),
+                    } satisfies DownloadRetryPolicy)
+                  }
+                />
+              </label>
+              <p class={styles.fieldHint}>
+                Maps to the HTTP provider&apos;s `max_tries`, `initial_wait`, and `max_wait`.
+              </p>
+            </div>
 
             <label class={styles.label} for="conflict">
               If a file exists

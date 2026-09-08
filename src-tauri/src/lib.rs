@@ -23,14 +23,17 @@ use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
 use excalibur_engine::backend::{Access, ConnectionSpec, EntryKind, Protocol, ShareBackend};
 use excalibur_engine::drag::{self, Selection};
 use excalibur_engine::transfer::conflict::{self, Conflict};
+use excalibur_engine::transfer::http::{
+    self as download_http, HttpDownloadLimits, HttpDownloadOptions, HttpProbe,
+};
 use excalibur_engine::transfer::plan;
 use excalibur_engine::transfer::queue::{QueueEvent, TransferQueue};
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::transfer::xsync_engine::{SshEndpoint, XsyncRemote, XsyncRoute};
 use excalibur_engine::{
     hostkeys, Connector, Direction, EditSession, EditStore, EngineError, KeyringStore, KnownHosts,
-    Listing, MountInfo, MountStatus, Result, SaveOutcome, Secret, SecretStore, SessionManager,
-    Transfer, TransferStatus, Trust,
+    Listing, MountInfo, MountStatus, NamedQueue, Result, SaveOutcome, Secret, SecretStore,
+    SessionManager, Transfer, TransferStatus, Trust,
 };
 use tauri::http;
 use tauri::{Emitter, Manager};
@@ -737,6 +740,102 @@ async fn transfers(state: tauri::State<'_, AppState>) -> std::result::Result<Vec
     Ok(state.transfers.all().await)
 }
 
+/// The named download queues and their execution policy.
+#[tauri::command]
+async fn download_queues(
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<Vec<NamedQueue>, ()> {
+    Ok(state.transfers.queues().await)
+}
+
+/// Create a named queue. New rows continue to use the built-in queue until a
+/// caller explicitly moves them, preserving the old enqueue commands.
+#[tauri::command]
+async fn create_download_queue(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    color: String,
+    concurrency: usize,
+) -> std::result::Result<NamedQueue, String> {
+    state
+        .transfers
+        .create_queue(name, color, concurrency)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Update a queue's label, colour, or per-queue row limit.
+#[tauri::command]
+async fn update_download_queue(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+    color: String,
+    concurrency: usize,
+) -> std::result::Result<NamedQueue, String> {
+    state
+        .transfers
+        .update_queue(&id, name, color, concurrency)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("download queue {id:?} does not exist"))
+}
+
+/// Delete a queue after moving its rows into Default.
+#[tauri::command]
+async fn delete_download_queue(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), String> {
+    state
+        .transfers
+        .delete_queue(&id)
+        .await
+        .map(|_| ())
+        .ok_or_else(|| format!("download queue {id:?} cannot be deleted"))
+}
+
+/// Move one transfer to a queue, appending it at that queue's tail.
+#[tauri::command]
+async fn move_transfer_to_queue(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    queue_id: String,
+) -> std::result::Result<Transfer, String> {
+    state
+        .transfers
+        .move_to_queue(&id, &queue_id)
+        .await
+        .ok_or_else(|| format!("transfer {id:?} or queue {queue_id:?} does not exist"))
+}
+
+/// Apply a drag-reordered list of row ids within one named queue.
+#[tauri::command]
+async fn reorder_download_queue(
+    state: tauri::State<'_, AppState>,
+    queue_id: String,
+    ids: Vec<String>,
+) -> std::result::Result<(), String> {
+    if state.transfers.reorder_queue(&queue_id, &ids).await {
+        Ok(())
+    } else {
+        Err(format!("download queue {queue_id:?} does not exist"))
+    }
+}
+
+/// Apply the visible order of the named queues.
+#[tauri::command]
+async fn reorder_download_queues(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<String>,
+) -> std::result::Result<(), String> {
+    if state.transfers.reorder_queues(&ids).await {
+        Ok(())
+    } else {
+        Err("could not reorder download queues".to_owned())
+    }
+}
+
 /// Queue a download of each path, and start moving.
 ///
 /// **A folder is one row**, at `<destination>/<folder>`, exactly as
@@ -854,12 +953,28 @@ async fn enqueue_http_download(
     state: tauri::State<'_, AppState>,
     url: String,
     destination: String,
+    options: Option<HttpDownloadOptions>,
 ) -> std::result::Result<String, CommandError> {
     let id = new_id();
-    let transfer = Transfer::http(id.clone(), url, destination)?;
+    let transfer =
+        Transfer::http_with_options(id.clone(), url, destination, options.unwrap_or_default())?;
     state.transfers.add(transfer).await;
     run_queue(&state);
     Ok(id)
+}
+
+/// Network inspection stays on a blocking worker, never the webview thread.
+#[tauri::command]
+async fn probe_http_download(url: String) -> std::result::Result<HttpProbe, CommandError> {
+    tokio::task::spawn_blocking(move || download_http::probe_download(&url))
+        .await
+        .map_err(|error| EngineError::Io(format!("the HTTP probe task failed: {error}")))?
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+fn download_limits() -> HttpDownloadLimits {
+    download_http::download_limits()
 }
 
 /// Put something the walk could not do in the queue, already failed.
@@ -959,6 +1074,49 @@ async fn cancel_transfer(
     Ok(())
 }
 
+/// Remove one queue row after stopping it. The worker's cancellation path
+/// discards its staging/partial output; completed files are never touched.
+#[tauri::command]
+async fn remove_transfer(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<(), ()> {
+    retire(&state.transfers, &state.worker, &id).await;
+    Ok(())
+}
+
+/// Reveal the local folder which contains a transfer's destination.
+///
+/// The webview supplies a destination, never a shell command. Resolving the
+/// parent as a directory keeps this command from opening a URL or an arbitrary
+/// non-local target through the OS shell.
+#[tauri::command]
+async fn open_transfer_folder(destination: String) -> std::result::Result<(), CommandError> {
+    let destination = std::path::PathBuf::from(destination);
+    let folder = destination.parent().ok_or_else(|| CommandError {
+        message: "The download has no parent folder".to_owned(),
+        surface: excalibur_engine::error::Surface::Banner,
+        transient: false,
+        host_key: None,
+    })?;
+    let folder = std::fs::canonicalize(folder).map_err(|error| CommandError {
+        message: error.to_string(),
+        surface: excalibur_engine::error::Surface::Banner,
+        transient: false,
+        host_key: None,
+    })?;
+    if !folder.is_dir() {
+        return Err(CommandError {
+            message: "The download folder is not available".to_owned(),
+            surface: excalibur_engine::error::Surface::Banner,
+            transient: false,
+            host_key: None,
+        });
+    }
+    open_in_editor(&folder.to_string_lossy());
+    Ok(())
+}
+
 /// Put a paused or failed transfer back in the queue.
 ///
 /// A retried **folder** row (E22-S3) is not a second copy of the tree: the
@@ -1039,6 +1197,51 @@ fn download_folder() -> String {
         .or_else(dirs::home_dir)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Read URL lines from text files explicitly dropped on this window.
+///
+/// The webview receives native drops as paths, so this narrow command is the
+/// bridge for XDL-E8-S1. It accepts only a small batch of ordinary `.txt`
+/// files and caps each before reading; a drop must never turn into an
+/// unbounded IPC allocation. URL validation stays in the Add dialog, where an
+/// invalid line can be shown and corrected instead of disappearing silently.
+#[tauri::command]
+fn download_urls_from_files(paths: Vec<String>) -> std::result::Result<Vec<String>, String> {
+    const MAX_FILES: usize = 16;
+    const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+    if paths.is_empty() || paths.len() > MAX_FILES {
+        return Err(format!("drop between 1 and {MAX_FILES} URL text files"));
+    }
+
+    let mut urls = Vec::new();
+    for raw in paths {
+        let path = Path::new(&raw);
+        let is_text = path
+            .extension()
+            .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("txt"));
+        if !is_text {
+            return Err(format!("{} is not a .txt file", path.display()));
+        }
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("{} is not a file", path.display()));
+        }
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err(format!("{} is larger than 1 MiB", path.display()));
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| format!("cannot read {} as UTF-8 text: {error}", path.display()))?;
+        urls.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_owned),
+        );
+    }
+    Ok(urls)
 }
 
 /// The folders the sidebar's FAVORITES section is seeded from.
@@ -2388,6 +2591,14 @@ pub fn run() {
                 }
             });
 
+            let handle = app.handle().clone();
+            let mut queue_changes = queue.queue_events();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(event) = queue_changes.recv().await {
+                    let _ = handle.emit("transfer://queues", &event);
+                }
+            });
+
             // Anything restored from the last run is queued, so it starts —
             // but a row left over from a drag that never finished names a
             // staging directory, and draining it would refill one. Swept first,
@@ -2417,17 +2628,29 @@ pub fn run() {
             trust_host_key,
             forget_host_key,
             transfers,
+            download_queues,
+            create_download_queue,
+            update_download_queue,
+            delete_download_queue,
+            move_transfer_to_queue,
+            reorder_download_queue,
+            reorder_download_queues,
             enqueue_downloads,
             enqueue_http_download,
+            probe_http_download,
+            download_limits,
             enqueue_uploads,
             pause_transfer,
             cancel_transfer,
+            remove_transfer,
+            open_transfer_folder,
             retry_transfer,
             pause_all_transfers,
             clear_finished_transfers,
             retry_failed_transfers,
             clear_failed_transfers,
             download_folder,
+            download_urls_from_files,
             user_folders,
             existing_directories,
             check_conflicts,
@@ -2765,9 +2988,32 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        encode, parse_range, percent_decode, staging_root, window_from_host, STREAM_DEFAULT_WINDOW,
-        STREAM_MAX_WINDOW,
+        download_urls_from_files, encode, parse_range, percent_decode, staging_root,
+        window_from_host, STREAM_DEFAULT_WINDOW, STREAM_MAX_WINDOW,
     };
+
+    #[test]
+    fn a_dropped_text_file_yields_url_lines_without_comments() {
+        let path = std::env::temp_dir().join(format!(
+            "excalibur-dropped-urls-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "# exported list\nhttps://a.test/one.iso\n\nhttps://b.test/two.iso\n",
+        )
+        .expect("write URL list");
+        let result = download_urls_from_files(vec![path.to_string_lossy().into_owned()]);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            result.expect("read URL list"),
+            ["https://a.test/one.iso", "https://b.test/two.iso"]
+        );
+    }
 
     #[test]
     fn a_row_inside_a_staging_directory_names_the_directory_to_sweep() {

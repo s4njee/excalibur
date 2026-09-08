@@ -8,7 +8,7 @@
 // is the failure that would otherwise slip through.
 
 import { describe, expect, it } from "vitest";
-import { favoriteMenu, menuFor, type MenuAction } from "./menu";
+import { downloadMenu, favoriteMenu, menuFor, type MenuAction } from "./menu";
 import { READ_AFFORDANCES, WRITE_AFFORDANCES, type Context } from "./permissions";
 import type { Category, Entry } from "./types";
 
@@ -35,6 +35,23 @@ const find = (items: ReturnType<typeof menuFor>, action: MenuAction) =>
   items.find((item) => item.action === action);
 
 describe("the context menu's items", () => {
+  it("builds download actions from the row status", () => {
+    const transfer = {
+      id: "d", direction: null, from: { kind: "http" as const, url: "https://user:pw@host/a" },
+      to: { kind: "local" as const, path: "/tmp/a" }, name: "a", sourcePath: "", destPath: "/tmp/a",
+      bytesDone: 0, bytesTotal: 1, rate: null, etaSeconds: null, status: "paused" as const,
+      error: null, queuedAtMs: 0,
+    };
+    const actions = downloadMenu(transfer);
+    expect(actions.map((item) => item.action)).toEqual([
+      "pause", "resume", "moveToQueue", "openFolder", "copyUrl", "remove",
+    ]);
+    expect(actions.find((item) => item.action === "resume")?.disabled).toBe(false);
+    expect(actions.find((item) => item.action === "remove")?.disabled).toBe(false);
+    expect(actions.find((item) => item.action === "copyUrl")?.disabled).toBe(false);
+    expect(actions.find((item) => item.action === "moveToQueue")?.disabled).toBe(true);
+    expect(actions.find((item) => item.action === "moveToQueue")?.reason).toMatch(/named queues/i);
+  });
   it("offers the folder's own verbs on the list background", () => {
     const background = menuFor([], { ...RW, hasSelection: false });
     expect(byAction(background)).toEqual(["newFolder", "upload"]);

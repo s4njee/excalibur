@@ -1,4 +1,4 @@
-use excalibur_engine::transfer::{Direction, Endpoint, Transfer};
+use excalibur_engine::transfer::{Direction, Endpoint, HttpDownloadOptions, Transfer};
 
 #[test]
 fn legacy_rows_load_and_lazily_become_share_endpoints() {
@@ -112,5 +112,69 @@ fn http_constructor_rejects_unsupported_or_credential_urls() {
         "https://example.test/file?token=secret",
     ] {
         assert!(Transfer::new_http("bad", url, "/tmp", 0).is_err(), "{url}");
+    }
+}
+
+#[test]
+fn http_controls_survive_the_queue_json_shape() {
+    let transfer = Transfer::http_with_options(
+        "controlled",
+        "https://primary.test/file.iso",
+        "/tmp/downloads",
+        HttpDownloadOptions {
+            connections: Some(3),
+            mirrors: vec!["https://mirror.test/file.iso".to_owned()],
+            preferred_mirror: Some(1),
+            retry: Some(excalibur_engine::transfer::HttpRetryPolicy {
+                max_attempts: 7,
+                initial_wait_seconds: 2,
+                max_wait_seconds: 45,
+            }),
+        },
+    )
+    .unwrap();
+    let json = serde_json::to_value(&transfer).unwrap();
+    assert_eq!(json["httpOptions"]["connections"], 3);
+    assert_eq!(json["httpOptions"]["preferredMirror"], 1);
+    assert_eq!(json["httpOptions"]["retry"]["maxAttempts"], 7);
+    assert_eq!(serde_json::from_value::<Transfer>(json).unwrap(), transfer);
+}
+
+#[test]
+fn http_controls_refuse_invalid_counts_and_mirror_selection() {
+    for options in [
+        HttpDownloadOptions {
+            connections: Some(0),
+            ..HttpDownloadOptions::default()
+        },
+        HttpDownloadOptions {
+            mirrors: vec!["https://mirror.test/file.iso".to_owned()],
+            preferred_mirror: Some(2),
+            ..HttpDownloadOptions::default()
+        },
+        HttpDownloadOptions {
+            retry: Some(excalibur_engine::transfer::HttpRetryPolicy {
+                max_attempts: 0,
+                initial_wait_seconds: 1,
+                max_wait_seconds: 30,
+            }),
+            ..HttpDownloadOptions::default()
+        },
+        HttpDownloadOptions {
+            retry: Some(excalibur_engine::transfer::HttpRetryPolicy {
+                max_attempts: 3,
+                initial_wait_seconds: 60,
+                max_wait_seconds: 10,
+            }),
+            ..HttpDownloadOptions::default()
+        },
+    ] {
+        assert!(Transfer::http_with_options(
+            "invalid",
+            "https://primary.test/file.iso",
+            "/tmp/downloads",
+            options,
+        )
+        .is_err());
     }
 }

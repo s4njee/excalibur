@@ -27,6 +27,16 @@ export type ThemeChoice = "system" | "light" | "dark";
 /** What to do when a transfer's destination already exists. */
 export type ConflictDefault = "ask" | "replace" | "skip" | "keepBoth";
 
+/** How the HTTP provider retries a transient download failure. */
+export interface DownloadRetryPolicy {
+  /** Total attempts, including the initial request. */
+  maxAttempts: number;
+  /** Seconds before the second attempt; later waits double. */
+  initialWaitSeconds: number;
+  /** Ceiling for the exponential wait and Retry-After. */
+  maxWaitSeconds: number;
+}
+
 export interface Settings {
   theme: ThemeChoice;
   rowLayout: RowLayout;
@@ -35,6 +45,10 @@ export interface Settings {
   foldersFirst: boolean;
   /** `null` means the OS download folder, resolved by the engine. */
   downloadFolder: string | null;
+  /** `null` lets the HTTP provider choose its connection count. */
+  downloadConnections: number | null;
+  /** The HTTP provider's transient failure retry policy. */
+  downloadRetry: DownloadRetryPolicy;
   transferConcurrency: number;
   conflictDefault: ConflictDefault;
   columnWidths: Widths;
@@ -50,6 +64,12 @@ export const DEFAULTS: Settings = {
   showHidden: true,
   foldersFirst: true,
   downloadFolder: null,
+  downloadConnections: null,
+  downloadRetry: {
+    maxAttempts: 5,
+    initialWaitSeconds: 1,
+    maxWaitSeconds: 30,
+  },
   transferConcurrency: 3,
   // Never silently. A destination that already exists is the user's decision,
   // and E13-S4's prompt is what makes it one.
@@ -71,6 +91,8 @@ const KEYS: Record<keyof Settings, string> = {
   showHidden: "showHidden",
   foldersFirst: "foldersFirst",
   downloadFolder: "downloadFolder",
+  downloadConnections: "downloadConnections",
+  downloadRetry: "downloadRetry",
   transferConcurrency: "transferConcurrency",
   conflictDefault: "conflictDefault",
   // Shaped for `1g`/`1h`, which have no columns to size, so those need no
@@ -86,6 +108,10 @@ const SORT_COLUMNS: readonly SortColumn[] = ["name", "size", "modified", "kind"]
 
 /** The most transfers that may run at once, whatever the file says. */
 export const MAX_CONCURRENCY = 8;
+/** Native HTTP route's absolute connection ceiling; per-origin limits are read at runtime. */
+export const MAX_DOWNLOAD_CONNECTIONS = 16;
+export const MAX_DOWNLOAD_ATTEMPTS = 10;
+export const MAX_DOWNLOAD_WAIT_SECONDS = 300;
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
   return typeof value === "string" && (allowed as readonly string[]).includes(value)
@@ -120,6 +146,37 @@ function sanitiseFolder(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+function sanitiseDownloadConnections(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(MAX_DOWNLOAD_CONNECTIONS, Math.max(1, Math.round(value)));
+}
+
+function sanitiseDownloadRetry(value: unknown): DownloadRetryPolicy {
+  if (!value || typeof value !== "object") return DEFAULTS.downloadRetry;
+  const candidate = value as Partial<DownloadRetryPolicy>;
+  if (
+    typeof candidate.maxAttempts !== "number" ||
+    !Number.isFinite(candidate.maxAttempts) ||
+    typeof candidate.initialWaitSeconds !== "number" ||
+    !Number.isFinite(candidate.initialWaitSeconds) ||
+    typeof candidate.maxWaitSeconds !== "number" ||
+    !Number.isFinite(candidate.maxWaitSeconds)
+  ) {
+    return DEFAULTS.downloadRetry;
+  }
+  const maxAttempts = Math.min(MAX_DOWNLOAD_ATTEMPTS, Math.max(1, Math.round(candidate.maxAttempts)));
+  const initialWaitSeconds = Math.min(
+    MAX_DOWNLOAD_WAIT_SECONDS,
+    Math.max(0, Math.round(candidate.initialWaitSeconds)),
+  );
+  const maxWaitSeconds = Math.min(
+    MAX_DOWNLOAD_WAIT_SECONDS,
+    Math.max(initialWaitSeconds, Math.round(candidate.maxWaitSeconds)),
+  );
+  return { maxAttempts, initialWaitSeconds, maxWaitSeconds };
+}
+
 /** One stored value, coerced into the field it claims to be. */
 export function sanitiseField<K extends keyof Settings>(key: K, value: unknown): Settings[K] {
   switch (key) {
@@ -137,6 +194,10 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return bool(value, DEFAULTS.foldersFirst) as Settings[K];
     case "downloadFolder":
       return sanitiseFolder(value) as Settings[K];
+    case "downloadConnections":
+      return sanitiseDownloadConnections(value) as Settings[K];
+    case "downloadRetry":
+      return sanitiseDownloadRetry(value) as Settings[K];
     case "transferConcurrency":
       return sanitiseConcurrency(value) as Settings[K];
     case "columnWidths":

@@ -57,6 +57,7 @@ import type {
   MountInfo,
   Theme,
   Transfer,
+  HttpDownloadOptions,
 } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
@@ -105,9 +106,11 @@ import {
   DOWNLOAD_CATEGORIES,
   countByCategory,
   filterByCategory,
+  validDownloadDrop,
   type DownloadCategory,
 } from "./state/downloads";
 import { Preferences } from "./components/Preferences";
+import { AddDownloadDialog } from "./components/AddDownloadDialog";
 import {
   DEFAULTS as DEFAULT_SETTINGS,
   loadSettings,
@@ -255,6 +258,9 @@ export default function App(props: {
   // move on every pointer frame during a drag and would make this signal — and
   // so the whole window — react at that rate.
   const [settings, setSettings] = createSignal<Settings>(DEFAULT_SETTINGS);
+  const [downloadLimits, setDownloadLimits] = createSignal<
+    import("./state/types").HttpDownloadLimits
+  >();
   const [widths, setWidths] = createSignal<Widths>(DEFAULT_WIDTHS);
 
   /** Change one preference and remember it. */
@@ -264,6 +270,86 @@ export default function App(props: {
   };
 
   const [showPreferences, setShowPreferences] = createSignal(false);
+  /**
+   * The Add Download dialog (XDL-E3-S1). `addingDest` is the resolved default
+   * folder: the configured download folder, else this window's last-used
+   * destination, else the OS folder the engine names — each may need an async
+   * answer, so it is resolved before the dialog opens rather than by it.
+   */
+  const [addingDownload, setAddingDownload] = createSignal(false);
+  const [addingDest, setAddingDest] = createSignal("");
+  const [addingUrls, setAddingUrls] = createSignal<string[]>([]);
+  const [addingBusy, setAddingBusy] = createSignal(false);
+  const downloadDestKey = () => `download-dest:${self.label}`;
+  const openAddDownload = async (initialUrls: string[] = []) => {
+    setAddingUrls(initialUrls);
+    try {
+      const stored = await prefs.get(downloadDestKey());
+      if (typeof stored === "string" && stored.trim() !== "") {
+        setAddingDest(stored);
+        setAddingDownload(true);
+        return;
+      }
+      const downloadFolder = settings().downloadFolder;
+      if (downloadFolder !== null) {
+        setAddingDest(downloadFolder);
+        setAddingDownload(true);
+        return;
+      }
+      setAddingDest((await backend.downloadFolder()) ?? "");
+    } catch {
+      setAddingDest("");
+    }
+    setAddingDownload(true);
+  };
+  const addDownloads = async (
+    urls: string[],
+    folder: string,
+    options: HttpDownloadOptions[] = [],
+  ) => {
+    // Remembered before the rows are: the folder is the part the queue would
+    // own, and queues do not exist yet, so it is remembered per window label
+    // instead (XDL-E6-S1 is the real home).
+    void prefs.set(downloadDestKey(), folder);
+    setAddingBusy(true);
+    let started = 0;
+    let failure: string | null = null;
+    // Mirror mode represents one object: the first URL is primary and the
+    // remaining URLs are failover sources carried in its options.
+    const jobs = options[0]?.mirrors?.length
+      ? [{ url: urls[0], options: options[0] }]
+      : urls.map((url, index) => ({ url, options: options[index] }));
+    for (const item of jobs) {
+      if (!item.url) continue;
+      try {
+        // The Preferences value is the per-download default. An explicit
+        // choice in Add Download wins, while `null` preserves the provider's
+        // automatic selection.
+        const configured = settings().downloadConnections;
+        const withDefault: HttpDownloadOptions = {
+          ...item.options,
+          ...(configured !== null && item.options?.connections === undefined
+            ? { connections: configured }
+            : {}),
+          retry: settings().downloadRetry,
+        };
+        const override =
+          Object.keys(withDefault).length > 0 ? withDefault : undefined;
+        await backend.enqueueHttpDownload(item.url, folder, override);
+        started += 1;
+      } catch (error) {
+        failure ??= engineFailure(error).message;
+      }
+    }
+    setAddingBusy(false);
+    setAddingDownload(false);
+    refreshTransfers();
+    if (failure !== null) {
+      setProblem(`Started ${started} of ${jobs.length} downloads — ${failure}`);
+    } else {
+      setNotice(started === 1 ? "Download started" : `${started} downloads started`);
+    }
+  };
   // Held so ⌘F can put the caret in the filter box, which is a DOM action
   // rather than a state change.
   let filterInput: HTMLInputElement | undefined;
@@ -316,6 +402,7 @@ export default function App(props: {
     // The engine holds the transfer worker, so its concurrency has to be told
     // rather than read.
     void backend.setTransferConcurrency(loaded.transferConcurrency);
+    void backend.downloadLimits().then(setDownloadLimits).catch(() => setDownloadLimits(undefined));
   });
 
   // The OS half of `theme: "system"`. Followed live rather than read once, so
@@ -617,9 +704,16 @@ export default function App(props: {
       // in the list behind it while the user is typing a path.
       if (goingTo() !== null) return;
       // Anything typed into the filter box or a dialog field belongs to that
-      // field, not to the list.
+      // field, not to the list. That includes the Add Download dialog's URL
+      // box, which is a textarea rather than an input (XDL-E3-S1): without
+      // it a Backspace there deletes the file selection behind the dialog.
       const target = event.target as HTMLElement | null;
-      const typing = Boolean(target && (target.tagName === "INPUT" || target.isContentEditable));
+      const typing = Boolean(
+        target &&
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.isContentEditable),
+      );
       if (typing) {
         // A rename field is an input, and Escape there cancels the rename
         // rather than the filter.
@@ -1612,6 +1706,24 @@ export default function App(props: {
    */
   onMount(() => {
     const stop = backend.onFileDrop((event) => {
+      const urlFiles =
+        event.paths.length > 0 && event.paths.every((candidate) => /\.txt$/i.test(candidate));
+      if (urlFiles) {
+        if (event.phase === "leave") {
+          setDropTarget(null);
+        } else if (event.phase === "over") {
+          setDropTarget({ folder: null, message: "Add URLs" });
+        } else {
+          setDropTarget(null);
+          void backend
+            .downloadUrlsFromFiles(event.paths)
+            .then((urls) => {
+              if (urls.length > 0) void openAddDownload(urls);
+            })
+            .catch((error) => setProblem(engineFailure(error).message));
+        }
+        return;
+      }
       if (!acceptsDrop(permissions())) return;
       if (event.phase === "leave") {
         setDropTarget(null);
@@ -2168,8 +2280,33 @@ export default function App(props: {
     setSelection((current) => band(current, order().slice(start, end), additive));
   };
 
+  /** Browser URL pasteboards complement Tauri's native path drop (XDL-E8-S1). */
+  const browserDropUrls = (event: DragEvent): string[] => {
+    const transfer = event.dataTransfer;
+    if (!transfer) return [];
+    return validDownloadDrop(
+      transfer.getData("text/uri-list") || transfer.getData("text/plain"),
+    );
+  };
+
   return (
-    <div class={styles.window}>
+    <div
+      class={styles.window}
+      onDragOver={(event) => {
+        const types = [...(event.dataTransfer?.types ?? [])];
+        if (!types.includes("text/uri-list") && !types.includes("text/plain")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        const urls = browserDropUrls(event);
+        if (urls.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openAddDownload(urls);
+      }}
+    >
       <TitleBar
         share={share()}
         host={host()}
@@ -2201,6 +2338,7 @@ export default function App(props: {
         onEdit={view() === "browse" ? () => void editSelected() : undefined}
         onDownload={view() === "browse" ? () => void downloadSelected() : undefined}
         onUpload={view() === "browse" ? () => void uploadHere() : undefined}
+        onAddDownload={view() === "downloads" ? () => void openAddDownload() : undefined}
         sidebarCollapsed={settings().sidebarCollapsed}
         onToggleSidebar={() => update("sidebarCollapsed", !settings().sidebarCollapsed)}
         onPreferences={() => setShowPreferences(true)}
@@ -2257,7 +2395,10 @@ export default function App(props: {
           onClearFailed={() => void backend.clearFailedTransfers().then(refreshTransfers)}
           onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
           onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
+          onRemove={(id) => void backend.removeTransfer(id).then(refreshTransfers)}
           onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
+          onOpenFolder={(path) => void backend.openTransferFolder(path)}
+          onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
           onRemount={remountAction()}
         />
       </Show>
@@ -2454,7 +2595,10 @@ export default function App(props: {
               onClearFailed={() => void backend.clearFailedTransfers().then(refreshTransfers)}
               onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
               onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
+              onRemove={(id) => void backend.removeTransfer(id).then(refreshTransfers)}
               onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
+              onOpenFolder={(path) => void backend.openTransferFolder(path)}
+              onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
               onRemount={remountAction()}
             />
           </Show>
@@ -2539,6 +2683,7 @@ export default function App(props: {
           // The browser preview has no folder picker, so the field stays
           // typeable and the button simply is not offered.
           onPickFolder={inTauri() ? () => void pickDownloadFolder() : undefined}
+          downloadLimits={downloadLimits()}
         />
       </Show>
       <Show when={connecting()}>
@@ -2565,6 +2710,19 @@ export default function App(props: {
             }}
           />
         )}
+      </Show>
+      <Show when={addingDownload()}>
+        <AddDownloadDialog
+          folder={addingDest()}
+          initialUrls={addingUrls()}
+          backend={backend}
+          pickFolder={inTauri() ? pickShareFolder : undefined}
+          busy={addingBusy()}
+          onCancel={() => {
+            if (!addingBusy()) setAddingDownload(false);
+          }}
+          onAdd={(urls, folder, options) => void addDownloads(urls, folder, options)}
+        />
       </Show>
     </div>
   );

@@ -1,7 +1,7 @@
 //! The transfer queue: ordering, persistence, and what a restart does to it.
 
 use excalibur_engine::transfer::queue::TransferQueue;
-use excalibur_engine::transfer::{Direction, Endpoint, Status, Transfer};
+use excalibur_engine::transfer::{Direction, Endpoint, Status, Transfer, DEFAULT_QUEUE_ID};
 
 fn transfer(id: &str, at: i64) -> Transfer {
     let mut transfer = Transfer::new(
@@ -13,6 +13,57 @@ fn transfer(id: &str, at: i64) -> Transfer {
     );
     transfer.queued_at_ms = at;
     transfer
+}
+
+#[tokio::test]
+async fn named_queues_move_rows_reorder_them_and_survive_restart() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("transfers.json");
+    let queue = TransferQueue::open(&path);
+    let named = queue
+        .create_queue("Nightly", "blue", 2)
+        .await
+        .expect("valid queue");
+    let mut first = transfer("first", 100);
+    first.queue_id = named.id.clone();
+    let mut second = transfer("second", 200);
+    second.queue_id = named.id.clone();
+    queue.add(first).await;
+    queue.add(second).await;
+
+    queue
+        .reorder_queue(&named.id, &["second".to_owned(), "first".to_owned()])
+        .await;
+    let rows = queue.all().await;
+    assert_eq!(
+        rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        ["second", "first"]
+    );
+    assert_eq!(queue.try_claim_queue(&named.id).await, true);
+    assert_eq!(queue.try_claim_queue(&named.id).await, true);
+    assert_eq!(queue.try_claim_queue(&named.id).await, false);
+    queue.release_queue(&named.id).await;
+
+    let restored = TransferQueue::open(&path);
+    assert_eq!(restored.queues().await.len(), 2);
+    assert_eq!(restored.all().await[0].id, "second");
+    assert_eq!(restored.all().await[0].queue_id, named.id);
+}
+
+#[tokio::test]
+async fn deleting_a_named_queue_returns_its_rows_to_default() {
+    let queue = TransferQueue::in_memory();
+    let named = queue
+        .create_queue("Later", "green", 1)
+        .await
+        .expect("valid queue");
+    let mut row = transfer("row", 1);
+    row.queue_id = named.id.clone();
+    queue.add(row).await;
+    assert!(queue.delete_queue(&named.id).await.is_some());
+    let row = queue.all().await.remove(0);
+    assert_eq!(row.queue_id, DEFAULT_QUEUE_ID);
+    assert!(queue.delete_queue(DEFAULT_QUEUE_ID).await.is_none());
 }
 
 #[tokio::test]

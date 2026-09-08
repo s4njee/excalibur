@@ -253,6 +253,8 @@ export function Toolbar(props: {
   onEdit?: () => void;
   onDownload?: () => void;
   onUpload?: () => void;
+  /** The downloads view's own verb: open the Add Download dialog (XDL-E3-S1). */
+  onAddDownload?: () => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onPreferences: () => void;
@@ -413,6 +415,16 @@ export function Toolbar(props: {
           onInput={(event) => props.onFilter(event.currentTarget.value)}
         />
       </Show>
+      {/* The downloads view's own verb (XDL-E3-S1): open the Add Download
+          dialog. The reference's toolbar draws "＋ Add URL" as its primary
+          control; here it appears only where the queue is, beside Refresh. */}
+      <Show when={props.view === "downloads" && props.onAddDownload}>
+        {(add) => (
+          <button class={`${styles.button} ${styles.primary}`} onClick={() => add()()}>
+            ＋ Add URL
+          </button>
+        )}
+      </Show>
     </div>
   );
 }
@@ -461,7 +473,15 @@ export function Sidebar(props: {
     // second, differently-behaved path to the same gesture.
     <div
       class={`${styles.sidebar} ${props.collapsed ? styles.sidebarCollapsed : ""}`}
-      onDragOver={(event) => event.stopPropagation()}
+      onDragOver={(event) => {
+        // URL pasteboards belong to the window-level download drop target
+        // (XDL-E8-S1), even while the pointer is over the sidebar. Native file
+        // drags still stay on the existing Tauri path and never become a
+        // second HTML upload route.
+        const types = [...(event.dataTransfer?.types ?? [])];
+        if (types.includes("text/uri-list") || types.includes("text/plain")) return;
+        event.stopPropagation();
+      }}
     >
       {/* FAVORITES (E27-S1). Folders on this machine, above the shares,
           because that is where every file manager puts them and because it is

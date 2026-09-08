@@ -44,7 +44,10 @@ export function Transfers(props: {
   onClearFailed: () => void;
   onPause: (id: string) => void;
   onCancel: (id: string) => void;
+  onRemove?: (id: string) => void;
   onRetry: (id: string) => void;
+  onOpenFolder?: (path: string) => void;
+  onCopyUrl?: (url: string) => void;
   /** Offered on a failed upload that a writable mount would fix. */
   onRemount?: () => void;
 }) {
@@ -168,6 +171,7 @@ export function Transfers(props: {
                     transfer={transfer}
                     onPause={() => props.onPause(transfer.id)}
                     onCancel={() => props.onCancel(transfer.id)}
+                    onRemove={() => props.onRemove?.(transfer.id)}
                     onRetry={() => props.onRetry(transfer.id)}
                     onRemount={props.onRemount}
                   />
@@ -192,7 +196,10 @@ export function Transfers(props: {
           transfers={props.transfers}
           onPause={props.onPause}
           onCancel={props.onCancel}
+          onRemove={props.onRemove}
           onRetry={props.onRetry}
+          onOpenFolder={props.onOpenFolder}
+          onCopyUrl={props.onCopyUrl}
           onRemount={props.onRemount}
         />
       </Show>
@@ -223,6 +230,7 @@ function Row(props: {
   transfer: Transfer;
   onPause: () => void;
   onCancel: () => void;
+  onRemove?: () => void;
   onRetry: () => void;
   onRemount?: () => void;
 }) {
@@ -328,6 +336,19 @@ function Row(props: {
         <Show when={props.transfer.status === "paused"}>
           <button class={styles.rowAction} onClick={props.onRetry}>
             Resume
+          </button>
+        </Show>
+        <Show when={true}>
+          <button
+            class={styles.rowAction}
+            onClick={() => {
+              const wording = finished()
+                ? "Remove this completed download from the queue?"
+                : "Remove this download and delete its partial file?";
+              if (window.confirm(wording)) props.onRemove?.();
+            }}
+          >
+            Remove
           </button>
         </Show>
       </div>

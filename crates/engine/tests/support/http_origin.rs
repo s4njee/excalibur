@@ -10,6 +10,10 @@ use std::time::Duration;
 pub struct Origin {
     pub url: String,
     pub sent: Arc<AtomicUsize>,
+    // This support module is compiled separately by the throughput harness,
+    // which does not inspect concurrency.
+    #[allow(dead_code)]
+    pub max_active: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     task: Option<JoinHandle<()>>,
 }
@@ -21,8 +25,12 @@ impl Origin {
         let url = format!("http://{}/object.bin", listener.local_addr().unwrap());
         let stop = Arc::new(AtomicBool::new(false));
         let sent = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
         let done = Arc::clone(&stop);
         let written = Arc::clone(&sent);
+        let active_requests = Arc::clone(&active);
+        let peak_requests = Arc::clone(&max_active);
         let bytes = Arc::new(bytes);
         let disposition = disposition.map(str::to_owned);
         let task = thread::spawn(move || {
@@ -38,8 +46,12 @@ impl Origin {
                         let bytes = Arc::clone(&bytes);
                         let stop = Arc::clone(&done);
                         let sent = Arc::clone(&written);
+                        let active = Arc::clone(&active_requests);
+                        let max_active = Arc::clone(&peak_requests);
                         let disposition = disposition.clone();
                         clients.push(thread::spawn(move || {
+                            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_active.fetch_max(now, Ordering::SeqCst);
                             let _ = respond(
                                 stream,
                                 &bytes,
@@ -49,6 +61,7 @@ impl Origin {
                                 &stop,
                                 &sent,
                             );
+                            active.fetch_sub(1, Ordering::SeqCst);
                         }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -64,6 +77,7 @@ impl Origin {
         Self {
             url,
             sent,
+            max_active,
             stop,
             task: Some(task),
         }

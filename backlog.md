@@ -126,12 +126,17 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-6 of the 25 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
+15 of the 26 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
 2026-09-07, `72ef808`), **E1-S2** (origin-not-a-mount plus queue migration,
 2026-09-07, `a5fb184`), **E2-S1** (the tab lives, 2026-09-07, `a62fcd2`),
 **E2-S2** (the reference table, 2026-09-07), **E2-S3** (the indeterminate
-row, 2026-09-07) and **E2-S4** (the footer, 2026-09-07); the rest are
-unchecked. The engine is
+row, 2026-09-07), **E2-S4** (the footer, 2026-09-07), **E3-S1–S4** (add,
+probe, connection override and ordered mirror fallback, 2026-09-07), and
+**E5-S2** (the status-aware Downloads context menu, 2026-09-07), **E7-S1**
+(working download defaults in Preferences, 2026-09-07), **E8-S1** (URL/`.txt`
+drag intake), **E8-S2** (batch URL input) and **E8-S3** (clipboard offer, all
+2026-09-07); the rest are unchecked.
+The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
 
@@ -162,21 +167,41 @@ unchecked. The engine is
   aggregate in the tab's status bar plus a 60-sample sparkline; the connection
   count is the XD-E2-S4 seam). 10,000 rows must scroll at E8-S2's frame rate.
   (`legacy/xdl.md:160`)
-- **XDL-E3** — add dialog (S1), server probe (S2, blocked on XD-E2-S1),
-  connection picker honouring `--max-per-host` (S3), mirrors (S4, blocked on
-  XD-E5-S1/S3). (`legacy/xdl.md:212`)
-- **XDL-E4** — connection lanes and block map. Blocked on XD-E6-S4; Decision 5
-  says a faked segment geometry is not drawn at all. (`legacy/xdl.md:261`)
-- **XDL-E5** — pause/resume of a *running* download needs XD-E6-S5; surviving a
-  restart needs XD-E3-S2. Cancel already works. (`legacy/xdl.md:299`)
-- **XDL-E6** — named queues (S1) and the 7×24 weekly window (S2); the throttled
-  state needs XD-E7-S1 rate limiting. Grid must be keyboard-reachable.
-  (`legacy/xdl.md:332`)
-- **XDL-E7** — Downloads preferences page and proxies/credentials via the
-  keychain. Explicitly **no RPC endpoint, no secret token, no Restart engine**.
-  (`legacy/xdl.md:362`)
-- **XDL-E8** — URL drag-drop, batch input, clipboard *offer*; browser capture (S4)
-  is deliberately last and possibly never (Decision 7). (`legacy/xdl.md:392`)
+- **XDL-E3 done** 2026-09-07 — the Add URL dialog validates one URL per line,
+  remembers its destination, offers the clipboard without acting, shows
+  XDL-S3 probe state without blocking Start on failure, and carries an
+  optional connection override through IPC and persisted queue state. Its
+  bar scale ends at the native per-origin cap; the engine enforces that cap
+  across jobs and windows. Mirror mode creates one job, lets the user choose
+  the first source, and uses XDL-S8's ordered pre-transfer fallback. The UI
+  says sources are not mixed; XD-E5-S1/S3's multi-source segments and measured
+  runtime selection remain provider work. (`legacy/xdl.md:294`)
+- **XDL-E4** — connection lanes and block map. xsync now emits per-chunk
+  progress and exposes XDL-S2 snapshots; Excalibur must carry stream/range/
+  rate/stall fields through `Tally`/`Moved`, queue events and TypeScript state.
+  The optional mosaic remains blocked because the provider has no completed-
+  piece bitfield. Decision 5 forbids inventing segment geometry.
+  (`legacy/xdl.md:401`)
+- **XDL-E5** — its context menu is built through the shared state gate; Move to
+  queue stays visibly unavailable until XDL-E6-S1 creates named queues.
+  xsync's XDL-S1 owned handle now supports pause/resume, but Excalibur has not
+  retained it per row/session; surviving a restart still needs XD-E3-S2's
+  validator-safe continuation. (`legacy/xdl.md:433`)
+- **XDL-E6 foundations** 2026-09-07 — the engine/native layer persists named
+  queues, row priority and per-queue concurrency below the global ceiling. A
+  validated two-state 7×24 policy model also exists. Both stories stay open
+  for their Downloads UI, drag/keyboard interaction and schedule enforcement;
+  throttled cells still need Excalibur to retain and update xsync's available
+  XDL-S4 live rate handle. (`legacy/xdl.md:478`)
+- **XDL-E7-S1 done** 2026-09-07 — Preferences owns the default folder,
+  provider-capped default connections, global worker concurrency and a bounded
+  retry policy carried into `HttpSource`. E7-S2 proxies/credentials remains
+  open and must use the keychain without a secret read command. There is no RPC
+  endpoint, secret token or Restart engine. (`legacy/xdl.md:527`)
+- **XDL-E8** — URL/`.txt` drag intake, batch input and the clipboard *offer* are
+  done. Browser capture (S4) is blocked on a separate browser extension product,
+  packaging and review decision (Decision 7).
+  (`legacy/xdl.md:573`)
 - **XDL-E9** — checksums (never publish an unverified file under its final name)
   and bounding what a server may do: redirect credential-dropping, scheme
   refusal, `Content-Disposition` path escape. Needs XD-E7-S4/S5/S6.

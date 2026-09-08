@@ -37,6 +37,7 @@ function open(transfers: Transfer[]) {
     onPause: vi.fn(),
     onCancel: vi.fn(),
     onRetry: vi.fn(),
+    onRemove: vi.fn(),
     onRemount: vi.fn(),
   };
   const root = document.createElement("div");
@@ -48,6 +49,7 @@ function open(transfers: Transfer[]) {
         onPause={handlers.onPause}
         onCancel={handlers.onCancel}
         onRetry={handlers.onRetry}
+        onRemove={handlers.onRemove}
         onRemount={handlers.onRemount}
       />
     ),
@@ -110,6 +112,34 @@ describe("columns", () => {
       .querySelector('[data-transfer="big.iso"]')
       ?.querySelector('[role="progressbar"]');
     expect(bar?.getAttribute("aria-valuenow")).toBe("25");
+  });
+
+  it("opens the shared download context menu and redacts URL credentials", () => {
+    const copied: string[] = [];
+    const handlers = open([row("secret", "paused", {
+      direction: null,
+      from: { kind: "http", url: "https://user:pw@example.test/file" },
+    })]);
+    // Re-render with the clipboard hook; the row menu is intentionally opened
+    // by the same native contextmenu gesture as file rows.
+    dispose?.();
+    const root = document.createElement("div");
+    document.body.append(root);
+    dispose = render(() => (
+      <DownloadsTable
+        transfers={[row("secret", "paused", { direction: null, from: { kind: "http", url: "https://user:pw@example.test/file" } })]}
+        onPause={handlers.onPause}
+        onCancel={handlers.onCancel}
+        onRetry={handlers.onRetry}
+        onCopyUrl={(url) => copied.push(url)}
+      />
+    ), root);
+    host().querySelector('[data-transfer="secret"]')?.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    );
+    const item = [...host().querySelectorAll('[role="menuitem"]')].find((node) => node.textContent === "Copy URL");
+    item?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(copied).toEqual(["https://example.test/file"]);
   });
 });
 
@@ -180,6 +210,18 @@ describe("badges and actions", () => {
     expect(handlers.onRetry).toHaveBeenCalledWith("b");
     click("Retry");
     expect(handlers.onRetry).toHaveBeenCalledWith("c");
+  });
+
+  it("asks before removing a partial or completed row", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const handlers = open([row("partial", "paused"), row("complete", "done")]);
+    for (const button of host().querySelectorAll("button")) {
+      if (button.textContent === "Remove") button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    }
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(handlers.onRemove).toHaveBeenCalledWith("partial");
+    expect(handlers.onRemove).toHaveBeenCalledWith("complete");
+    confirm.mockRestore();
   });
 });
 
