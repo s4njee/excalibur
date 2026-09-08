@@ -41,7 +41,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use xsync_core::handle::ProgressWatch;
 use xsync_core::local::{LocalEvent, LocalSyncOptions, LocalSyncReport, TransferMethod};
+use xsync_core::progress::TransferProgress as XsyncProgress;
 use xsync_core::server::{run_client_pull, run_client_push};
 
 use super::rate::Progress;
@@ -376,12 +378,13 @@ impl Plan {
 /// stated rather than hidden: on a push, "unchanged" is a claim about size and
 /// mtime, not about content. A file edited back to the same length within the
 /// same mtime granularity would be skipped. Nothing about verification changes.
-fn options() -> LocalSyncOptions {
+fn options(progress: ProgressWatch) -> LocalSyncOptions {
     LocalSyncOptions {
         checksum: false,
         delete: false,
         dry_run: false,
         max_delete: Some(0),
+        progress: Some(progress),
         ..LocalSyncOptions::default()
     }
 }
@@ -637,7 +640,7 @@ pub struct Planned {
 /// One struct rather than three arguments to the progress callback: both
 /// adapters call it from a hot loop and every one of these has grown a meaning
 /// the position of an argument does not carry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Moved {
     /// Bytes settled, plus whatever is in flight.
     pub bytes: u64,
@@ -645,6 +648,68 @@ pub struct Moved {
     pub files: u64,
     /// The whole job, once the planner's scan has ended. `None` until then.
     pub planned: Option<Planned>,
+    /// The provider's coalesced per-file ranges, when the route exposes them.
+    /// This is copied from xsync's `ProgressWatch`; it is never inferred from
+    /// aggregate bytes.
+    pub progress: Option<TransferProgress>,
+}
+
+/// Live detail for one queue row. The shape intentionally follows xsync's
+/// `ProgressWatch` snapshot so connection lanes retain their real offsets.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferProgress {
+    pub files: Vec<TransferFileProgress>,
+    pub retries: u64,
+    pub redirects: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferFileProgress {
+    pub path: String,
+    pub completed: u64,
+    pub total: Option<u64>,
+    pub segments: Vec<TransferSegmentProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSegmentProgress {
+    pub stream: usize,
+    pub offset: u64,
+    pub length: Option<u64>,
+    pub written: u64,
+    pub rate: u64,
+    pub stalled: bool,
+}
+
+fn map_progress(progress: &XsyncProgress) -> TransferProgress {
+    TransferProgress {
+        files: progress
+            .files
+            .iter()
+            .map(|file| TransferFileProgress {
+                path: file.path.clone(),
+                completed: file.completed,
+                total: file.total,
+                segments: file
+                    .segments
+                    .iter()
+                    .map(|segment| TransferSegmentProgress {
+                        stream: segment.index,
+                        offset: segment.offset,
+                        length: segment.length,
+                        written: segment.written,
+                        rate: segment.rate,
+                        stalled: segment.stalled,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        retries: progress.retries,
+        redirects: progress.redirects,
+    }
 }
 
 /// Everything one session's events add up to.
@@ -665,6 +730,7 @@ pub(super) struct Tally {
     first_failure: Option<String>,
     /// False as soon as one published file did not take a verified path.
     every_file_verified: bool,
+    progress: Option<TransferProgress>,
     /// Set once `Planned` has said how big the job is.
     planned: Option<Planned>,
 }
@@ -687,6 +753,7 @@ impl Tally {
             bytes: self.settled + self.in_flight.values().sum::<u64>(),
             files: (self.transferred + self.skipped) as u64,
             planned: self.planned,
+            progress: self.progress.clone(),
         }
     }
 
@@ -703,7 +770,10 @@ impl Tally {
     }
 
     /// Fold one event in. Returns true when the row should be redrawn.
-    pub(super) fn absorb(&mut self, event: &LocalEvent) -> bool {
+    pub(super) fn absorb(&mut self, event: &LocalEvent, progress: Option<&XsyncProgress>) -> bool {
+        if let Some(progress) = progress {
+            self.refresh(progress);
+        }
         match event {
             LocalEvent::Planned { files, bytes, .. } => {
                 self.planned = Some(Planned {
@@ -755,6 +825,17 @@ impl Tally {
             }
             _ => false,
         }
+    }
+
+    /// Refresh live lane fields without requiring a provider event. This is
+    /// what lets a silent segment cross the stall threshold and reach the UI.
+    pub(super) fn refresh(&mut self, progress: &XsyncProgress) -> bool {
+        let mapped = map_progress(progress);
+        if self.progress.as_ref() == Some(&mapped) {
+            return false;
+        }
+        self.progress = Some(mapped);
+        true
     }
 
     /// What the row should say once the session is over.
@@ -814,6 +895,9 @@ type Session = (
 /// Everything the engine touches lives inside this closure: it owns both pipe
 /// halves for the length of the session and drops them on the way out, and
 /// that close is the EOF the remote waits for before it exits.
+// The subprocess session boundary carries both endpoint arguments and its two
+// progress channels. Keeping them explicit makes ownership visible at spawn.
+#[allow(clippy::too_many_arguments)]
 fn spawn_session(
     direction: Direction,
     local_root: PathBuf,
@@ -821,11 +905,12 @@ fn spawn_session(
     trailing: bool,
     pipes: (std::process::ChildStdout, std::process::ChildStdin),
     child: Arc<Mutex<Option<std::process::Child>>>,
+    progress: ProgressWatch,
     events: tokio::sync::mpsc::UnboundedSender<LocalEvent>,
 ) -> tokio::task::JoinHandle<Session> {
     let (stdout, stdin) = pipes;
     tokio::task::spawn_blocking(move || {
-        let options = options();
+        let options = options(progress);
         let reader = BufReader::new(stdout);
         // A megabyte in front of the pipe, and the pipe itself behind a thread.
         // The buffer is what stops a batch of small files becoming a write
@@ -930,6 +1015,7 @@ pub async fn run(
     // which is exactly what the contract says not to do.
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel::<LocalEvent>();
 
+    let progress_watch = ProgressWatch::new();
     let session = spawn_session(
         transfer.direction.ok_or_else(|| {
             EngineError::Io("this transfer does not name a share direction".to_owned())
@@ -939,6 +1025,7 @@ pub async fn run(
         plan.trailing_slash,
         (stdout, stdin),
         Arc::clone(&child),
+        progress_watch.clone(),
         events,
     );
 
@@ -961,13 +1048,26 @@ pub async fn run(
     // Drain the events into the row while the session runs.
     let mut tally = Tally::new();
     let mut sampler = Progress::new();
-    while let Some(event) = incoming.recv().await {
-        if !tally.absorb(&event) {
-            continue;
-        }
-        let moved = tally.moved();
-        if sampler.sample(moved.bytes, Instant::now()) {
-            progress(moved);
+    let mut progress_ticks = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            event = incoming.recv() => {
+                let Some(event) = event else { break };
+                let snapshot = progress_watch.snapshot(false);
+                if !tally.absorb(&event, Some(&snapshot)) {
+                    continue;
+                }
+                let moved = tally.moved();
+                if sampler.sample(moved.bytes, Instant::now()) {
+                    progress(moved);
+                }
+            }
+            _ = progress_ticks.tick() => {
+                let snapshot = progress_watch.snapshot(false);
+                if tally.refresh(&snapshot) {
+                    progress(tally.moved());
+                }
+            }
         }
     }
 
@@ -1001,6 +1101,7 @@ pub async fn run(
         bytes: settled.bytes,
         files: settled.files,
         planned: tally.planned,
+        progress: tally.progress.clone(),
     });
     drop(plan.staging);
     Ok(settled)

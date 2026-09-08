@@ -41,6 +41,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio::sync::{RwLock, Semaphore};
 
+use super::http::HttpRuntimeConfig;
 use super::queue::TransferQueue;
 use super::rate::{backoff, Progress};
 use super::xsync_engine::{Moved, Settled, XsyncRoute};
@@ -154,6 +155,9 @@ pub struct Worker {
     /// these going at once. It reaches the engine as the source's
     /// `read_concurrency`, which is where the depth is now spent.
     read_depth: Arc<AtomicUsize>,
+    /// Process-owned HTTP settings and credential. The credential never
+    /// belongs to a persisted [`Transfer`].
+    http_config: Arc<RwLock<HttpRuntimeConfig>>,
 }
 
 impl Worker {
@@ -177,7 +181,19 @@ impl Worker {
             nominal: Arc::new(AtomicUsize::new(concurrency)),
             debt: Arc::new(AtomicUsize::new(0)),
             read_depth: Arc::new(AtomicUsize::new(DEFAULT_READ_DEPTH)),
+            http_config: Arc::new(RwLock::new(HttpRuntimeConfig::default())),
         }
+    }
+
+    /// Replace the process-owned HTTP settings and credential.
+    pub async fn set_http_config(&self, config: HttpRuntimeConfig) {
+        *self.http_config.write().await = config;
+    }
+
+    /// Snapshot the process-owned HTTP settings for an in-process command.
+    /// The returned credential stays in Rust and has a redacted `Debug` form.
+    pub async fn http_config(&self) -> HttpRuntimeConfig {
+        self.http_config.read().await.clone()
     }
 
     /// Change how many ranged reads a transfer keeps in flight.
@@ -472,16 +488,18 @@ impl Worker {
         // rows cannot bypass it.
         if matches!(transfer.from_endpoint(), Some(super::Endpoint::Http { .. })) {
             let (url, destination) = super::http::endpoints(transfer)?;
+            let http_config = self.http_config.read().await.clone();
             let queue = Arc::clone(&self.queue);
             let id = transfer.id.clone();
             if let Some(http_options) = transfer.http_options.clone() {
                 return self
                     .settle_session(
                         transfer,
-                        super::http::run_with_options(
+                        super::http::run_with_options_and_config(
                             url,
                             destination,
                             http_options,
+                            http_config.clone(),
                             Arc::clone(&flag),
                             move |resolved| {
                                 let name = resolved
@@ -507,9 +525,11 @@ impl Worker {
             return self
                 .settle_session(
                     transfer,
-                    super::http::run(
+                    super::http::run_with_options_and_config(
                         url,
                         destination,
+                        super::HttpDownloadOptions::default(),
+                        http_config,
                         Arc::clone(&flag),
                         move |resolved| {
                             let name = resolved
@@ -628,6 +648,7 @@ impl Worker {
                         item.files_done = moved.files;
                         item.rate = speed;
                         item.eta_seconds = eta;
+                        item.progress.clone_from(&moved.progress);
                         // `Planned` is where a folder row learns what it is:
                         // until the planner has scanned, nothing on this side
                         // knows how big the job is or how many files are in it,
@@ -668,6 +689,7 @@ impl Worker {
                 item.bytes_done = settled.bytes;
                 item.verified = settled.verified;
                 item.note.clone_from(&settled.note);
+                item.progress = None;
                 // The last word on the count, for the same reason as the bytes:
                 // the throttle may have dropped the tick that carried the final
                 // file, and a folder row that finished on "1001 of 1002" would

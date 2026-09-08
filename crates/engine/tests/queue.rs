@@ -1,7 +1,10 @@
 //! The transfer queue: ordering, persistence, and what a restart does to it.
 
 use excalibur_engine::transfer::queue::TransferQueue;
-use excalibur_engine::transfer::{Direction, Endpoint, Status, Transfer, DEFAULT_QUEUE_ID};
+use excalibur_engine::transfer::{
+    Direction, Endpoint, Status, Transfer, TransferFileProgress, TransferProgress,
+    TransferSegmentProgress, DEFAULT_QUEUE_ID,
+};
 
 fn transfer(id: &str, at: i64) -> Transfer {
     let mut transfer = Transfer::new(
@@ -39,9 +42,9 @@ async fn named_queues_move_rows_reorder_them_and_survive_restart() {
         rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["second", "first"]
     );
-    assert_eq!(queue.try_claim_queue(&named.id).await, true);
-    assert_eq!(queue.try_claim_queue(&named.id).await, true);
-    assert_eq!(queue.try_claim_queue(&named.id).await, false);
+    assert!(queue.try_claim_queue(&named.id).await);
+    assert!(queue.try_claim_queue(&named.id).await);
+    assert!(!queue.try_claim_queue(&named.id).await);
     queue.release_queue(&named.id).await;
 
     let restored = TransferQueue::open(&path);
@@ -122,6 +125,44 @@ async fn an_update_cannot_overwrite_a_status_set_while_it_was_in_flight() {
     let all = queue.all().await;
     assert_eq!(all[0].status, Status::Cancelled);
     assert_eq!(all[0].bytes_done, 0);
+}
+
+#[tokio::test]
+async fn live_progress_is_in_queue_events_but_not_restored_as_durable_state() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("transfers.json");
+    let queue = TransferQueue::open(&path);
+    queue.add(transfer("live", 1)).await;
+    queue
+        .update("live", |row| {
+            row.status = Status::Running;
+            row.progress = Some(TransferProgress {
+                files: vec![TransferFileProgress {
+                    path: "live.bin".to_owned(),
+                    completed: 10,
+                    total: Some(100),
+                    segments: vec![TransferSegmentProgress {
+                        stream: 2,
+                        offset: 50,
+                        length: Some(50),
+                        written: 10,
+                        rate: 20,
+                        stalled: false,
+                    }],
+                }],
+                retries: 1,
+                redirects: 0,
+            });
+        })
+        .await;
+
+    let live = queue.all().await.remove(0);
+    assert_eq!(
+        live.progress.as_ref().unwrap().files[0].segments[0].offset,
+        50
+    );
+    let restored = TransferQueue::open(&path).all().await;
+    assert!(restored[0].progress.is_none());
 }
 
 #[tokio::test]

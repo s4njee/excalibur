@@ -1,0 +1,121 @@
+.detail {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--hairline-chrome);
+  background: var(--toolbar-bg);
+}
+
+.heading,
+.summary,
+.lane {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.heading {
+  margin-bottom: 8px;
+}
+
+.title {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.path,
+.summary,
+.laneLabel,
+.laneRate,
+.laneBytes {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.path,
+.summary,
+.laneLabel,
+.laneBytes {
+  color: var(--text-secondary);
+}
+
+.summary {
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.lanes {
+  display: grid;
+  gap: 6px;
+}
+
+.laneLabel {
+  width: 54px;
+  flex: none;
+}
+
+.track {
+  position: relative;
+  flex: 1;
+  height: 7px;
+  min-width: 80px;
+  overflow: visible;
+  border-radius: 4px;
+  background: var(--segment-track);
+}
+
+.trackStalled {
+  background: var(--error-chip-bg);
+}
+
+.range {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.fill,
+.unknown {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+.unknown {
+  background: var(--text-secondary);
+}
+
+.playhead {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 11px;
+  border-radius: 1px;
+  background: var(--text-primary);
+}
+
+.laneRate {
+  width: 64px;
+  flex: none;
+  color: var(--accent);
+  text-align: right;
+}
+
+.rateStalled {
+  color: var(--badge-error-text);
+  font-weight: 600;
+}
+
+.laneBytes {
+  width: 104px;
+  flex: none;
+  text-align: right;
+}
+
+.empty {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}

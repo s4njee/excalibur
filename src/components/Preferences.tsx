@@ -1,4 +1,4 @@
-import { Show } from "solid-js";
+import { Show, createSignal } from "solid-js";
 
 import styles from "./dialog.module.css";
 import {
@@ -7,6 +7,7 @@ import {
   MAX_DOWNLOAD_CONNECTIONS,
   MAX_DOWNLOAD_WAIT_SECONDS,
   type ConflictDefault,
+  type DownloadHeader,
   type DownloadRetryPolicy,
   type Settings,
   type ThemeChoice,
@@ -35,7 +36,28 @@ export function Preferences(props: {
   onPickFolder?: () => void;
   /** Native HTTP limits, when the shell has answered its capability query. */
   downloadLimits?: HttpDownloadLimits;
+  /** Whether the OS keychain can retain the HTTP password. */
+  keychainAvailable?: boolean;
+  /** Writes a password directly to Rust's keychain route. */
+  onSaveHttpCredential?: (username: string, secret: string) => Promise<void>;
+  onForgetHttpCredential?: () => Promise<void>;
 }) {
+  const [httpPassword, setHttpPassword] = createSignal("");
+  const [credentialBusy, setCredentialBusy] = createSignal(false);
+  const [credentialMessage, setCredentialMessage] = createSignal<string | null>(null);
+  const headersText = () => props.settings.downloadHeaders
+    .map((header) => `${header.name}: ${header.value}`)
+    .join("\n");
+  const parseHeaders = (text: string): DownloadHeader[] => text.split("\n").flatMap((line) => {
+    const separator = line.indexOf(":");
+    if (separator <= 0) return [];
+    const name = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim();
+    return name && value ? [{ name, value }] : [];
+  });
+  const explicitProxy = () => props.settings.downloadProxy === "environment" || props.settings.downloadProxy === "disabled"
+    ? { kind: "explicit" as const, url: "", noProxy: null }
+    : props.settings.downloadProxy;
   const connectionLimit = () =>
     Math.max(
       1,
@@ -230,9 +252,137 @@ export function Preferences(props: {
                   }
                 />
               </label>
-              <p class={styles.fieldHint}>
-                Maps to the HTTP provider&apos;s `max_tries`, `initial_wait`, and `max_wait`.
-              </p>
+            <p class={styles.fieldHint}>
+              Maps to the HTTP provider&apos;s `max_tries`, `initial_wait`, and `max_wait`.
+            </p>
+
+            <label class={styles.label} for="download-proxy">
+              HTTP proxy
+            </label>
+            <div>
+              <select
+                id="download-proxy"
+                class={styles.input}
+                value={props.settings.downloadProxy === "environment" || props.settings.downloadProxy === "disabled"
+                  ? props.settings.downloadProxy
+                  : "explicit"}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  props.onChange("downloadProxy", value === "explicit"
+                    ? { kind: "explicit", url: "", noProxy: null }
+                    : value as "environment" | "disabled");
+                }}
+              >
+                <option value="environment">Use proxy environment</option>
+                <option value="disabled">Direct connection</option>
+                <option value="explicit">Use a proxy URL</option>
+              </select>
+              <Show when={props.settings.downloadProxy !== "environment" && props.settings.downloadProxy !== "disabled"}>
+                <input
+                  id="download-proxy-url"
+                  class={styles.input}
+                  placeholder="http://proxy.example:8080"
+                  value={explicitProxy().url}
+                  onInput={(event) => props.onChange("downloadProxy", {
+                    ...explicitProxy(),
+                    url: event.currentTarget.value,
+                  })}
+                />
+                <input
+                  id="download-no-proxy"
+                  class={styles.input}
+                  placeholder="No proxy for (optional)"
+                  value={explicitProxy().noProxy ?? ""}
+                  onInput={(event) => props.onChange("downloadProxy", {
+                    ...explicitProxy(),
+                    noProxy: event.currentTarget.value || null,
+                  })}
+                />
+              </Show>
+              <p class={styles.fieldHint}>Maps to the provider&apos;s `proxy`; proxy passwords stay out of preferences.</p>
+            </div>
+
+            <label class={styles.label} for="download-headers">
+              HTTP headers
+            </label>
+            <div>
+              <textarea
+                id="download-headers"
+                class={styles.input}
+                rows={3}
+                placeholder="Name: value (one per line)"
+                value={headersText()}
+                onInput={(event) => props.onChange("downloadHeaders", parseHeaders(event.currentTarget.value))}
+              />
+              <p class={styles.fieldHint}>Maps to the provider&apos;s `header`. Authorization, Cookie and Range are refused here.</p>
+            </div>
+
+            <label class={styles.label} for="download-netrc">
+              .netrc file
+            </label>
+            <div>
+              <input
+                id="download-netrc"
+                class={styles.input}
+                placeholder="Use ~/.netrc"
+                value={props.settings.downloadNetrcPath ?? ""}
+                onInput={(event) => props.onChange("downloadNetrcPath", event.currentTarget.value.trim() || null)}
+              />
+              <p class={styles.fieldHint}>Rust reads this file only when a download starts; it must be mode 600.</p>
+            </div>
+
+            <label class={styles.label} for="download-username">
+              Basic username
+            </label>
+            <div>
+              <input
+                id="download-username"
+                class={styles.input}
+                autocomplete="username"
+                value={props.settings.downloadUsername ?? ""}
+                onInput={(event) => props.onChange("downloadUsername", event.currentTarget.value.trim() || null)}
+              />
+              <input
+                id="download-password"
+                class={styles.input}
+                type="password"
+                autocomplete="new-password"
+                placeholder="Password (stored in keychain)"
+                value={httpPassword()}
+                disabled={!props.keychainAvailable || !props.onSaveHttpCredential}
+                onInput={(event) => setHttpPassword(event.currentTarget.value)}
+              />
+              <div class={styles.folderRow}>
+                <button
+                  class={styles.action}
+                  disabled={!props.keychainAvailable || !props.onSaveHttpCredential || credentialBusy() || httpPassword() === "" || !props.settings.downloadUsername}
+                  onClick={() => {
+                    const save = props.onSaveHttpCredential;
+                    if (!save || !props.settings.downloadUsername || httpPassword() === "") return;
+                    setCredentialBusy(true);
+                    setCredentialMessage(null);
+                    void save(props.settings.downloadUsername, httpPassword())
+                      .then(() => { setHttpPassword(""); setCredentialMessage("Saved in keychain"); })
+                      .catch(() => setCredentialMessage("Could not save in keychain"))
+                      .finally(() => setCredentialBusy(false));
+                  }}
+                >Save password</button>
+                <button
+                  class={styles.action}
+                  disabled={!props.keychainAvailable || !props.onForgetHttpCredential || credentialBusy()}
+                  onClick={() => {
+                    const forget = props.onForgetHttpCredential;
+                    if (!forget) return;
+                    setCredentialBusy(true);
+                    void forget().then(() => setCredentialMessage("Removed from keychain")).finally(() => setCredentialBusy(false));
+                  }}
+                >Forget password</button>
+              </div>
+              <Show when={credentialMessage()}>{(message) => <p class={styles.fieldHint}>{message()}</p>}</Show>
+              <Show when={props.keychainAvailable === false}>
+                <p class={styles.fieldHint}>No keychain available — credentials will be asked for each time.</p>
+              </Show>
+            </div>
             </div>
 
             <label class={styles.label} for="conflict">

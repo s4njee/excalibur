@@ -58,6 +58,7 @@ import type {
   Theme,
   Transfer,
   HttpDownloadOptions,
+  NamedQueue,
 } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
@@ -261,7 +262,15 @@ export default function App(props: {
   const [downloadLimits, setDownloadLimits] = createSignal<
     import("./state/types").HttpDownloadLimits
   >();
+  const [keychainAvailable, setKeychainAvailable] = createSignal<boolean | undefined>();
   const [widths, setWidths] = createSignal<Widths>(DEFAULT_WIDTHS);
+
+  const nativeHttpProxy = (proxy: Settings["downloadProxy"]) =>
+    proxy === "environment"
+      ? ({ kind: "environment" } as const)
+      : proxy === "disabled"
+        ? ({ kind: "disabled" } as const)
+        : ({ kind: "explicit", url: proxy.url, noProxy: proxy.noProxy } as const);
 
   /** Change one preference and remember it. */
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -366,6 +375,15 @@ export default function App(props: {
     if (key === "transferConcurrency") {
       void backend.setTransferConcurrency(value as number);
     }
+    if (key === "downloadProxy" || key === "downloadHeaders" || key === "downloadNetrcPath" || key === "downloadUsername") {
+      const next = { ...settings(), [key]: value };
+      void backend.configureHttp?.({
+        proxy: nativeHttpProxy(next.downloadProxy),
+        headers: next.downloadHeaders,
+        netrcPath: next.downloadNetrcPath,
+        username: next.downloadUsername,
+      });
+    }
   };
 
   const pickDownloadFolder = async () => {
@@ -402,6 +420,15 @@ export default function App(props: {
     // The engine holds the transfer worker, so its concurrency has to be told
     // rather than read.
     void backend.setTransferConcurrency(loaded.transferConcurrency);
+    // The HTTP client lives in Rust. Only nonsecret settings cross this call;
+    // the native side reads the password from its keychain account.
+    void backend.configureHttp?.({
+      proxy: nativeHttpProxy(loaded.downloadProxy),
+      headers: loaded.downloadHeaders,
+      netrcPath: loaded.downloadNetrcPath,
+      username: loaded.downloadUsername,
+    });
+    void backend.keychainAvailable().then(setKeychainAvailable).catch(() => setKeychainAvailable(false));
     void backend.downloadLimits().then(setDownloadLimits).catch(() => setDownloadLimits(undefined));
   });
 
@@ -1047,6 +1074,7 @@ export default function App(props: {
   // carry its state — that is exactly when the health dot has to turn red.
   const [mountEvent, setMountEvent] = createSignal<MountEvent | null>(null);
   const [transfers, setTransfers] = createSignal<Transfer[]>([]);
+  const [queues, setQueues] = createSignal<NamedQueue[]>([]);
   const [showTransfers, setShowTransfers] = createSignal(false);
   // The preview route seeds a queue; if there is one, show it — unless the
   // window starts on downloads, where the sheet would cover the tab showing
@@ -1542,6 +1570,7 @@ export default function App(props: {
 
   onMount(() => {
     void backend.transfers().then(setTransfers);
+    void backend.downloadQueues().then(setQueues);
     const stop = backend.onTransferChanged((changed) => {
       setTransfers((current) => {
         const index = current.findIndex((transfer) => transfer.id === changed.id);
@@ -1566,10 +1595,63 @@ export default function App(props: {
       }
     });
     onCleanup(stop);
+    const stopQueues = backend.onQueueChanged(setQueues);
+    onCleanup(stopQueues);
   });
 
   /** Re-read the whole queue, for the cases an event stream cannot cover. */
   const refreshTransfers = () => void backend.transfers().then(setTransfers);
+  const refreshQueues = () => void backend.downloadQueues().then(setQueues);
+  const createQueue = async (name: string, color: string, concurrency: number) => {
+    try {
+      await backend.createDownloadQueue(name, color, concurrency);
+      refreshQueues();
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+  const updateQueue = async (id: string, name: string, color: string, concurrency: number) => {
+    try {
+      await backend.updateDownloadQueue(id, name, color, concurrency);
+      refreshQueues();
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+  const deleteQueue = async (id: string) => {
+    try {
+      await backend.deleteDownloadQueue(id);
+      refreshQueues();
+      refreshTransfers();
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+  const moveTransferToQueue = async (id: string, queueId: string) => {
+    try {
+      const changed = await backend.moveTransferToQueue(id, queueId);
+      setTransfers((current) => current.map((transfer) => transfer.id === changed.id ? changed : transfer));
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+  const reorderQueue = async (queueId: string, ids: string[]) => {
+    try {
+      await backend.reorderDownloadQueue(queueId, ids);
+      refreshTransfers();
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
+  const reorderQueues = async (ids: string[]) => {
+    try {
+      await backend.reorderDownloadQueues(ids);
+      refreshQueues();
+      refreshTransfers();
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+    }
+  };
 
   /**
    * Start a transfer, asking about anything already at the destination.
@@ -2400,6 +2482,13 @@ export default function App(props: {
           onOpenFolder={(path) => void backend.openTransferFolder(path)}
           onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
           onRemount={remountAction()}
+          queues={queues()}
+          onCreateQueue={(name, color, concurrency) => void createQueue(name, color, concurrency)}
+          onUpdateQueue={(id, name, color, concurrency) => void updateQueue(id, name, color, concurrency)}
+          onDeleteQueue={(id) => void deleteQueue(id)}
+          onMoveToQueue={(id, queueId) => void moveTransferToQueue(id, queueId)}
+          onReorderQueue={(queueId, ids) => void reorderQueue(queueId, ids)}
+          onReorderQueues={(ids) => void reorderQueues(ids)}
         />
       </Show>
       <Show when={conflicts()}>
@@ -2600,6 +2689,13 @@ export default function App(props: {
               onOpenFolder={(path) => void backend.openTransferFolder(path)}
               onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
               onRemount={remountAction()}
+              queues={queues()}
+              onCreateQueue={(name, color, concurrency) => void createQueue(name, color, concurrency)}
+              onUpdateQueue={(id, name, color, concurrency) => void updateQueue(id, name, color, concurrency)}
+              onDeleteQueue={(id) => void deleteQueue(id)}
+              onMoveToQueue={(id, queueId) => void moveTransferToQueue(id, queueId)}
+              onReorderQueue={(queueId, ids) => void reorderQueue(queueId, ids)}
+              onReorderQueues={(ids) => void reorderQueues(ids)}
             />
           </Show>
         </div>
@@ -2684,6 +2780,9 @@ export default function App(props: {
           // typeable and the button simply is not offered.
           onPickFolder={inTauri() ? () => void pickDownloadFolder() : undefined}
           downloadLimits={downloadLimits()}
+          keychainAvailable={keychainAvailable()}
+          onSaveHttpCredential={backend.saveHttpCredential}
+          onForgetHttpCredential={backend.forgetHttpCredential}
         />
       </Show>
       <Show when={connecting()}>

@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use excalibur_engine::backend::ShareBackend;
+use excalibur_engine::transfer::http::{
+    client_config, HttpClientSettings, HttpHeader, HttpProxy, HttpRuntimeConfig,
+};
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::{BackendSource, Worker};
 use excalibur_engine::transfer::{Endpoint, HttpDownloadOptions, Status, Transfer};
@@ -16,6 +19,41 @@ use excalibur_engine::Result;
 use http_origin::Origin;
 
 struct NoShares;
+
+#[test]
+fn client_config_keeps_http_credentials_out_of_debug_and_queue_shapes() {
+    let runtime = HttpRuntimeConfig {
+        settings: HttpClientSettings {
+            proxy: HttpProxy::Explicit {
+                url: "http://proxy.example:8080".to_owned(),
+                no_proxy: Some("localhost".to_owned()),
+            },
+            headers: vec![HttpHeader {
+                name: "User-Agent".to_owned(),
+                value: "Excalibur".to_owned(),
+            }],
+            netrc_path: None,
+            username: Some("alice".to_owned()),
+        },
+        credential: Some(excalibur_engine::Secret::new("hunter2".to_owned())),
+    };
+    let config = client_config(&runtime).expect("valid client config");
+    let rendered = format!("{config:?}");
+    assert!(rendered.contains("alice"));
+    assert!(rendered.contains("***"));
+    assert!(!rendered.contains("hunter2"));
+
+    let transfer = Transfer::http_with_options(
+        "download",
+        "https://origin.example/file.iso",
+        "/tmp/downloads",
+        HttpDownloadOptions::default(),
+    )
+    .expect("valid transfer");
+    let json = serde_json::to_string(&transfer).expect("queue row serializes");
+    assert!(!json.contains("hunter2"));
+    assert!(!json.contains("alice"));
+}
 
 #[async_trait]
 impl BackendSource for NoShares {

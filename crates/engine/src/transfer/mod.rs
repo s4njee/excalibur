@@ -27,6 +27,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub use xsync_engine::{TransferFileProgress, TransferProgress, TransferSegmentProgress};
+
 /// The queue every transfer written before named queues existed belongs to.
 pub const DEFAULT_QUEUE_ID: &str = "default";
 
@@ -273,6 +275,10 @@ pub struct Transfer {
     /// added before the first drag reorder stable.
     #[serde(default)]
     pub queue_position: Option<u64>,
+    /// Ephemeral per-file connection detail. It is broadcast to windows but
+    /// deliberately omitted from durable queue state.
+    #[serde(default)]
+    pub progress: Option<TransferProgress>,
 }
 
 fn default_queue_id() -> String {
@@ -321,6 +327,7 @@ impl Transfer {
             http_options: None,
             queue_id: default_queue_id(),
             queue_position: None,
+            progress: None,
         }
     }
 
@@ -387,6 +394,7 @@ impl Transfer {
             http_options: None,
             queue_id: default_queue_id(),
             queue_position: None,
+            progress: None,
         })
     }
 

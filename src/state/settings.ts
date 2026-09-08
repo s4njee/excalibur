@@ -37,6 +37,16 @@ export interface DownloadRetryPolicy {
   maxWaitSeconds: number;
 }
 
+export type DownloadProxy =
+  | "environment"
+  | "disabled"
+  | { kind: "explicit"; url: string; noProxy: string | null };
+
+export interface DownloadHeader {
+  name: string;
+  value: string;
+}
+
 export interface Settings {
   theme: ThemeChoice;
   rowLayout: RowLayout;
@@ -49,6 +59,14 @@ export interface Settings {
   downloadConnections: number | null;
   /** The HTTP provider's transient failure retry policy. */
   downloadRetry: DownloadRetryPolicy;
+  /** HTTP proxy selection; explicit URLs must not contain userinfo. */
+  downloadProxy: DownloadProxy;
+  /** Noncredential request headers sent by every HTTP download. */
+  downloadHeaders: DownloadHeader[];
+  /** Optional path to a mode-600 `.netrc`, read by Rust only. */
+  downloadNetrcPath: string | null;
+  /** Basic auth username; the password is keychain-only. */
+  downloadUsername: string | null;
   transferConcurrency: number;
   conflictDefault: ConflictDefault;
   columnWidths: Widths;
@@ -70,6 +88,10 @@ export const DEFAULTS: Settings = {
     initialWaitSeconds: 1,
     maxWaitSeconds: 30,
   },
+  downloadProxy: "environment",
+  downloadHeaders: [],
+  downloadNetrcPath: null,
+  downloadUsername: null,
   transferConcurrency: 3,
   // Never silently. A destination that already exists is the user's decision,
   // and E13-S4's prompt is what makes it one.
@@ -93,6 +115,10 @@ const KEYS: Record<keyof Settings, string> = {
   downloadFolder: "downloadFolder",
   downloadConnections: "downloadConnections",
   downloadRetry: "downloadRetry",
+  downloadProxy: "downloadProxy",
+  downloadHeaders: "downloadHeaders",
+  downloadNetrcPath: "downloadNetrcPath",
+  downloadUsername: "downloadUsername",
   transferConcurrency: "transferConcurrency",
   conflictDefault: "conflictDefault",
   // Shaped for `1g`/`1h`, which have no columns to size, so those need no
@@ -177,6 +203,39 @@ function sanitiseDownloadRetry(value: unknown): DownloadRetryPolicy {
   return { maxAttempts, initialWaitSeconds, maxWaitSeconds };
 }
 
+function sanitiseDownloadProxy(value: unknown): DownloadProxy {
+  if (value === "environment" || value === "disabled") return value;
+  if (!value || typeof value !== "object") return DEFAULTS.downloadProxy;
+  const candidate = value as Partial<Extract<DownloadProxy, { kind: "explicit" }>>;
+  if (
+    candidate.kind !== "explicit" ||
+    typeof candidate.url !== "string" ||
+    candidate.url.trim() === "" ||
+    candidate.url.includes("@") ||
+    (candidate.noProxy !== null && candidate.noProxy !== undefined && typeof candidate.noProxy !== "string")
+  ) return DEFAULTS.downloadProxy;
+  return { kind: "explicit", url: candidate.url.trim(), noProxy: candidate.noProxy?.trim() || null };
+}
+
+const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
+
+function sanitiseDownloadHeaders(value: unknown): DownloadHeader[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): DownloadHeader[] => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Partial<DownloadHeader>;
+    if (typeof candidate.name !== "string" || typeof candidate.value !== "string") return [];
+    const name = candidate.name.trim();
+    if (name === "" || SENSITIVE_HEADERS.has(name.toLowerCase()) || name.toLowerCase() === "range") return [];
+    if (/[\u0000-\u001f\u007f-\u009f]/u.test(name) || /[\r\n]/u.test(candidate.value)) return [];
+    return [{ name, value: candidate.value }];
+  }).slice(0, 32);
+}
+
+function sanitiseOptionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
 /** One stored value, coerced into the field it claims to be. */
 export function sanitiseField<K extends keyof Settings>(key: K, value: unknown): Settings[K] {
   switch (key) {
@@ -198,6 +257,14 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return sanitiseDownloadConnections(value) as Settings[K];
     case "downloadRetry":
       return sanitiseDownloadRetry(value) as Settings[K];
+    case "downloadProxy":
+      return sanitiseDownloadProxy(value) as Settings[K];
+    case "downloadHeaders":
+      return sanitiseDownloadHeaders(value) as Settings[K];
+    case "downloadNetrcPath":
+      return sanitiseOptionalString(value) as Settings[K];
+    case "downloadUsername":
+      return sanitiseOptionalString(value) as Settings[K];
     case "transferConcurrency":
       return sanitiseConcurrency(value) as Settings[K];
     case "columnWidths":

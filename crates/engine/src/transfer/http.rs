@@ -12,9 +12,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
+use xsync_core::handle::ProgressWatch;
 use xsync_core::local::{sync_endpoints, LocalEvent, LocalSyncOptions, LocalSyncReport};
 use xsync_core::sink::LocalSink;
-use xsync_download::{ClientConfig, HttpSource, MirrorSource, RetryPolicy, UreqClient};
+use xsync_download::{
+    ClientConfig, Credentials, HttpSource, MirrorSource, Netrc, ProxySetting, RetryPolicy,
+    UreqClient,
+};
 use xsync_endpoint::Source;
 use xsync_endpoint::{CancelToken, EndpointError, EndpointErrorKind};
 
@@ -22,6 +26,97 @@ use super::xsync_engine::{Moved, Settled, Tally};
 use super::{Endpoint, Transfer};
 pub use super::{HttpDownloadLimits, HttpDownloadOptions, HttpProbe};
 use crate::error::{EngineError, Result};
+use crate::Secret;
+
+/// A request header configured for HTTP downloads.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// The source of HTTP proxy settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum HttpProxy {
+    #[default]
+    Environment,
+    Disabled,
+    Explicit {
+        url: String,
+        no_proxy: Option<String>,
+    },
+}
+
+/// Nonsecret HTTP settings owned by the application.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HttpClientSettings {
+    pub proxy: HttpProxy,
+    pub headers: Vec<HttpHeader>,
+    pub netrc_path: Option<String>,
+    pub username: Option<String>,
+}
+
+/// Process-only HTTP state. The password is deliberately not serializable.
+#[derive(Clone, Default)]
+pub struct HttpRuntimeConfig {
+    pub settings: HttpClientSettings,
+    pub credential: Option<Secret>,
+}
+
+impl std::fmt::Debug for HttpRuntimeConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpRuntimeConfig")
+            .field("settings", &self.settings)
+            .field("credential", &self.credential)
+            .finish()
+    }
+}
+
+/// The keychain account used by HTTP Basic authentication.
+pub const HTTP_CREDENTIAL_ACCOUNT: &str = "http-download";
+
+/// Build provider configuration from app settings and a Rust-owned secret.
+///
+/// # Errors
+///
+/// Returns an error when a configured header, proxy, or `.netrc` file is not
+/// valid for the provider.
+pub fn client_config(runtime: &HttpRuntimeConfig) -> Result<ClientConfig> {
+    let proxy = match &runtime.settings.proxy {
+        HttpProxy::Environment => {
+            ProxySetting::Environment(xsync_download::ProxyEnvironment::from_process())
+        }
+        HttpProxy::Disabled => ProxySetting::Disabled,
+        HttpProxy::Explicit { url, no_proxy } => ProxySetting::Explicit {
+            url: url.clone(),
+            no_proxy: no_proxy.clone(),
+        },
+    };
+    let mut config = ClientConfig::new().proxy(proxy);
+    for header in &runtime.settings.headers {
+        config = config
+            .header(&header.name, &header.value)
+            .map_err(|error| EngineError::Io(error.to_string()))?;
+    }
+    if let Some(path) = runtime.settings.netrc_path.as_deref() {
+        let netrc = Netrc::from_path(Path::new(path))
+            .map_err(|error| EngineError::Io(error.to_string()))?;
+        if let Some(netrc) = netrc {
+            config = config.netrc(netrc);
+        }
+    }
+    if let (Some(username), Some(secret)) = (
+        runtime.settings.username.as_deref(),
+        runtime.credential.as_ref(),
+    ) {
+        config = config.basic_auth(Credentials::new(username, secret.expose()));
+    }
+    Ok(config)
+}
 
 const MAX_CONNECTIONS: usize = 16;
 const MAX_PER_HOST: usize = 4;
@@ -148,7 +243,7 @@ fn journal_root() -> Option<PathBuf> {
     dirs::cache_dir().map(|cache| cache.join("excalibur").join("resume"))
 }
 
-fn options(cancel: CancelToken) -> LocalSyncOptions {
+fn options(cancel: CancelToken, progress: ProgressWatch) -> LocalSyncOptions {
     LocalSyncOptions {
         checksum: false,
         delete: false,
@@ -157,6 +252,7 @@ fn options(cancel: CancelToken) -> LocalSyncOptions {
         paranoid: false,
         journal_root: journal_root(),
         cancel,
+        progress: Some(progress),
         ..LocalSyncOptions::default()
     }
 }
@@ -197,10 +293,11 @@ fn run_blocking(
     source: &dyn xsync_endpoint::Source,
     destination: &Path,
     cancel: CancelToken,
+    progress: ProgressWatch,
     events: tokio::sync::mpsc::UnboundedSender<LocalEvent>,
 ) -> std::result::Result<LocalSyncReport, xsync_core::local::LocalSyncError> {
     let sink = LocalSink::new_without_creation(parent(destination));
-    let options = options(cancel);
+    let options = options(cancel, progress);
     sync_endpoints(source, &sink, &options, move |event| {
         let _ = events.send(event);
     })
@@ -219,8 +316,9 @@ fn prepare_download(
     requested_connections: usize,
     retry: Option<super::HttpRetryPolicy>,
     cancel: CancelToken,
+    runtime: &HttpRuntimeConfig,
 ) -> Result<PreparedDownload> {
-    let config = ClientConfig::new().timeout(std::time::Duration::from_secs(30));
+    let config = client_config(runtime)?.timeout(std::time::Duration::from_secs(30));
     let client: Arc<dyn xsync_download::HttpClient> = Arc::new(
         UreqClient::with_config(config).map_err(|error| EngineError::Io(error.to_string()))?,
     );
@@ -327,6 +425,36 @@ pub async fn run_with_options(
     options: HttpDownloadOptions,
     stop: Arc<AtomicBool>,
     on_resolved: impl FnOnce(PathBuf) + Send + 'static,
+    progress: impl FnMut(Moved) + Send + 'static,
+) -> Result<Settled> {
+    run_with_options_and_config(
+        url,
+        destination,
+        options,
+        HttpRuntimeConfig::default(),
+        stop,
+        on_resolved,
+        progress,
+    )
+    .await
+}
+
+/// Run an HTTP transfer with process-owned client settings and credentials.
+///
+/// `runtime.credential` is intentionally a Rust-only value. It is read from
+/// the OS keychain by the shell and is never present in a transfer row.
+///
+/// # Errors
+///
+/// Returns an error when the URL, client configuration, provider session, or
+/// staged destination cannot be prepared or completed safely.
+pub async fn run_with_options_and_config(
+    url: &str,
+    destination: &Path,
+    options: HttpDownloadOptions,
+    runtime: HttpRuntimeConfig,
+    stop: Arc<AtomicBool>,
+    on_resolved: impl FnOnce(PathBuf) + Send + 'static,
     mut progress: impl FnMut(Moved) + Send + 'static,
 ) -> Result<Settled> {
     super::validate_http_url(url)?;
@@ -354,6 +482,7 @@ pub async fn run_with_options(
             requested_connections,
             options.retry,
             source_cancel,
+            &runtime,
         )
     })
     .await
@@ -377,13 +506,29 @@ pub async fn run_with_options(
         }
         watcher_cancel.cancel();
     });
+    let progress_watch = ProgressWatch::new();
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel();
-    let session =
-        tokio::task::spawn_blocking(move || run_blocking(&source, &resolved, cancel, events));
+    let session_progress = progress_watch.clone();
+    let session = tokio::task::spawn_blocking(move || {
+        run_blocking(&source, &resolved, cancel, session_progress, events)
+    });
     let mut tally = Tally::new();
-    while let Some(event) = incoming.recv().await {
-        if tally.absorb(&event) {
-            progress(tally.moved());
+    let mut progress_ticks = tokio::time::interval(std::time::Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            event = incoming.recv() => {
+                let Some(event) = event else { break };
+                let snapshot = progress_watch.snapshot(false);
+                if tally.absorb(&event, Some(&snapshot)) {
+                    progress(tally.moved());
+                }
+            }
+            _ = progress_ticks.tick() => {
+                let snapshot = progress_watch.snapshot(false);
+                if tally.refresh(&snapshot) {
+                    progress(tally.moved());
+                }
+            }
         }
     }
     watcher.abort();

@@ -52,6 +52,117 @@
   color: var(--text-primary);
 }
 
+.queueControls {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.queuePicker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.queuePicker select,
+.queueSelect {
+  height: 22px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-size: 10px;
+}
+
+.queueEditor {
+  position: absolute;
+  top: 29px;
+  right: 0;
+  z-index: 3;
+  width: min(570px, calc(100vw - 28px));
+  padding: 10px;
+  border: 1px solid var(--hairline-chrome);
+  border-radius: 6px;
+  background: var(--list-bg);
+  box-shadow: var(--shadow-window);
+}
+
+.queueEditorTitle,
+.queueFormTitle {
+  margin-bottom: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.queueDefinition {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border-top: 1px solid var(--hairline-row);
+}
+
+.queueSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.queueDefinitionName {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.queueDefinitionMeta {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.queueButton,
+.queueAdd {
+  height: 21px;
+  padding: 0 7px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.queueButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.queueForm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 9px;
+}
+
+.queueForm input {
+  min-width: 0;
+  height: 21px;
+  padding: 0 5px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-size: 10px;
+}
+
+.queueForm input:first-of-type { flex: 1; }
+.queueForm input[type="number"] { width: 72px; }
+.queueAdd { margin-top: 8px; }
+
 .headerAction {
   flex: none;
   height: 22px;
@@ -271,4 +382,3 @@
 .showAll:hover {
   background: var(--row-hover-bg);
 }
-

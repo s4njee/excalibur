@@ -646,6 +646,7 @@ fn durable(transfer: &Transfer) -> Transfer {
         files_done: 0,
         rate: None,
         eta_seconds: None,
+        progress: None,
         ..transfer.clone()
     }
 }
@@ -673,6 +674,9 @@ fn restore(transfers: Vec<Transfer>) -> HashMap<String, Transfer> {
     transfers
         .into_iter()
         .map(|mut transfer| {
+            // Lane detail belongs to the process that was moving the row. A
+            // restored transfer gets a fresh snapshot from its next attempt.
+            transfer.progress = None;
             if matches!(transfer.status, Status::Running | Status::Queued) {
                 transfer.status = Status::Queued;
                 // The rate belonged to a process that no longer exists.

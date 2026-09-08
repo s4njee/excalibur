@@ -23,6 +23,14 @@ describe("settings", () => {
       initialWaitSeconds: 2,
       maxWaitSeconds: 45,
     });
+    await saveSetting(prefs, "downloadProxy", {
+      kind: "explicit",
+      url: "http://proxy.example:8080",
+      noProxy: "localhost",
+    });
+    await saveSetting(prefs, "downloadHeaders", [{ name: "User-Agent", value: "Excalibur" }]);
+    await saveSetting(prefs, "downloadNetrcPath", "/Users/dorian/.netrc");
+    await saveSetting(prefs, "downloadUsername", "alice");
     await saveSetting(prefs, "transferConcurrency", 5);
     await saveSetting(prefs, "conflictDefault", "keepBoth");
     await saveSetting(prefs, "sort", { column: "size", ascending: false });
@@ -39,6 +47,14 @@ describe("settings", () => {
       initialWaitSeconds: 2,
       maxWaitSeconds: 45,
     });
+    expect(settings.downloadProxy).toEqual({
+      kind: "explicit",
+      url: "http://proxy.example:8080",
+      noProxy: "localhost",
+    });
+    expect(settings.downloadHeaders).toEqual([{ name: "User-Agent", value: "Excalibur" }]);
+    expect(settings.downloadNetrcPath).toBe("/Users/dorian/.netrc");
+    expect(settings.downloadUsername).toBe("alice");
     expect(settings.transferConcurrency).toBe(5);
     expect(settings.conflictDefault).toBe("keepBoth");
     expect(settings.sort).toEqual({ column: "size", ascending: false });
@@ -110,6 +126,18 @@ describe("settings", () => {
       maxWaitSeconds: 2,
     })).toEqual({ maxAttempts: 3, initialWaitSeconds: 9, maxWaitSeconds: 9 });
     expect(sanitiseField("downloadRetry", { maxAttempts: 3 })).toEqual(DEFAULTS.downloadRetry);
+  });
+
+  it("drops credential headers and proxy userinfo before ordinary prefs", () => {
+    expect(sanitiseField("downloadHeaders", [
+      { name: "Authorization", value: "Basic secret" },
+      { name: "Cookie", value: "session=secret" },
+      { name: "Range", value: "bytes=0-1" },
+      { name: "User-Agent", value: "Excalibur" },
+    ])).toEqual([{ name: "User-Agent", value: "Excalibur" }]);
+    expect(sanitiseField("downloadProxy", {
+      kind: "explicit", url: "http://alice:secret@proxy.example:8080", noProxy: null,
+    })).toBe(DEFAULTS.downloadProxy);
   });
 
   it("rejects a half-valid sort rather than half-applying it", () => {

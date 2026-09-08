@@ -126,16 +126,16 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
 
 ## Downloads tab (xdl)
 
-15 of the 26 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
+17 of the 26 stories in `legacy/xdl.md` are built — **E1-S1** (the HTTP route,
 2026-09-07, `72ef808`), **E1-S2** (origin-not-a-mount plus queue migration,
 2026-09-07, `a5fb184`), **E2-S1** (the tab lives, 2026-09-07, `a62fcd2`),
 **E2-S2** (the reference table, 2026-09-07), **E2-S3** (the indeterminate
 row, 2026-09-07), **E2-S4** (the footer, 2026-09-07), **E3-S1–S4** (add,
 probe, connection override and ordered mirror fallback, 2026-09-07), and
-**E5-S2** (the status-aware Downloads context menu, 2026-09-07), **E7-S1**
-(working download defaults in Preferences, 2026-09-07), **E8-S1** (URL/`.txt`
-drag intake), **E8-S2** (batch URL input) and **E8-S3** (clipboard offer, all
-2026-09-07); the rest are unchecked.
+**E4-S1** (real connection lanes), **E5-S2** (the status-aware Downloads
+context menu), **E6-S1** (named queues), **E7-S1** (working download defaults
+in Preferences), **E8-S1** (URL/`.txt` drag intake), **E8-S2** (batch URL
+input) and **E8-S3** (clipboard offer, all 2026-09-07); the rest are unchecked.
 The engine is
 `xsync-download` through `sync_endpoints`, one queue shared with transfers
 (Decisions 1 and 2, `legacy/xdl.md:46`).
@@ -176,28 +176,32 @@ The engine is
   the first source, and uses XDL-S8's ordered pre-transfer fallback. The UI
   says sources are not mixed; XD-E5-S1/S3's multi-source segments and measured
   runtime selection remain provider work. (`legacy/xdl.md:294`)
-- **XDL-E4** — connection lanes and block map. xsync now emits per-chunk
-  progress and exposes XDL-S2 snapshots; Excalibur must carry stream/range/
-  rate/stall fields through `Tally`/`Moved`, queue events and TypeScript state.
-  The optional mosaic remains blocked because the provider has no completed-
-  piece bitfield. Decision 5 forbids inventing segment geometry.
+- **XDL-E4-S1 done** 2026-09-07 — connection lanes consume xsync's
+  `ProgressWatch` snapshots through `Tally`/`Moved`, queue events and
+  TypeScript state. Each lane uses its real offset, range, rate and stall
+  counter; the selected-download detail surface reports fastest lane, stalled
+  count and retries. XDL-E4-S2 throughput strip remains open, and the optional
+  E4-S3 mosaic stays blocked because xsync has no completed-piece bitfield.
+  (`legacy/xdl.md:398`)
   (`legacy/xdl.md:401`)
 - **XDL-E5** — its context menu is built through the shared state gate; Move to
-  queue stays visibly unavailable until XDL-E6-S1 creates named queues.
+  queue now targets the named queues built by XDL-E6-S1.
   xsync's XDL-S1 owned handle now supports pause/resume, but Excalibur has not
   retained it per row/session; surviving a restart still needs XD-E3-S2's
   validator-safe continuation. (`legacy/xdl.md:433`)
-- **XDL-E6 foundations** 2026-09-07 — the engine/native layer persists named
-  queues, row priority and per-queue concurrency below the global ceiling. A
-  validated two-state 7×24 policy model also exists. Both stories stay open
-  for their Downloads UI, drag/keyboard interaction and schedule enforcement;
-  throttled cells still need Excalibur to retain and update xsync's available
-  XDL-S4 live rate handle. (`legacy/xdl.md:478`)
+- **XDL-E6-S1 done** 2026-09-07 — the engine/native layer and Downloads UI
+  persist named queues, row priority and per-queue concurrency below the global
+  ceiling. Queue CRUD, row movement, and drag/Arrow-key reorder are wired to
+  the native commands and queue event stream. XDL-E6-S2 remains open for
+  schedule enforcement; throttled cells still need Excalibur to retain and
+  update xsync's available XDL-S4 live rate handle. (`legacy/xdl.md:478`)
 - **XDL-E7-S1 done** 2026-09-07 — Preferences owns the default folder,
   provider-capped default connections, global worker concurrency and a bounded
-  retry policy carried into `HttpSource`. E7-S2 proxies/credentials remains
-  open and must use the keychain without a secret read command. There is no RPC
-  endpoint, secret token or Restart engine. (`legacy/xdl.md:527`)
+  retry policy carried into `HttpSource`. E7-S2's proxy/header/netrc and
+  Rust-owned credential path is implemented, including a keychain-only password
+  with no read command; the story remains open until the native keychain flow is
+  exercised manually. There is no RPC endpoint, secret token or Restart engine.
+  (`legacy/xdl.md:527`)
 - **XDL-E8** — URL/`.txt` drag intake, batch input and the clipboard *offer* are
   done. Browser capture (S4) is blocked on a separate browser extension product,
   packaging and review decision (Decision 7).

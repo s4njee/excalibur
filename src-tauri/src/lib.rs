@@ -24,7 +24,8 @@ use excalibur_engine::backend::{Access, ConnectionSpec, EntryKind, Protocol, Sha
 use excalibur_engine::drag::{self, Selection};
 use excalibur_engine::transfer::conflict::{self, Conflict};
 use excalibur_engine::transfer::http::{
-    self as download_http, HttpDownloadLimits, HttpDownloadOptions, HttpProbe,
+    self as download_http, HttpClientSettings, HttpDownloadLimits, HttpDownloadOptions, HttpProbe,
+    HttpRuntimeConfig, HTTP_CREDENTIAL_ACCOUNT,
 };
 use excalibur_engine::transfer::plan;
 use excalibur_engine::transfer::queue::{QueueEvent, TransferQueue};
@@ -634,6 +635,81 @@ async fn forget_secret(
     blocking(move || secrets.delete(&account))
         .await
         .map_err(Into::into)
+}
+
+/// Apply nonsecret HTTP settings and refresh the in-memory keychain value.
+/// There is intentionally no command that returns that value to TypeScript.
+#[tauri::command]
+async fn configure_http_downloads(
+    state: tauri::State<'_, AppState>,
+    settings: HttpClientSettings,
+) -> std::result::Result<(), CommandError> {
+    if settings.headers.iter().any(|header| {
+        matches!(
+            header.name.to_ascii_lowercase().as_str(),
+            "authorization" | "cookie" | "proxy-authorization" | "range"
+        )
+    }) {
+        return Err(CommandError::from(EngineError::Unsupported(
+            "credential and Range headers must use the keychain or downloader".to_owned(),
+        )));
+    }
+    if let download_http::HttpProxy::Explicit { url, .. } = &settings.proxy {
+        if url.contains('@') {
+            return Err(CommandError::from(EngineError::Unsupported(
+                "proxy credentials must not be placed in preferences".to_owned(),
+            )));
+        }
+    }
+    let secrets = Arc::clone(&state.secrets);
+    let credential = blocking(move || secrets.get(HTTP_CREDENTIAL_ACCOUNT))
+        .await
+        .map_err(CommandError::from)?;
+    state
+        .worker
+        .set_http_config(HttpRuntimeConfig {
+            settings,
+            credential,
+        })
+        .await;
+    Ok(())
+}
+
+/// Save the HTTP Basic password in the OS keychain and refresh Rust memory.
+#[tauri::command]
+async fn save_http_credential(
+    state: tauri::State<'_, AppState>,
+    username: String,
+    secret: String,
+) -> std::result::Result<(), CommandError> {
+    let secrets = Arc::clone(&state.secrets);
+    let value = Secret::new(secret);
+    blocking({
+        let value = value.clone();
+        move || secrets.set(HTTP_CREDENTIAL_ACCOUNT, &value)
+    })
+    .await
+    .map_err(CommandError::from)?;
+    let mut runtime = state.worker.http_config().await;
+    runtime.settings.username = Some(username);
+    runtime.credential = Some(value);
+    state.worker.set_http_config(runtime).await;
+    Ok(())
+}
+
+/// Delete the HTTP Basic password from both the OS keychain and process memory.
+#[tauri::command]
+async fn forget_http_credential(
+    state: tauri::State<'_, AppState>,
+) -> std::result::Result<(), CommandError> {
+    let secrets = Arc::clone(&state.secrets);
+    blocking(move || secrets.delete(HTTP_CREDENTIAL_ACCOUNT))
+        .await
+        .map_err(CommandError::from)?;
+    let mut runtime = state.worker.http_config().await;
+    runtime.credential = None;
+    state.worker.set_http_config(runtime).await;
+    Ok(())
 }
 
 /// Accept a host's SSH key, after the user compared its fingerprint.
@@ -2625,6 +2701,9 @@ pub fn run() {
             set_transfer_concurrency,
             save_secret,
             forget_secret,
+            configure_http_downloads,
+            save_http_credential,
+            forget_http_credential,
             trust_host_key,
             forget_host_key,
             transfers,

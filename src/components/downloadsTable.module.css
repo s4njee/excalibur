@@ -191,6 +191,11 @@
   justify-content: flex-end;
 }
 
+.queueSelect {
+  max-width: 100px;
+  padding: 0 3px;
+}
+
 .action {
   flex: none;
   height: 20px;

@@ -15,13 +15,25 @@ import type {
   Listing,
   MountEvent,
   MountInfo,
+  NamedQueue,
   Protocol,
   SaveOutcome,
   Transfer,
 } from "./types";
+import type { DownloadHeader } from "./settings";
 
 /** A connection spec, as the engine takes it. Never carries a secret. */
 export type Spec = Record<string, unknown>;
+
+export interface HttpClientSettings {
+  proxy:
+    | { kind: "environment" }
+    | { kind: "disabled" }
+    | { kind: "explicit"; url: string; noProxy: string | null };
+  headers: DownloadHeader[];
+  netrcPath: string | null;
+  username: string | null;
+}
 
 export interface Backend {
   listDir(path: string): Promise<Listing>;
@@ -108,6 +120,12 @@ export interface Backend {
   saveSecret(account: string, secret: string): Promise<void>;
   /** Forget a credential: the box was unticked, or the bookmark removed. */
   forgetSecret(account: string): Promise<void>;
+  /** Configure the Rust-owned HTTP client; no password crosses this call. */
+  configureHttp?(settings: HttpClientSettings): Promise<void>;
+  /** Save HTTP Basic password in the keychain; there is no read counterpart. */
+  saveHttpCredential?(username: string, secret: string): Promise<void>;
+  /** Remove the HTTP Basic credential from the keychain and memory. */
+  forgetHttpCredential?(): Promise<void>;
   /**
    * Reconnect a mount asking for read-write, and report what came back.
    *
@@ -135,6 +153,21 @@ export interface Backend {
    * a way back to the truth.
    */
   transfers(): Promise<Transfer[]>;
+  /** Read named download queues, including the built-in Default queue. */
+  downloadQueues(): Promise<NamedQueue[]>;
+  createDownloadQueue(name: string, color: string, concurrency: number): Promise<NamedQueue>;
+  updateDownloadQueue(
+    id: string,
+    name: string,
+    color: string,
+    concurrency: number,
+  ): Promise<NamedQueue>;
+  deleteDownloadQueue(id: string): Promise<void>;
+  moveTransferToQueue(id: string, queueId: string): Promise<Transfer>;
+  reorderDownloadQueue(queueId: string, ids: string[]): Promise<void>;
+  reorderDownloadQueues(ids: string[]): Promise<void>;
+  /** Fires when named queue definitions change in another window. */
+  onQueueChanged(handler: (queues: NamedQueue[]) => void): () => void;
   /**
    * Queue a download of each path into a local folder.
    *
@@ -364,6 +397,20 @@ export function fixtureBackend(
     };
   };
 
+  const fixtureQueue: NamedQueue = {
+    id: "default",
+    name: "Default",
+    color: "gray",
+    concurrency: 1,
+    order: 0,
+  };
+  let queueDefinitions: NamedQueue[] = [fixtureQueue];
+  let queueItems = (options.queue ?? []).map((transfer, index) => ({
+    ...transfer,
+    queueId: transfer.queueId ?? fixtureQueue.id,
+    queuePosition: transfer.queuePosition ?? index,
+  }));
+
   return {
     async listDir(path = ""): Promise<Listing> {
       if (options.disconnected) {
@@ -475,7 +522,62 @@ export function fixtureBackend(
     // invented: a preview showing fake transfers would be a preview of
     // something the app does not do.
     async transfers(): Promise<Transfer[]> {
-      return options.queue ?? [];
+      return queueItems;
+    },
+    async downloadQueues(): Promise<NamedQueue[]> {
+      return queueDefinitions;
+    },
+    async createDownloadQueue(name: string, color: string, concurrency: number): Promise<NamedQueue> {
+      const queue = {
+        id: `queue-${queueDefinitions.length}`,
+        name,
+        color,
+        concurrency: Math.max(1, concurrency),
+        order: queueDefinitions.length,
+      };
+      queueDefinitions = [...queueDefinitions, queue];
+      return queue;
+    },
+    async updateDownloadQueue(id: string, name: string, color: string, concurrency: number): Promise<NamedQueue> {
+      const current = queueDefinitions.find((queue) => queue.id === id);
+      if (!current) throw new Error(`download queue ${id} does not exist`);
+      const queue = { ...current, name, color, concurrency: Math.max(1, concurrency) };
+      queueDefinitions = queueDefinitions.map((candidate) => candidate.id === id ? queue : candidate);
+      return queue;
+    },
+    async deleteDownloadQueue(id: string): Promise<void> {
+      if (id === fixtureQueue.id) throw new Error("the Default queue cannot be deleted");
+      if (!queueDefinitions.some((queue) => queue.id === id)) throw new Error("queue does not exist");
+      queueDefinitions = queueDefinitions.filter((queue) => queue.id !== id);
+      queueItems = queueItems.map((transfer, index) => transfer.queueId === id
+        ? { ...transfer, queueId: fixtureQueue.id, queuePosition: index }
+        : transfer);
+    },
+    async moveTransferToQueue(id: string, queueId: string): Promise<Transfer> {
+      if (!queueDefinitions.some((queue) => queue.id === queueId)) throw new Error("queue does not exist");
+      const transfer = queueItems.find((candidate) => candidate.id === id);
+      if (!transfer) throw new Error("transfer does not exist");
+      const position = queueItems.filter((candidate) => candidate.queueId === queueId).length;
+      const moved = { ...transfer, queueId, queuePosition: position };
+      queueItems = queueItems.map((candidate) => candidate.id === id ? moved : candidate);
+      return moved;
+    },
+    async reorderDownloadQueue(queueId: string, ids: string[]): Promise<void> {
+      let position = 0;
+      queueItems = queueItems.map((transfer) => {
+        if (transfer.queueId !== queueId) return transfer;
+        const next = ids.indexOf(transfer.id);
+        return next < 0 ? transfer : { ...transfer, queuePosition: position++ };
+      });
+    },
+    async reorderDownloadQueues(ids: string[]): Promise<void> {
+      let order = 0;
+      queueDefinitions = ids.map((id) => queueDefinitions.find((queue) => queue.id === id))
+        .filter((queue): queue is NamedQueue => queue !== undefined)
+        .map((queue) => ({ ...queue, order: order++ }));
+    },
+    onQueueChanged(): () => void {
+      return () => undefined;
     },
     async enqueueDownloads(): Promise<string[]> {
       throw new Error("not connected to the engine — run the desktop app");
@@ -601,6 +703,11 @@ export function fixtureBackend(
     async forgetSecret(): Promise<void> {
       // Nothing was ever stored, so forgetting is already true.
     },
+    async configureHttp(): Promise<void> {},
+    async saveHttpCredential(): Promise<void> {
+      throw new Error("no keychain in the browser preview");
+    },
+    async forgetHttpCredential(): Promise<void> {},
     // The preview has no session to remount; `?screen=1b` is a fixed
     // read-only mount rather than one that could be upgraded.
     async remountReadWrite(): Promise<MountInfo> {
@@ -701,6 +808,18 @@ function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("forget_secret", { account });
     },
+    async configureHttp(settings: HttpClientSettings): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("configure_http_downloads", { settings });
+    },
+    async saveHttpCredential(username: string, secret: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("save_http_credential", { username, secret });
+    },
+    async forgetHttpCredential(): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("forget_http_credential");
+    },
     async remountReadWrite(id: string): Promise<MountInfo> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<MountInfo>("remount_read_write", { id });
@@ -720,6 +839,34 @@ function tauriBackend(): Backend {
     async transfers(): Promise<Transfer[]> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<Transfer[]>("transfers");
+    },
+    async downloadQueues(): Promise<NamedQueue[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<NamedQueue[]>("download_queues");
+    },
+    async createDownloadQueue(name: string, color: string, concurrency: number): Promise<NamedQueue> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<NamedQueue>("create_download_queue", { name, color, concurrency });
+    },
+    async updateDownloadQueue(id: string, name: string, color: string, concurrency: number): Promise<NamedQueue> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<NamedQueue>("update_download_queue", { id, name, color, concurrency });
+    },
+    async deleteDownloadQueue(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("delete_download_queue", { id });
+    },
+    async moveTransferToQueue(id: string, queueId: string): Promise<Transfer> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<Transfer>("move_transfer_to_queue", { id, queueId });
+    },
+    async reorderDownloadQueue(queueId: string, ids: string[]): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("reorder_download_queue", { queueId, ids });
+    },
+    async reorderDownloadQueues(ids: string[]): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("reorder_download_queues", { ids });
     },
     async enqueueDownloads(
       paths: string[],
@@ -825,6 +972,19 @@ function tauriBackend(): Backend {
           else stop = unlisten;
         }),
       );
+      return () => {
+        cancelled = true;
+        stop?.();
+      };
+    },
+    onQueueChanged(handler: (queues: NamedQueue[]) => void): () => void {
+      let stop: (() => void) | null = null;
+      let cancelled = false;
+      void listenHere<{ queues: NamedQueue[] }>("transfer://queues", (event) => handler(event.queues))
+        .then((unlisten) => {
+          if (cancelled) unlisten();
+          else stop = unlisten;
+        });
       return () => {
         cancelled = true;
         stop?.();

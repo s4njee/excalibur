@@ -4,8 +4,9 @@ import { ContextMenu } from "./ContextMenu";
 import { visibleRange } from "../state/virtual";
 import { formatDuration, formatRate, formatSize } from "../state/format";
 import { fractionOf, originHost } from "../state/downloads";
-import type { Transfer } from "../state/types";
+import type { NamedQueue, Transfer } from "../state/types";
 import { downloadMenu, type DownloadMenuAction } from "../state/menu";
+import { DownloadDetail } from "./DownloadDetail";
 
 /**
  * Every table row is one height, which is what keeps the virtual window
@@ -70,12 +71,17 @@ export function DownloadsTable(props: {
   onCopyUrl?: (url: string) => void;
   /** Offered on a failed upload that a writable mount would fix. */
   onRemount?: () => void;
+  queues?: NamedQueue[];
+  selectedQueue?: string;
+  onMoveToQueue?: (id: string, queueId: string) => void;
+  onReorder?: (queueId: string, ids: string[]) => void;
 }) {
   // Scroll position and viewport height are the only two things the virtual
   // window needs — same as the file list, which owns the same two signals.
   const [scrollTop, setScrollTop] = createSignal(0);
   const [viewport, setViewport] = createSignal(0);
   const [menu, setMenu] = createSignal<{ transfer: Transfer; x: number; y: number } | null>(null);
+  const [selectedId, setSelectedId] = createSignal<string | null>(null);
   let scroller: HTMLDivElement | undefined;
 
   onMount(() => {
@@ -121,7 +127,11 @@ export function DownloadsTable(props: {
     switch (action) {
       case "pause": props.onPause(transfer.id); break;
       case "resume": props.onRetry(transfer.id); break;
-      case "moveToQueue": break;
+      case "moveToQueue":
+        if (props.selectedQueue && props.selectedQueue !== "all") {
+          props.onMoveToQueue?.(transfer.id, props.selectedQueue);
+        }
+        break;
       case "remove": {
         const wording =
           transfer.status === "done" || transfer.status === "cancelled"
@@ -180,13 +190,58 @@ export function DownloadsTable(props: {
             return (
               <div
                 class={`${styles.grid} ${styles.row}`}
-                role="row"
-                data-transfer={transfer.id}
+              role="row"
+              data-transfer={transfer.id}
+              tabIndex={props.selectedQueue !== undefined && props.selectedQueue !== "all" && props.onReorder ? 0 : undefined}
+              aria-label={`${transfer.name}, ${state.label}`}
+                onClick={(event) => {
+                  if (!(event.target as Element).closest("button, select")) {
+                    setSelectedId((current) => (current === transfer.id ? null : transfer.id));
+                  }
+                }}
+                aria-expanded={selectedId() === transfer.id}
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  setMenu({ transfer, x: event.clientX, y: event.clientY });
-                }}
-              >
+                setMenu({ transfer, x: event.clientX, y: event.clientY });
+              }}
+              draggable={props.selectedQueue !== undefined && props.selectedQueue !== "all" && props.onReorder ? "true" : undefined}
+              onDragStart={(event) => {
+                if (props.selectedQueue && props.selectedQueue !== "all") {
+                  event.dataTransfer?.setData("text/plain", transfer.id);
+                  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+                }
+              }}
+              onDragOver={(event) => {
+                if (props.selectedQueue && props.selectedQueue !== "all" && props.onReorder) {
+                  event.preventDefault();
+                  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const queueId = props.selectedQueue;
+                const dragged = event.dataTransfer?.getData("text/plain");
+                if (!queueId || queueId === "all" || !dragged || dragged === transfer.id || !props.onReorder) return;
+                const ids = props.transfers.map((candidate) => candidate.id);
+                const from = ids.indexOf(dragged);
+                const to = ids.indexOf(transfer.id);
+                if (from < 0 || to < 0) return;
+                ids.splice(from, 1);
+                ids.splice(to, 0, dragged);
+                props.onReorder(queueId, ids);
+              }}
+              onKeyDown={(event) => {
+                const queueId = props.selectedQueue;
+                if ((event.key !== "ArrowUp" && event.key !== "ArrowDown") || !queueId || queueId === "all" || !props.onReorder) return;
+                event.preventDefault();
+                const ids = props.transfers.map((candidate) => candidate.id);
+                const index = ids.indexOf(transfer.id);
+                const next = index + (event.key === "ArrowUp" ? -1 : 1);
+                if (index < 0 || next < 0 || next >= ids.length) return;
+                [ids[index], ids[next]] = [ids[next]!, ids[index]!];
+                props.onReorder(queueId, ids);
+              }}
+            >
                 <div class={styles.cellFile}>
                   <div class={styles.name} title={transfer.name}>
                     {transfer.name}
@@ -254,6 +309,25 @@ export function DownloadsTable(props: {
                   </Show>
                 </div>
                 <div class={styles.actions}>
+                  <button
+                    class={styles.action}
+                    aria-label={`Show details for ${transfer.name}`}
+                    onClick={() =>
+                      setSelectedId((current) => (current === transfer.id ? null : transfer.id))
+                    }
+                  >
+                    Details
+                  </button>
+                  <Show when={props.queues && props.onMoveToQueue}>
+                    <select
+                      class={styles.queueSelect}
+                      aria-label={`Queue for ${transfer.name}`}
+                      value={transfer.queueId ?? "default"}
+                      onChange={(event) => props.onMoveToQueue?.(transfer.id, event.currentTarget.value)}
+                    >
+                      <For each={props.queues}>{(queue) => <option value={queue.id}>{queue.name}</option>}</For>
+                    </select>
+                  </Show>
                   <Show when={transfer.status === "running" || transfer.status === "queued"}>
                     <button class={styles.action} onClick={() => props.onPause(transfer.id)}>
                       Pause
@@ -298,10 +372,18 @@ export function DownloadsTable(props: {
         </For>
         <div style={{ height: `${padBottom()}px` }} />
       </Show>
+      <Show when={selectedId()}>
+        {(id) => {
+          const selected = () => props.transfers.find((transfer) => transfer.id === id());
+          return <Show when={selected()}>{(transfer) => <DownloadDetail transfer={transfer()} />}</Show>;
+        }}
+      </Show>
       <Show when={menu()}>
         {(current) => (
           <ContextMenu
-            items={downloadMenu(current().transfer)}
+            items={downloadMenu(current().transfer, {
+              moveEnabled: props.selectedQueue !== undefined && props.selectedQueue !== "all" && !!props.onMoveToQueue,
+            })}
             at={{ x: current().x, y: current().y }}
             label="Download actions"
             onChoose={chooseMenu}

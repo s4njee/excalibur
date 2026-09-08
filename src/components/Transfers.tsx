@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import styles from "./transfers.module.css";
 import { ContextMenu } from "./ContextMenu";
 import { DownloadsTable, transferRemountable } from "./DownloadsTable";
@@ -8,6 +8,8 @@ import { activeCount, aggregateRate, pushSample, remainingBytes } from "../state
 import { formatRate, formatSize, formatTransferStatus } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
+import type { NamedQueue } from "../state/types";
+import { QueueControls } from "./QueueControls";
 
 /**
  * Rows drawn before the panel stops and offers the rest.
@@ -50,6 +52,13 @@ export function Transfers(props: {
   onCopyUrl?: (url: string) => void;
   /** Offered on a failed upload that a writable mount would fix. */
   onRemount?: () => void;
+  queues?: NamedQueue[];
+  onCreateQueue?: (name: string, color: string, concurrency: number) => void;
+  onUpdateQueue?: (id: string, name: string, color: string, concurrency: number) => void;
+  onDeleteQueue?: (id: string) => void;
+  onMoveToQueue?: (id: string, queueId: string) => void;
+  onReorderQueue?: (queueId: string, ids: string[]) => void;
+  onReorderQueues?: (ids: string[]) => void;
 }) {
   // The aggregate is of what is *moving*. Including paused rows at zero would
   // drag it down and misdescribe the link.
@@ -72,9 +81,19 @@ export function Transfers(props: {
 
   /** How many rows are drawn before the panel offers the rest. */
   const [cap, setCap] = createSignal<number>(ROW_CAP);
-  const shown = createMemo(() =>
-    props.transfers.length > cap() ? props.transfers.slice(0, cap()) : props.transfers,
-  );
+  const [selectedQueue, setSelectedQueue] = createSignal("all");
+  const queues = () => props.queues ?? [];
+  const queueTransfers = createMemo(() => selectedQueue() === "all"
+    ? props.transfers
+    : props.transfers.filter((transfer) => (transfer.queueId ?? "default") === selectedQueue()));
+  createEffect(() => {
+    const id = selectedQueue();
+    if (id !== "all" && !queues().some((queue) => queue.id === id)) setSelectedQueue("all");
+  });
+  const shown = createMemo(() => {
+    const rows = queueTransfers();
+    return rows.length > cap() ? rows.slice(0, cap()) : rows;
+  });
 
   /** Where the overflow menu was opened, while it is open. */
   const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | null>(null);
@@ -117,6 +136,17 @@ export function Transfers(props: {
     >
       <div class={styles.header}>
         <span class={styles.title}>{props.embedded ? "Downloads" : "Transfers"}</span>
+        <Show when={props.queues && props.onCreateQueue && props.onUpdateQueue && props.onDeleteQueue && props.onMoveToQueue && props.onReorderQueue && props.onReorderQueues}>
+          <QueueControls
+            queues={queues()}
+            selected={selectedQueue()}
+            onSelect={setSelectedQueue}
+            onCreate={props.onCreateQueue!}
+            onUpdate={props.onUpdateQueue!}
+            onDelete={props.onDeleteQueue!}
+            onReorder={props.onReorderQueues!}
+          />
+        </Show>
         {/* The bulk actions live behind one control (asked for directly,
             2026-09-07). The handoff draws three buttons in this header and
             there are now four verbs, two of them about failures — recorded in
@@ -162,7 +192,7 @@ export function Transfers(props: {
         fallback={
           <div class={styles.rows}>
             <Show
-              when={props.transfers.length > 0}
+              when={queueTransfers().length > 0}
               fallback={<div class={styles.empty}>Nothing transferring</div>}
             >
               <For each={shown()}>
@@ -183,9 +213,9 @@ export function Transfers(props: {
                   used to cost. Bounded rather than virtualised because these rows
                   are not one height: a finished row drops its bar. The rest are one
                   click away, and the click is the user accepting the wait. */}
-              <Show when={props.transfers.length > shown().length}>
+              <Show when={queueTransfers().length > shown().length}>
                 <button class={styles.showAll} onClick={() => setCap(Infinity)}>
-                  Show {props.transfers.length - shown().length} more
+                  Show {queueTransfers().length - shown().length} more
                 </button>
               </Show>
             </Show>
@@ -193,7 +223,7 @@ export function Transfers(props: {
         }
       >
         <DownloadsTable
-          transfers={props.transfers}
+          transfers={queueTransfers()}
           onPause={props.onPause}
           onCancel={props.onCancel}
           onRemove={props.onRemove}
@@ -201,6 +231,10 @@ export function Transfers(props: {
           onOpenFolder={props.onOpenFolder}
           onCopyUrl={props.onCopyUrl}
           onRemount={props.onRemount}
+          queues={queues()}
+          selectedQueue={selectedQueue()}
+          onMoveToQueue={props.onMoveToQueue}
+          onReorder={props.onReorderQueue}
         />
       </Show>
 

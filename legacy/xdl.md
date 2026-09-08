@@ -397,26 +397,23 @@ geometry (Decision 5).*
 
 #### XDL-E4-S1 — Connection lanes
 
-- [ ] **Do.** One row per connection, each lane starting at its own byte offset,
+- [x] **Do.** One row per connection, each lane starting at its own byte offset,
   with a playhead at its leading edge and a per-lane rate.
-- [ ] **Integrate XDL-S2.** The provider now emits per-chunk progress and exposes
-  transfer snapshots with stream/range/rate/stall fields. Excalibur must carry
-  them through `Tally`/`Moved`, queue events and TypeScript transfer state
-  before drawing the lanes; do not approximate them from aggregate progress.
+- [x] **Integrate XDL-S2.** The provider emits per-chunk progress and exposes
+  transfer snapshots with stream/range/rate/stall fields. Excalibur now carries
+  them through `Tally`/`Moved`, queue events and TypeScript transfer state; the
+  lanes do not approximate them from aggregate progress.
 
 **AC**
-- [ ] Each lane's fill begins where that segment's range begins, not at zero.
-- [ ] A stalled lane is visibly stalled and says so in words as well as colour.
-- [ ] The summary strip reports fastest lane, stalled count and retries from
+- [x] Each lane's fill begins where that segment's range begins, not at zero.
+- [x] A stalled lane is visibly stalled and says so in words as well as colour.
+- [x] The summary strip reports fastest lane, stalled count and retries from
   real counters.
 
 #### XDL-E4-S2 — Throughput strip
 
 - [ ] **Do.** The reference's 60-second throughput chart, under whichever detail
   view is shown.
-
-**Blocker.** This belongs inside the download detail surface introduced by
-XDL-E4-S1; that surface and its selected-download state do not exist yet.
 
 **AC**
 - [ ] Built from the same samples the footer sparkline uses, so two charts
@@ -466,8 +463,8 @@ provider work needed for pausing a running HTTP stream.
 - [x] **Do.** Pause, Resume, Move to queue, Open folder, Copy URL, Remove.
   *(Built 2026-09-07: download rows use the shared `ContextMenu` and the
   `downloadMenu` pure rule in `src/state/menu.ts`; status-refused actions stay
-  visible with a reason. Move to queue is visibly unavailable until XDL-E6-S1
-  creates named queues. Remove confirms before asking the queue to delete the
+  visible with a reason. Move to queue targets XDL-E6-S1's named queues. Remove
+  confirms before asking the queue to delete the
   row, Open folder calls the native shell for the local destination's parent,
   and Copy URL strips any credentials from legacy rows.)*
 
@@ -496,20 +493,22 @@ an app-level layer. So does this.*
 
 #### XDL-E6-S1 — Named queues
 
-- [ ] **Do.** Queues with a colour, a concurrency limit and an order; rows
+- [x] **Do.** Queues with a colour, a concurrency limit and an order; rows
   belong to one.
 
 **AC**
 - [x] A queue decides which of its rows are allowed to run; the worker's
   existing concurrency limit stays the global ceiling.
-- [ ] Drag to reorder sets priority.
+- [x] Drag to reorder sets priority.
 
-Current bounded slice (2026-09-07): the engine now persists named queue
-definitions (name, colour, concurrency and order), assigns each transfer a
-queue and optional position, migrates the former flat queue file, enforces each
-queue's running-row ceiling below the worker's global semaphore, and exposes
-native commands/events for queue management, movement and ordering. The story
-remains open until the Downloads UI exposes those commands and drag reorder.
+Current bounded slice (2026-09-07): the engine and Downloads UI persist named
+queue definitions (name, colour, concurrency and order), assign each transfer
+a queue and optional position, migrate the former flat queue file, enforce each
+queue's running-row ceiling below the worker's global semaphore, and expose
+native commands/events for queue management, movement and ordering. The queue
+picker supports create/edit/delete and row movement; selecting a queue enables
+drag and Arrow-key reorder, which sends the resulting ids back to native for
+persistent priority. The global worker ceiling remains authoritative.
 
 #### XDL-E6-S2 — The weekly window
 
@@ -560,12 +559,23 @@ integration with XDL-S4.
 
 - [ ] **Do.** Surface `ClientConfig`'s proxies, headers and `.netrc`.
 
+Current bounded slice (2026-09-07): Preferences configures environment/disabled/
+explicit proxies, safe headers and a `.netrc` path. Rust builds the provider's
+`ClientConfig`; Basic passwords travel directly to the existing secret store
+under `http-download`, remain process-only, and have no read command. Unsafe
+credential headers, `Range`, proxy userinfo and malformed values are refused.
+
+**Validation blocker.** The implementation and secret-shape tests pass, but an
+actual save/forget cycle against the native OS keychain has not been exercised
+manually, so the story and its keychain acceptance criterion remain open.
+
 **AC**
 - [ ] A credential entered here goes to the keychain by the route E3-S4 already
   built, and **no command reads it back** — the standing rule that no secret
   leaves Rust.
-- [ ] A credential is dropped when a redirect leaves the origin the user named.
-  `xsync-download` does this already; the UI must not undo it by re-attaching.
+- [x] A credential is dropped when a redirect leaves the origin the user named.
+  `xsync-download` does this already; Excalibur supplies credentials once to
+  the Rust-owned `ClientConfig` and does not re-attach them in UI or queue code.
 
 ---
 
@@ -648,7 +658,7 @@ resource caps remain open in XD-E7-S4/S5/S6.
 |---|---|---|
 | **XDL-M1 It downloads** | XDL-E1-S1, XDL-E1-S2, XDL-E3-S1, XDL-E2-S2 | Paste an ISO URL, watch it arrive over many connections into a chosen folder, verified, in Excalibur's own list. |
 | **XDL-M2 It is a manager** | XDL-E2-S1/S3/S4, XDL-E5-S1/S2 | A Downloads tab with categories, counts, a footer, selection, and pause/remove that work. |
-| **XDL-M3 It shows its work** | XDL-E4-S1/S2, XDL-E3-S2/S3 | The lane view over real segment offsets; the add dialog reporting what the server actually supports. *(Provider progress is available; Excalibur's XDL-S2 event/state integration remains.)* |
+| **XDL-M3 It shows its work** | XDL-E4-S1/S2, XDL-E3-S2/S3 | The lane view over real segment offsets; the add dialog reporting what the server actually supports. *(E4-S1's real segment lanes are built; the shared-sample throughput strip remains.)* |
 | **XDL-M4 It is trustworthy** | XDL-E9, XDL-E7-S2, XDL-E5-S3 | Checksums, hostile-response handling, credentials that never leak, and downloads that survive a crash. *(Gated on XD-E3-S2, XD-E7-S4/S5/S6.)* |
 | **XDL-M5 It is patient** | XDL-E6, XDL-E7-S1, XDL-E8 | Queues, a weekly window, and every way of getting a URL in. *(Throttling needs Excalibur's XDL-S4 live-rate integration.)* |
 

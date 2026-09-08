@@ -96,6 +96,39 @@ export type TransferEndpoint =
   | { kind: "http"; url: string };
 export type TransferStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
+/** A coalesced snapshot of the provider's real per-file ranges. */
+export interface TransferProgress {
+  files: TransferFileProgress[];
+  retries: number;
+  redirects: number;
+}
+
+export interface TransferFileProgress {
+  path: string;
+  completed: number;
+  /** `null` means the provider has no declared total. */
+  total: number | null;
+  segments: TransferSegmentProgress[];
+}
+
+export interface TransferSegmentProgress {
+  stream: number;
+  offset: number;
+  length: number | null;
+  written: number;
+  rate: number;
+  stalled: boolean;
+}
+
+/** A persisted app-level download queue and its scheduling policy. */
+export interface NamedQueue {
+  id: string;
+  name: string;
+  color: string;
+  concurrency: number;
+  order: number;
+}
+
 /** Per-file overrides; mirror indices include the primary URL at index zero. */
 export interface HttpDownloadOptions {
   connections?: number | null;
@@ -165,8 +198,13 @@ export interface Transfer {
    */
   filesDone?: number;
   filesTotal?: number;
+  /** Live per-file connection lanes; omitted from durable queue state. */
+  progress?: TransferProgress | null;
   /** Absent on legacy queues and ordinary share transfers. */
   httpOptions?: HttpDownloadOptions | null;
+  /** Named queue membership and persisted priority (lower runs first). */
+  queueId?: string;
+  queuePosition?: number | null;
 }
 
 /** A destination that already exists, awaiting a decision. */

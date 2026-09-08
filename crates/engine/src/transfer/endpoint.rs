@@ -46,6 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use xsync_core::handle::ProgressWatch;
 use xsync_core::local::{sync_endpoints, LocalSyncError, LocalSyncOptions, LocalSyncReport};
 use xsync_core::sink::LocalSink;
 use xsync_core::source::LocalSource;
@@ -1099,7 +1100,11 @@ impl<S: Source> Source for Only<S> {
 /// **upload** keeps its stage, so nothing appears under its final name until
 /// every byte is there, but starts the file again rather than trusting a record
 /// it cannot check.
-fn options(cancel: CancelToken, journal: Option<std::path::PathBuf>) -> LocalSyncOptions {
+fn options(
+    cancel: CancelToken,
+    journal: Option<std::path::PathBuf>,
+    progress: ProgressWatch,
+) -> LocalSyncOptions {
     LocalSyncOptions {
         checksum: false,
         delete: false,
@@ -1108,6 +1113,7 @@ fn options(cancel: CancelToken, journal: Option<std::path::PathBuf>) -> LocalSyn
         paranoid: false,
         journal_root: journal,
         cancel,
+        progress: Some(progress),
         ..LocalSyncOptions::default()
     }
 }
@@ -1334,17 +1340,36 @@ pub async fn run(
         Ends::Down { .. } => journal_root(),
         Ends::Up { .. } => None,
     };
-    let session = spawn_session(share, ends, options(cancel, journal), events);
+    let progress_watch = ProgressWatch::new();
+    let session = spawn_session(
+        share,
+        ends,
+        options(cancel, journal, progress_watch.clone()),
+        events,
+    );
 
     let mut tally = Tally::new();
     let mut sampler = Progress::new();
-    while let Some(event) = incoming.recv().await {
-        if !tally.absorb(&event) {
-            continue;
-        }
-        let moved = tally.moved();
-        if sampler.sample(moved.bytes, Instant::now()) {
-            progress(moved);
+    let mut progress_ticks = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            event = incoming.recv() => {
+                let Some(event) = event else { break };
+                let snapshot = progress_watch.snapshot(false);
+                if !tally.absorb(&event, Some(&snapshot)) {
+                    continue;
+                }
+                let moved = tally.moved();
+                if sampler.sample(moved.bytes, Instant::now()) {
+                    progress(moved);
+                }
+            }
+            _ = progress_ticks.tick() => {
+                let snapshot = progress_watch.snapshot(false);
+                if tally.refresh(&snapshot) {
+                    progress(tally.moved());
+                }
+            }
         }
     }
 
@@ -1383,6 +1408,7 @@ pub async fn run(
         bytes: settled.bytes,
         files: settled.files,
         planned: tally.moved().planned,
+        progress: tally.moved().progress,
     });
     Ok(settled)
 }

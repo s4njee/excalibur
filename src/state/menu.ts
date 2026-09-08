@@ -184,13 +184,21 @@ export type DownloadMenuAction =
  * row component only renders this answer; it does not grow a second set of
  * status rules that could drift from the keyboard and toolbar actions.
  */
-export function downloadMenu(transfer: Transfer): MenuItem<DownloadMenuAction>[] {
+export function downloadMenu(
+  transfer: Transfer,
+  options: { moveEnabled?: boolean } = {},
+): MenuItem<DownloadMenuAction>[] {
   const pause = transfer.status === "running" || transfer.status === "queued";
   const resume = transfer.status === "paused";
   return [
     { action: "pause", label: "Pause", disabled: !pause, reason: pause ? null : "Download is not running" },
     { action: "resume", label: "Resume", disabled: !resume, reason: resume ? null : "Download is not paused" },
-    { action: "moveToQueue", label: "Move to queue", disabled: true, reason: "Named queues are not available yet" },
+    {
+      action: "moveToQueue",
+      label: "Move to queue",
+      disabled: !options.moveEnabled,
+      reason: options.moveEnabled ? null : "Named queues are not selected",
+    },
     { action: "openFolder", label: "Open folder", disabled: false, reason: null, separated: true },
     { action: "copyUrl", label: "Copy URL", disabled: transfer.from?.kind !== "http", reason: "URL is unavailable", separated: true },
     { action: "remove", label: "Remove", disabled: false, reason: null, separated: true },
