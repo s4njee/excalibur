@@ -60,7 +60,6 @@ import type {
   RowLayout,
   Theme,
 } from "./state/types";
-import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
 import { sortEntries, toggle } from "./state/sort";
 import { filterEntries } from "./state/filter";
@@ -72,6 +71,7 @@ import {
   type Context as PermissionContext,
 } from "./state/permissions";
 import { engineFailure } from "./state/errors";
+import { createPane } from "./app/pane";
 import { createQueues } from "./app/queues";
 import { createAddDownload } from "./app/addDownload";
 import {
@@ -110,7 +110,6 @@ import {
 } from "./state/columns";
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
 import * as shortcuts from "./state/shortcuts";
-import { coalesce } from "./state/refresh";
 import { windowParams, type WindowParams } from "./state/window";
 import { parseLocation } from "./state/location";
 // The same resolver ⌘⇧G uses, so a path typed in either place means one thing.
@@ -185,13 +184,38 @@ export default function App(props: {
   // other way round, so every way of navigating — a double-click, the
   // breadcrumb, Back, the keyboard — goes through one place.
   //
-  // A window opened by ⌘N starts in the folder the window that opened it was
-  // showing, with no history behind it: Back in a new window has nowhere to go,
-  // and inheriting somebody else's trail would give it somewhere wrong.
-  const [history, setHistory] = createSignal<nav.History>(nav.initial(self.path));
-  const path = () => nav.current(history());
-  const listingState = createListing((target) => backend.listDir(target));
-  const listing = listingState.listing;
+  /**
+   * Where this window is, and what is selected there (`app/pane.ts`).
+   *
+   * One of these today; two when `paneMode` lands (`twopane.md` XTP-E1-S2).
+   * Destructured so every reader below says `path()` and `listing()` as it
+   * always did — the point of this step is that nothing had to change to fit.
+   */
+  const pane = createPane({
+    path: self.path,
+    listDir: (target) => backend.listDir(target),
+    // The browser preview opens with a row selected, because the design's
+    // screens draw one and there is no way to click in a screenshot.
+    selection: inTauri()
+      ? undefined
+      : clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"),
+  });
+  const {
+    history,
+    setHistory,
+    path,
+    listingState,
+    listing,
+    refresh,
+    disconnected,
+    goTo,
+    ascend,
+    filter,
+    setFilter,
+    selection,
+    setSelection,
+    selected,
+  } = pane;
 
   /**
    * Which category the transfers pane is filtered to (XDL-E2-S1).
@@ -239,25 +263,6 @@ export default function App(props: {
    * directory, and delaying it would leave the previous one's rows on screen
    * under the new path.
    */
-  const refresh = coalesce(() => listingState.load(path()));
-  onCleanup(() => refresh.dispose());
-
-  /**
-   * Nothing is mounted: the engine refused the listing rather than returning
-   * a directory (E1-S6).
-   *
-   * Deliberately not "there is no listing yet", which is also true for the
-   * frame before the first request settles — an empty state that flashed
-   * before every window would be worse than none. `error` is set only once a
-   * request has come back, and a *failed navigation* on a live mount leaves
-   * the previous listing in place, so it does not land here either.
-   */
-  const disconnected = () => listing() === null && listingState.error() !== null;
-
-  const goTo = (target: string) => setHistory((current) => nav.go(current, target));
-  const ascend = () => goTo(nav.parent(path()));
-
-  const [filter, setFilter] = createSignal("");
   const prefs = props.prefs ?? defaultPrefs();
 
   // Everything persisted lives here (E17-S1), except the column widths, which
@@ -412,18 +417,6 @@ export default function App(props: {
     setWidths((current) => resize(current, divider, delta, visible));
   const onResizeEnd = () => void saveSetting(prefs, "columnWidths", widths());
   const onPaneResizeEnd = () => void saveSetting(prefs, "transfersPane", paneSize());
-  /**
-   * Nothing is selected until something is clicked.
-   *
-   * The browser preview starts with a row selected, because the design's
-   * screens draw one and there is no way to click in a screenshot. That seed
-   * was ungated: every window in the app began with `Arrival.2016.mkv` in its
-   * selection — harmless while no such file exists, and a row highlighted by
-   * nobody the moment one does (swept 2026-09-09).
-   */
-  const [selection, setSelection] = createSignal(
-    inTauri() ? EMPTY_SELECTION : clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"),
-  );
   // The row type-to-select jumped to, so the list can scroll it into view.
   const [reveal, setReveal] = createSignal<number | null>(null);
   /**
@@ -436,7 +429,6 @@ export default function App(props: {
   const [pageRows, setPageRows] = createSignal(1);
   /** The Go to Folder sheet's path, or `null` when it is closed. */
   const [goingTo, setGoingTo] = createSignal<string | null>(null);
-  const selected = () => selection().paths as Set<string>;
   const [connecting, setConnecting] = createSignal<Draft | true | null>(null);
   const store = props.bookmarks ?? defaultBookmarkStore();
   const [bookmarks, setBookmarks] = createSignal<Bookmark[]>([]);
