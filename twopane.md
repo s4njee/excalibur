@@ -549,6 +549,10 @@ truthful than what the protocol already offers.
   vocabulary; xsync's `ExportReadOnly` / `FilesystemReadOnly` / `NoPermission` /
   `Unwritable` are shown in their own words rather than translated into export flags.
 - Other backends supply what they have; the surface is identical.
+- **Already true, now pinned.** `MountInfo.reason` is passed through verbatim, and the
+  test asserts the string the server actually sends — `export is read-only` — rather than
+  only that it is non-empty. A translation into another protocol's vocabulary would put a
+  sentence on screen the server never said.
 
 #### XTP-E9-S2 — Capacity and the protocol line
 **AC**
@@ -562,6 +566,14 @@ truthful than what the protocol already offers.
   server advertises `STAGE_RESUME | PATH_LISTING | SUBTREE_LISTING | PATH_READ`
   (`../xsync/crates/xsync-core/src/server.rs:4535`), so what the line can honestly say is
   known.
+- Capacity and the inode fields were already right: `available_bytes`, and nothing in the
+  UI renders `total_inodes`, `free_inodes` or `fs_type` because `MountInfo` has no field
+  for them.
+- **The protocol line stays `xsync v3 · ssh`** — version and transport, both negotiated
+  truth. The negotiated *features* go to the message log, named rather than as a bitmap:
+  a per-pane status bar has no room beside the counts and the capacity (XTP-E2-S2 already
+  had to stop that bar wrapping), and the log is where XTP-E5 put protocol truth.
+  Recorded in `docs/design-gaps.md`.
 
 #### XTP-E9-S3 — Listing latency in a view that lists twice as often
 **AC**
@@ -574,6 +586,16 @@ truthful than what the protocol already offers.
   negotiated, so expanding a node costs one round trip rather than one per level.
 - Sync browsing doubles the listing rate, so this is measured: a listing that took two
   round trips takes one, recorded in `docs/benchmarks.md`.
+- **Done for `list_dir`**: three round trips (`Open`/`ReadDir`/`Close`) became one
+  (`ReadDirPath`), measured by frame count through XTP-E5's own tap. The enabling change
+  was asking for the features at all — the client requested none, so `PATH_LISTING` was
+  never granted and the fast path could not be taken. A directory larger than one
+  response falls back to paging rather than being truncated.
+- **Not done for the tree.** `READ_TREE` would fetch a subtree in one trip, but the tree's
+  cache is per directory and the engine has no `list_tree` verb — a new command, a new
+  seam method and a change to how `app/tree.ts` absorbs listings. The tree costs one trip
+  per expansion today, which is one *level*, not one per level. Left with this note rather
+  than half-built.
 
 #### XTP-E9-S4 — Refresh without Notify
 **AC**
@@ -586,6 +608,11 @@ truthful than what the protocol already offers.
 - A listing under ~200ms shows no spinner; past that, a thin indeterminate accent bar
   under the column header with the previous listing kept and dimmed *(handoff §Loading)*.
 - When Notify lands, this story's polling is deleted rather than kept alongside it.
+- **Done.** Relist on window focus, through the 250 ms coalescer, and no timer anywhere —
+  a poll would ask forever about a window nobody is looking at. A settled transfer now
+  relists *every pane on that share* rather than the focused one, which is the same
+  two-pane leak XTP-E2-S2 fixed in the status bar: with two panes a transfer usually lands
+  in the pane being watched rather than the one being used.
 
 #### XTP-E9-S5 — Cancel at a chunk boundary
 **AC**
@@ -599,6 +626,10 @@ truthful than what the protocol already offers.
   story tightens rather than changes shape.
 - Resume is unaffected and already strong: `STAGE_RESUME` is advertised, and a stage's
   resume token survives both the connection and the server process.
+- **Already true.** The worker's `CancelToken` is checked between chunks and the row
+  settles as `Cancelled`; the session is untouched. Nothing here promises to interrupt a
+  read in flight, and `CANCEL` (type 18) is still unreachable from `xsync-client` —
+  `integration.md` §8, unchanged.
 
 ---
 

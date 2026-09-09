@@ -445,6 +445,35 @@ export default function App(props: {
   createEffect(() => follows("left"));
   createEffect(() => follows("right"));
 
+  /**
+   * Come back to the window and see what is there now (`twopane.md` XTP-E9-S4).
+   *
+   * xsync has no change notification — types 110–115 are reserved with no
+   * codec and no handler, and the server never sets `supports::NOTIFY` — so a
+   * share changed by anything other than this app goes unnoticed. Two panes
+   * and sync browsing make that twice as visible.
+   *
+   * Focus, not a timer: a poll would ask forever about a window nobody is
+   * looking at, and the moment a stale listing starts to matter is the moment
+   * somebody looks. Through the same 250 ms coalescer every other relist uses,
+   * so alt-tabbing quickly is one request rather than one per switch. When
+   * Notify lands this is deleted rather than kept beside it.
+   */
+  onMount(() => {
+    const refreshDrawn = () => {
+      for (const side of drawnPanes()) panes[side].refresh.request();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshDrawn();
+    };
+    window.addEventListener("focus", refreshDrawn);
+    document.addEventListener("visibilitychange", onVisible);
+    onCleanup(() => {
+      window.removeEventListener("focus", refreshDrawn);
+      document.removeEventListener("visibilitychange", onVisible);
+    });
+  });
+
   createEffect(() => panes.left.listingState.load(panes.left.path()));
   createEffect(() => {
     // Only this one is guarded: the left pane is always drawn, so making it
@@ -1407,8 +1436,13 @@ export default function App(props: {
       // The mount is checked because the queue event is a broadcast — every
       // window hears about every transfer, and relisting on someone else's
       // would be this window refreshing for a share it is not showing.
-      if (changed.status === "done" && changed.mount === activeMountId()) {
-        refresh.request();
+      // Every pane on that share, not just the focused one: with two panes a
+      // transfer usually lands in the one being *watched* rather than the one
+      // being used, and refreshing only the focused pane left the file
+      // invisible in the half it was dropped into (`twopane.md` XTP-E9-S4).
+      if (changed.status !== "done") return;
+      for (const side of drawnPanes()) {
+        if (mountIdOf(panes[side]) === changed.mount) panes[side].refresh.request();
       }
     },
   });

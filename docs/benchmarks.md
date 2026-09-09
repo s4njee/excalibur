@@ -1,6 +1,41 @@
 # Benchmarks
 
-Reproduce with `crates/engine/tests/fixtures/nfs/benchmark.sh`, after `up.sh`.
+Each section says how to reproduce it.
+
+## Listing round trips over xsync (XTP-E9-S3)
+
+Two panes and sync browsing list twice as often as one pane does, so the story
+asked for the listing that took two round trips to take one. `ReadDirPath`
+(type 98) answers what `Open` + `ReadDir` + `Close` answers, and the server
+advertises `PATH_LISTING`.
+
+Reproduce with:
+
+```text
+EXCALIBUR_XS=../xsync/target/debug/xs \
+  cargo test -p excalibur-engine --test bench_listing -- --ignored --nocapture
+```
+
+*2026-09-09. macOS on Apple silicon, `xs --server` over a local pipe, a
+directory of 200 files, each listing asking for the same attribute mask.*
+
+| Path | Frames per listing | Round trips |
+|---|---|---|
+| `Open` + `ReadDir` + `Close` (before) | 6 — `Open`, `Opened`, `ReadDir`, `DirPage`, `Close`, `Done` | **3** |
+| `ReadDirPath` (now) | 2 — `ReadDirPath`, `DirPage` | **1** |
+
+**Wall-clock, over a local pipe: 1.09–1.41 ms per listing either way.** The two
+are inside each other's noise there, and that is the honest reading rather than
+a disappointing one: a round trip over a pipe on the same machine costs
+microseconds, so the time is dominated by the syscalls and the serialisation
+that both paths do identically. What changed is the number of times a listing
+has to wait for the other end, which is the cost that is paid in latency the
+moment the other end is another machine — three waits per listing became one,
+and sync browsing doubles how often that happens.
+
+The frame counts come from the message log's own tap (XTP-E5), taken from a
+single listing: the log is a bounded ring and two hundred listings overflow it,
+which would report a number capped by the ring rather than by the exchange.
 
 ## NFSv3 read throughput (E5-S4)
 

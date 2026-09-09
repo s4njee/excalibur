@@ -31,8 +31,9 @@ use crate::log::{LogCategory, LogLine, MessageLog};
 /// A mounted xsync export.
 pub struct XsyncBackend {
     mount: Mount,
-    /// Kept so the connection's tasks outlive every request made through it.
-    _client: Arc<Client>,
+    /// Kept so the connection's tasks outlive every request made through it,
+    /// and asked which features the server granted (XTP-E9-S3).
+    client: Arc<Client>,
     root_label: String,
     /// The last `StatFs` answer and when it was taken.
     ///
@@ -261,7 +262,7 @@ impl XsyncBackend {
             .map_err(|error| map_error(&error))?;
         let backend = Self {
             mount,
-            _client: Arc::new(client),
+            client: Arc::new(client),
             root_label: root.to_owned(),
             capacity: Mutex::new(None),
         };
@@ -290,6 +291,53 @@ impl XsyncBackend {
         *self.capacity.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((capacity, Instant::now()));
         Ok(capacity)
+    }
+
+    /// One directory in one round trip, or `None` to use the handle path.
+    ///
+    /// `ReadDirPath` (type 98) answers what `Open`+`ReadDir`+`Close` answers,
+    /// in a third of the exchanges. Two panes and sync browsing list twice as
+    /// often as one pane does, which is what made the difference worth taking
+    /// (`twopane.md` XTP-E9-S3, measured in `docs/benchmarks.md`).
+    ///
+    /// `None` twice over, and both are "ask the other way" rather than an
+    /// error: the server did not grant `PATH_LISTING`, or the directory holds
+    /// more entries than one response may carry — which the fast path refuses
+    /// to truncate, because a short listing a caller cannot tell from a
+    /// complete one is worse than a slower complete one.
+    async fn list_in_one_trip(
+        &self,
+        relative: &str,
+    ) -> Result<Option<Vec<xsync_client::DirEntry>>> {
+        if !self.client.supports(xsync_client::features::PATH_LISTING) {
+            return Ok(None);
+        }
+        self.mount
+            .read_dir_path(relative.as_bytes(), FAST_LISTING_ENTRIES, LISTING_MASK)
+            .await
+            .map_err(|error| map_error(&error))
+    }
+
+    /// The paging listing: open a directory handle, read it out, close it.
+    ///
+    /// Still the path for a server without `PATH_LISTING` and for a directory
+    /// too large for one response.
+    async fn list_by_handle(&self, relative: &str) -> Result<Vec<xsync_client::DirEntry>> {
+        let directory = self
+            .mount
+            .open(relative.as_bytes(), READ | xsync_client::DIRECTORY)
+            .await
+            .map_err(|error| map_error(&error))?;
+        let listed = directory
+            .read_dir_all(LISTING_MASK)
+            .await
+            .map_err(|error| map_error(&error));
+        // Closed whether or not the listing worked: a handle leaked per failed
+        // listing would exhaust the session's table.
+        let closed = directory.close().await;
+        let listed = listed?;
+        closed.map_err(|error| map_error(&error))?;
+        Ok(listed)
     }
 
     /// Refresh the capacity if it has gone stale, keeping the old answer if not.
@@ -758,6 +806,13 @@ const fn kind_of(kind: u8) -> EntryKind {
 /// shows.
 const LISTING_MASK: u32 = attr_presence::SYMLINK_TARGET | attr_presence::BTIME;
 
+/// How many entries the one-round-trip listing will take in a single response.
+///
+/// The number xsync's own tests use. A directory larger than this is not
+/// truncated — the server answers `final_page: false` and this falls back to
+/// the paging listing, which has no ceiling.
+const FAST_LISTING_ENTRIES: u32 = 4096;
+
 fn attrs_of(attrs: &xsync_client::Attrs) -> Attrs {
     Attrs {
         kind: kind_of(attrs.kind),
@@ -826,20 +881,10 @@ impl ShareBackend for XsyncBackend {
 
     async fn list_dir(&self, path: &str) -> Result<Listing> {
         let relative = path.trim_matches('/');
-        let directory = self
-            .mount
-            .open(relative.as_bytes(), READ | xsync_client::DIRECTORY)
-            .await
-            .map_err(|error| map_error(&error))?;
-        let listed = directory
-            .read_dir_all(LISTING_MASK)
-            .await
-            .map_err(|error| map_error(&error));
-        // Closed whether or not the listing worked: a handle leaked per failed
-        // listing would exhaust the session's table.
-        let closed = directory.close().await;
-        let listed = listed?;
-        closed.map_err(|error| map_error(&error))?;
+        let listed = match self.list_in_one_trip(relative).await? {
+            Some(entries) => entries,
+            None => self.list_by_handle(relative).await?,
+        };
 
         let entries = listed
             .into_iter()
@@ -873,6 +918,7 @@ impl ShareBackend for XsyncBackend {
     }
 
     async fn stat(&self, path: &str) -> Result<Attrs> {
+        // Unchanged, and deliberately: `StatPath` is one round trip already.
         let attrs = self
             .mount
             .stat(path.trim_matches('/').as_bytes(), false, LISTING_MASK)
@@ -1148,9 +1194,14 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // The features a mount actually uses, so the server may grant them and the
+    // one-round-trip listing becomes available (`twopane.md` XTP-E9-S3). It
+    // asked for nothing, which left `ReadDirPath` ungated and every listing on
+    // the open/page/close path. Requesting is safe against an older server:
+    // the grant is the intersection, and nothing is sent that was not granted.
     match tap {
-        Some(tap) => Client::from_split_tapped(reader, writer, 0, tap).await,
-        None => Client::from_split(reader, writer, 0).await,
+        Some(tap) => Client::from_split_tapped(reader, writer, Client::MOUNT_FEATURES, tap).await,
+        None => Client::from_split(reader, writer, Client::MOUNT_FEATURES).await,
     }
 }
 
@@ -1248,6 +1299,22 @@ fn describe(id: u64, message: &V3Message) -> Option<String> {
             }
             line
         }
+        // What the two ends actually agreed to. The design wants the
+        // negotiated feature set on screen (XTP-E9-S2); the status bar has no
+        // room for it beside the version and the transport, and this is where
+        // protocol truth lives — named rather than as a bitmap, because
+        // `0x2900` is not something anybody can read.
+        V3Message::FeaturesAck { features, .. } => {
+            let granted = feature_names(*features);
+            format!(
+                "#{id} FeaturesAck {}",
+                if granted.is_empty() {
+                    "none".to_owned()
+                } else {
+                    granted.join(", ")
+                }
+            )
+        }
         // Verbatim, which is the whole point of catching this frame.
         V3Message::Error {
             code,
@@ -1260,6 +1327,24 @@ fn describe(id: u64, message: &V3Message) -> Option<String> {
         ),
         _ => format!("#{id} {name}"),
     })
+}
+
+/// The features a `FeaturesAck` granted, in words.
+///
+/// Only the ones this app asks for: a bit the server offers and Excalibur
+/// never requested is not part of what this session agreed, and listing it
+/// would suggest otherwise.
+fn feature_names(granted: u64) -> Vec<&'static str> {
+    [
+        (xsync_client::features::PATH_LISTING, "path listing"),
+        (xsync_client::features::SUBTREE_LISTING, "subtree listing"),
+        (xsync_client::features::PATH_READ, "path read"),
+        (xsync_client::features::STAGE_RESUME, "resumable staging"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| granted & bit != 0)
+    .map(|(_, name)| name)
+    .collect()
 }
 
 /// A frame's name, from the frozen type byte rather than from `Debug`.
@@ -1291,6 +1376,21 @@ fn frame_name(kind: u8) -> &'static str {
         types::DIR_PAGE => "DirPage",
         types::STAT_FS => "StatFs",
         types::FS_INFO => "FsInfo",
+        types::READ_DIR_PATH => "ReadDirPath",
+        types::READ_TREE => "ReadTree",
+        types::TREE_PAGE => "TreePage",
+        types::READ_PATH => "ReadPath",
+        types::RENAME => "Rename",
+        types::UNLINK => "Unlink",
+        types::RMDIR => "Rmdir",
+        types::MKDIR => "Mkdir",
+        types::SYMLINK => "Symlink",
+        types::LINK => "Link",
+        types::CHOWN => "Chown",
+        types::SET_TIMES => "SetTimes",
+        types::SET_PERMISSIONS => "SetPermissions",
+        types::MUTATED => "Mutated",
+        types::DONE => "Done",
         // A type this build does not know is still worth a line: the number is
         // what an operator would take to the protocol document.
         _ => "frame",

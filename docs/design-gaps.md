@@ -8,6 +8,27 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## What the protocol line can say *(XTP-E9-S2, 2026-09-09)*
+
+**The mock** right-aligns `SMB3 · aes-128-gcm` in the status bar. Over xsync
+the honest equivalent is the negotiated version, the transport, and the feature
+set both ends agreed to.
+
+**What was built:** `xsync v3 · ssh` in the bar — the version is negotiated and
+the transport is what it is; the security label stays `ssh` rather than
+inventing a cipher name, because that is OpenSSH's business until the TLS
+transport brings `SecurityInfo`. The negotiated **features** go to the message
+log instead, named in words on the `FeaturesAck` line: `path listing, subtree
+listing, path read, resumable staging`. Two reasons rather than one — a
+per-pane status bar has no room beside the counts and the capacity (XTP-E2-S2
+had to stop that bar wrapping at half width), and XTP-E5 put protocol truth in
+the log deliberately.
+
+**For the designer:** whether the protocol line should carry a marker when a
+session negotiated *fewer* features than usual — a server that grants no
+`PATH_LISTING` is measurably slower, and today the only place that shows is the
+log.
+
 ## The message log's resolution *(XTP-E5-S1, 2026-09-09)*
 
 **The mock** draws a log of protocol frames: `Command:` with the mount line and

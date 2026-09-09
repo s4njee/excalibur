@@ -59,6 +59,8 @@ const saved: Bookmark[] = [
 ];
 
 /** One queue row, in whatever state the case is about. */
+const row2 = (status: TransferStatus, mount: string | null): Transfer => row(status, mount);
+
 const row = (status: TransferStatus, mount: string | null): Transfer => ({
   id: "t1",
   direction: "up",
@@ -82,10 +84,13 @@ function watchable(): Backend & { paths: string[]; moved: (transfer: Transfer) =
   let announce: ((transfer: Transfer) => void) | null = null;
   return {
     ...inner,
-    async listDir(path: string) {
-      paths.push(path);
+    async listDir(path: string, mount?: string) {
+      paths.push(`${mount ?? "window"}:${path}`);
       return inner.listDir(path);
     },
+    // The preview's `mount` refuses — there is no engine behind it — and a
+    // second share has to open for the two-pane case below.
+    async mount() {},
     onTransferChanged(handler: (transfer: Transfer) => void) {
       announce = handler;
       return () => {
@@ -166,6 +171,96 @@ describe("a transfer that lands", () => {
     backend.moved(row("running", MINE));
     backend.moved(row("running", MINE));
     await vi.advanceTimersByTimeAsync(500);
+
+    expect(backend.paths.length).toBe(before);
+  });
+});
+
+describe("a transfer that lands in the other pane", () => {
+  const click = (element: Element | null | undefined) =>
+    element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  const viewButton = () => host.querySelector<HTMLElement>('[aria-label="View options"]');
+  const menuItem = (text: string) =>
+    [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((candidate) =>
+      candidate.textContent?.includes(text),
+    ) ?? null;
+  const lists = () => [...host.querySelectorAll<HTMLElement>('[role="grid"]')];
+
+  it("relists that pane, not the focused one", async () => {
+    // With two panes a transfer usually lands in the one being *watched*
+    // rather than the one being used. Refreshing only the focused pane left
+    // the file invisible in the half it was dropped into.
+    const backend = watchable();
+    open(backend, MINE);
+    await new Promise((done) => setTimeout(done, 0));
+    await new Promise((done) => setTimeout(done, 0));
+
+    click(viewButton());
+    await new Promise((done) => setTimeout(done, 0));
+    click(menuItem("Two Panes"));
+    await new Promise((done) => setTimeout(done, 0));
+    // Open the other share into the right pane, then go back to the left.
+    lists()[1]?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await new Promise((done) => setTimeout(done, 0));
+    const row = [...host.querySelectorAll<HTMLElement>("[role='button']")].find((candidate) =>
+      candidate.textContent?.includes("backups"),
+    );
+    row?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await new Promise((done) => setTimeout(done, 0));
+    await new Promise((done) => setTimeout(done, 0));
+    lists()[0]?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await new Promise((done) => setTimeout(done, 0));
+
+    const before = backend.paths.filter((entry) => entry.startsWith(THEIRS)).length;
+    backend.moved(row2("done", THEIRS));
+    await new Promise((done) => setTimeout(done, 0));
+
+    expect(backend.paths.filter((entry) => entry.startsWith(THEIRS)).length).toBe(before + 1);
+  });
+});
+
+describe("coming back to the window (XTP-E9-S4)", () => {
+  it("relists what is on screen", async () => {
+    // xsync has no change notification — types 110–115 are reserved with no
+    // codec and no handler, and the server never sets `supports::NOTIFY` — so
+    // a share changed by anything else goes unnoticed until somebody looks.
+    vi.useFakeTimers();
+    const backend = watchable();
+    open(backend, MINE);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = backend.paths.length;
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(backend.paths.length).toBe(before + 1);
+  });
+
+  it("is one relist however fast the window is switched", async () => {
+    // Through the same coalescer every other relist uses: alt-tabbing is one
+    // request, not one per switch.
+    vi.useFakeTimers();
+    const backend = watchable();
+    open(backend, MINE);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = backend.paths.length;
+
+    for (let index = 0; index < 5; index += 1) window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(backend.paths.length).toBe(before + 2);
+  });
+
+  it("asks nothing while nobody is looking", async () => {
+    // Focus rather than a timer: a poll would ask forever about a window
+    // nobody has in front of them.
+    vi.useFakeTimers();
+    const backend = watchable();
+    open(backend, MINE);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = backend.paths.length;
+
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(backend.paths.length).toBe(before);
   });

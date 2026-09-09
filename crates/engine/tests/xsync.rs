@@ -119,6 +119,10 @@ async fn a_read_only_export_refuses_writes_and_says_why() {
     // The status bar shows this verbatim, so an empty reason would leave the
     // user with a disabled button and no explanation.
     assert!(!listing.mount.reason.is_empty());
+    // In xsync's own words (XTP-E9-S1). `ro,root_squash` is NFS's vocabulary
+    // and the mock's; translating the server's answer into it would put a
+    // sentence on screen that the server never said.
+    assert_eq!(listing.mount.reason, "export is read-only");
 
     let refused = backend
         .write_range("blocked.txt", WriteMode::Create, b"nope")
@@ -489,5 +493,109 @@ async fn the_frame_tap_keeps_a_refusal_verbatim() {
     assert!(
         errors.iter().any(|line| line.contains("NoEntry")),
         "the server's own code: {errors:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_listing_is_one_round_trip_where_the_server_grants_it() {
+    // XTP-E9-S3. Two panes and sync browsing list twice as often as one pane
+    // does, and `ReadDirPath` answers what `Open` + `ReadDir` + `Close`
+    // answers in a third of the exchanges. The frame tap is how this is
+    // observable at all — the listing itself looks the same either way.
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let log = Arc::new(MessageLog::new());
+    let backend = XsyncBackend::connect_local(
+        &xs,
+        root.path().to_str().unwrap(),
+        false,
+        Some(xsync::frame_tap(Arc::clone(&log), "media".to_owned())),
+    )
+    .await
+    .expect("mount the export");
+
+    let before = log.lines().len();
+    let listing = backend.list_dir("").await.expect("list the root");
+    assert_eq!(listing.entries.len(), 4);
+
+    let frames: Vec<String> = frame_lines(&log).split_off(before);
+    assert!(
+        frames.iter().any(|line| line.contains("ReadDirPath")),
+        "the one-trip listing: {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(|line| line.contains("Open")),
+        "no handle was opened for it: {frames:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_log_names_what_the_two_ends_agreed() {
+    // XTP-E9-S2 wants the negotiated feature set on screen. The status bar has
+    // no room beside the version and the transport, and the message log is
+    // where protocol truth lives — in words, because `0x2900` is not something
+    // anybody can read.
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let log = Arc::new(MessageLog::new());
+    let _backend = XsyncBackend::connect_local(
+        &xs,
+        root.path().to_str().unwrap(),
+        false,
+        Some(xsync::frame_tap(Arc::clone(&log), "media".to_owned())),
+    )
+    .await
+    .expect("mount the export");
+
+    let granted = frame_lines(&log)
+        .into_iter()
+        .find(|line| line.contains("FeaturesAck"))
+        .expect("the server answered the feature request");
+    assert!(granted.contains("path listing"), "{granted}");
+    assert!(granted.contains("subtree listing"), "{granted}");
+}
+
+#[tokio::test]
+async fn a_directory_too_large_for_one_response_still_lists() {
+    // The fast path refuses to truncate — a short listing a caller cannot tell
+    // from a complete one is worse than a slower complete one — so it answers
+    // "not final" and the paging path finishes the job.
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = tempfile::tempdir().expect("temp dir");
+    let crowd = 4100;
+    for index in 0..crowd {
+        std::fs::write(root.path().join(format!("file-{index:05}.txt")), b"x").unwrap();
+    }
+    let log = Arc::new(MessageLog::new());
+    let backend = XsyncBackend::connect_local(
+        &xs,
+        root.path().to_str().unwrap(),
+        false,
+        Some(xsync::frame_tap(Arc::clone(&log), "media".to_owned())),
+    )
+    .await
+    .expect("mount the export");
+
+    let before = log.lines().len();
+    let listing = backend.list_dir("").await.expect("list the root");
+    assert_eq!(listing.entries.len(), crowd);
+
+    let frames: Vec<String> = frame_lines(&log).split_off(before);
+    assert!(
+        frames.iter().any(|line| line.contains("ReadDirPath")),
+        "it asked the fast way first: {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|line| line.contains("Open")),
+        "and finished on a handle: {frames:?}"
     );
 }
