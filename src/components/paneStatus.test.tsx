@@ -26,6 +26,8 @@ globalThis.ResizeObserver ??=
 let host: HTMLDivElement;
 /** The window's mount-event subscriber, so a test can push one through. */
 let announce: ((event: MountEvent) => void) | null = null;
+/** Which share the window has told the shell it is working with, in order. */
+let activated: string[] = [];
 let dispose: (() => void) | undefined;
 const settle = () => new Promise((done) => setTimeout(done, 0));
 
@@ -98,6 +100,7 @@ async function open(
   } = {},
 ) {
   announce = null;
+  activated = [];
   const base = fixtureBackend();
   const backend = {
     ...base,
@@ -127,6 +130,9 @@ async function open(
       };
     },
     async mount() {},
+    async setActive(id: string) {
+      activated.push(id);
+    },
   } as unknown as Backend;
   dispose = render(
     () => (
@@ -283,5 +289,20 @@ describe("per-pane status bars", () => {
     });
     await openFromSidebar("Downloads");
     expect(badges()).toEqual(["RO"]);
+  });
+});
+
+describe("which share the shell thinks this window is on", () => {
+  it("follows the focused pane, not whichever was opened last", async () => {
+    // The shell keeps one active mount per window and resolves `mkdir`,
+    // `rename`, `remove` and the edit round trip through it. It was set when a
+    // share was *connected* — so with two panes, a delete in the pane that was
+    // not opened most recently went to a share the user was not looking at.
+    await splitAcrossShares();
+    expect(activated[activated.length - 1]).toBe(LOCAL);
+    await focusPane(0);
+    expect(activated[activated.length - 1]).toBe(REMOTE);
+    await focusPane(1);
+    expect(activated[activated.length - 1]).toBe(LOCAL);
   });
 });

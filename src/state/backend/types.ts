@@ -69,6 +69,17 @@ export interface Backend {
   /** A line joined the log. Broadcast: the log is the app's, not a window's. */
   onLogLine(handler: (line: LogLine) => void): () => void;
   /**
+   * Tell the shell which share this window is working with.
+   *
+   * The shell keeps one active mount per window, and every write verb that
+   * does not name a share resolves through it — `mkdir`, the rename behind
+   * `Rename`, `remove`, the edit round trip. With two panes on two shares the
+   * window's answer to "which share" moves with the focused pane, and this is
+   * what keeps the shell's answer the same as the window's (`twopane.md`
+   * XTP-E8-S1).
+   */
+  setActive(id: string): Promise<void>;
+  /**
    * Fires when this app changes something in a folder on *this window's*
    * mount, whichever window did it. Returns an unsubscribe.
    *

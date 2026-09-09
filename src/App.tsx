@@ -1439,6 +1439,25 @@ export default function App(props: {
   const mountIdOf = (target: Pane) => target.mountId() ?? activeMountId();
 
   /**
+   * Keep the shell's idea of this window's share in step with the focused pane.
+   *
+   * The shell holds one active mount per window and every write verb that does
+   * not name a share resolves through it: `mkdir`, `rename`, `remove`, the
+   * edit round trip. It was set when a share was *connected*, which with two
+   * panes means the one opened most recently — so a delete in the other pane
+   * went to a share the user was not looking at. `list_dir` and the transfers
+   * already name their mount (XTP-E8-S1); this is the rest of them.
+   *
+   * Failure is ignored: the id can name a bookmark this window's shell does
+   * not hold — one marked mounted by a previous run — and the shell answering
+   * "no such mount" is not something to put in front of anyone.
+   */
+  createEffect(() => {
+    const id = activeMountId();
+    if (id !== null) void backend.setActive(id).catch(() => undefined);
+  });
+
+  /**
    * Another window changed something on this window's share (E23-S1).
    *
    * Through the same coalescer a local mutation uses, so a window watching
