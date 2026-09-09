@@ -199,6 +199,10 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* A window, not a document. Every region that can outgrow the window scrolls
+     itself; anything that escapes one is a layout bug, and scrolling the whole
+     app is how that bug used to present. */
+  overflow: hidden;
 }
 
 body {
@@ -208,7 +212,14 @@ body {
   background: var(--list-bg);
   -webkit-font-smoothing: antialiased;
   /* A file browser is not a document: text selection on chrome and rows makes
-   * drag-to-select feel broken. */
+   * drag-to-select feel broken.
+   *
+   * Both spellings. WKWebView only took the unprefixed property in Safari 17,
+   * and this shipped against an engine that wanted the prefix — a bookmark's
+   * name stayed selectable, which is what `-webkit-user-select` fixes. The
+   * places that *want* selection override it: `user-select: all` on the mono
+   * fields in the connection and properties dialogs. */
+  -webkit-user-select: none;
   user-select: none;
 }
 

@@ -24,7 +24,13 @@
 }
 
 .dialog {
+  display: flex;
+  flex-direction: column;
   width: 460px;
+  /* Bounded so a long dialog on a short window stays reachable. The window
+     does not scroll — nothing outside a region's own scrollport is reachable
+     any more — so a dialog that outgrows the viewport has to scroll itself. */
+  max-height: calc(100% - 32px);
   border-radius: var(--radius-window);
   background: var(--toolbar-bg);
   box-shadow: var(--shadow-window);
@@ -33,6 +39,7 @@
 
 .titlebar {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   height: var(--height-titlebar);
@@ -44,6 +51,8 @@
 }
 
 .body {
+  min-height: 0;
+  overflow-y: auto;
   padding: 16px 18px 18px;
 }
 
@@ -286,6 +295,7 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-primary);
+  -webkit-user-select: all;
   user-select: all;
   word-break: break-all;
 }

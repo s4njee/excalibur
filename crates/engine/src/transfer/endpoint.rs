@@ -266,6 +266,7 @@ impl Share {
                 .map_err(|error| refuse(&self.root, "name", &EngineError::Io(error.to_string())))?;
             return Ok(Enumeration {
                 entries: vec![Self::entry(name, &root_attrs)],
+                vanished: 0,
                 queue_high_water: 0,
             });
         }
@@ -319,6 +320,7 @@ impl Share {
         }
         Ok(Enumeration {
             entries,
+            vanished: 0,
             queue_high_water: 0,
         })
     }
@@ -978,6 +980,7 @@ impl<S: Source> Source for Only<S> {
         })?;
         Ok(Enumeration {
             entries: vec![entry],
+            vanished: 0,
             queue_high_water: 0,
         })
     }

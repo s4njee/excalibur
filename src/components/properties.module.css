@@ -57,6 +57,7 @@
 .mono {
   font-family: var(--font-mono);
   font-size: 11px;
+  -webkit-user-select: all;
   user-select: all;
 }
 
