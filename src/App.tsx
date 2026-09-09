@@ -2136,6 +2136,19 @@ export default function App(props: {
   };
 
   /** Where a point would drop: a folder row, a sidebar row, or this folder. */
+  /**
+   * The pane a point is over, or the focused one.
+   *
+   * A drop says where it goes by landing there, so it must not be answered by
+   * "whichever pane has focus" — with two panes that is how a drag onto the
+   * right one writes into the left.
+   */
+  const paneUnder = (position: { x: number; y: number }): Pane => {
+    const column = document.elementFromPoint(position.x, position.y)?.closest("[data-pane]");
+    const side = column?.getAttribute("data-pane");
+    return side === "left" || side === "right" ? panes[side] : focused();
+  };
+
   const targetUnder = (
     position: { x: number; y: number } | null,
   ): { mount: string | null; path: string; label: string; bookmark: string | null } | null => {
@@ -2148,10 +2161,11 @@ export default function App(props: {
       const bookmark = bookmarks().find((candidate) => candidate.id === id);
       return { mount: id, path: "", label: bookmark?.name ?? id, bookmark: id };
     }
+    const over = paneUnder(position);
     const folder = folderUnder(position);
     if (folder !== null) {
       return {
-        mount: activeMountId(),
+        mount: over.mountId() ?? activeMountId(),
         path: folder,
         label: folder.slice(folder.lastIndexOf("/") + 1),
         bookmark: null,
@@ -2602,7 +2616,18 @@ export default function App(props: {
 
   /** Descend into a folder; anything else is not a navigation. */
   const open = (entry: Entry) => {
-    if (entry.kind === "dir") goTo(entry.path);
+    if (entry.kind === "dir") {
+      goTo(entry.path);
+      return;
+    }
+    // With two panes, direction is spatial and a double-click means the
+    // obvious one: send it to the other side *(handoff §Two-pane specifics)*.
+    // With one pane there is no other side, and opening a file is Quick Look's
+    // and Edit's job, so this stays what it was.
+    if (drawnPanes().length < 2) return;
+    // The click that precedes the double-click has already selected the row,
+    // so the transfer is of that entry.
+    void runPaneTransfer(focused(), panes[focus() === "left" ? "right" : "left"]);
   };
 
   /** The visible paths, in display order — what a range or a band spans. */
@@ -2739,6 +2764,10 @@ export default function App(props: {
       class={`${styles.paneColumn} ${
         drawnPanes().length > 1 && focus() === side.side ? styles.paneColumnFocused : ""
       }`}
+      // Hit-tested by the native drop target, which has a point and no element
+      // (E24-S2): a drop belongs to the pane it landed on, not to the focused
+      // one, because dragging somewhere is how you say where it goes.
+      data-pane={side.side}
       onPointerDown={() => focusPane(side.side)}
     >
       {/* The band names what the pane holds. The handoff says LOCAL SITE and

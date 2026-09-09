@@ -218,3 +218,55 @@ describe("the transfer gutter", () => {
     expect(uploads[0]?.[0]).toEqual(["/Users/dorian/Downloads/a.txt"]);
   });
 });
+
+describe("double-clicking across the panes (XTP-E3-S2)", () => {
+  /** A local mount on the left, so a transfer is expressible. */
+  async function localTwoPanes() {
+    await open({
+      saved: [
+        bookmark({
+          id: "local::/users/dorian/downloads",
+          name: "Downloads",
+          protocol: "local",
+          host: "",
+          share: "/Users/dorian/Downloads",
+        }),
+      ],
+    });
+    const row = [...host.querySelectorAll<HTMLElement>("[role='button']")].find((candidate) =>
+      candidate.textContent?.includes("Downloads"),
+    );
+    row?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await settle();
+    await settle();
+    await twoPanes();
+  }
+
+  it("sends a file to the other pane", async () => {
+    await localTwoPanes();
+    const row = rows()[0];
+    row?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    row?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await settle();
+    await settle();
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.[0]).toEqual(["/Users/dorian/Downloads/a.txt"]);
+  });
+
+  it("does nothing to a file with one pane, where there is no other side", async () => {
+    // Opening a file is Quick Look's and Edit's job; there is nowhere to send
+    // it, and a double-click that quietly started a transfer would be a
+    // surprise.
+    await open();
+    const row = rows()[0];
+    row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    row?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await settle();
+    await settle();
+    expect(uploads).toHaveLength(0);
+    expect(downloads).toHaveLength(0);
+  });
+});
