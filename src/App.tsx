@@ -1107,17 +1107,30 @@ export default function App(props: {
    * `upsert` rather than a map over the existing list: the bookmark may be one
    * this window has never held.
    */
+  /**
+   * Mount a bookmark into the focused pane (XTP-E8-S1).
+   *
+   * The focused pane, not "the window", because with two panes there are two
+   * answers and the focused one is the single value every other verb already
+   * reads. With one pane it is the only pane, so this is what it always did.
+   */
   const openMount = async (bookmark: Bookmark) => {
     try {
       await backend.mount(toSpec(toDraft(bookmark), bookmark.id));
+      const target = focused();
+      target.setMountId(bookmark.id);
+      target.setHistory(nav.initial());
+      // `mounted` is now "some pane is on it", which is why it is computed from
+      // the panes rather than set to the one bookmark just opened: with two
+      // panes on two shares, two bookmarks are mounted at once.
+      const held = mountedIds();
       persist(
         upsert(bookmarks(), bookmark).map((candidate) => ({
           ...candidate,
-          mounted: candidate.id === bookmark.id,
+          mounted: held.has(candidate.id),
         })),
       );
-      setHistory(nav.initial());
-      listingState.load("");
+      target.listingState.load("");
     } catch {
       setConnecting(toDraft(bookmark));
     }
@@ -1275,7 +1288,22 @@ export default function App(props: {
   const [confirmDelete, setConfirmDelete] = createSignal<string[] | null>(null);
 
   /** The mount the window is looking at, when there is a real one. */
-  const activeMountId = () => bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
+  /** Every share a drawn pane is on. Two of them once two panes are drawn. */
+  const mountedIds = () =>
+    new Set(
+      drawnPanes()
+        .map((side) => panes[side].mountId())
+        .filter((id): id is string => id !== null),
+    );
+  /**
+   * The share the window's verbs act on: the focused pane's.
+   *
+   * Falls back to whichever bookmark is mounted, which is what a window that
+   * has never named a mount has — the state every single-pane window is in
+   * until a bookmark is opened into a pane.
+   */
+  const activeMountId = () =>
+    focused().mountId() ?? bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
   const activeBookmark = () => bookmarks().find((bookmark) => bookmark.mounted) ?? null;
 
   /**

@@ -37,9 +37,9 @@ async function listenHere<T>(
 /** Calls the Rust side. File bytes never cross this boundary — only metadata. */
 export function tauriBackend(): Backend {
   return {
-    async listDir(path: string): Promise<Listing> {
+    async listDir(path: string, mount?: string): Promise<Listing> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<Listing>("list_dir", { path });
+      return invoke<Listing>("list_dir", { path, mount });
     },
     async testConnection(spec: Spec): Promise<MountInfo> {
       const { invoke } = await import("@tauri-apps/api/core");

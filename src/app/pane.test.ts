@@ -86,7 +86,9 @@ describe("a pane", () => {
       make({ listDir: right });
       a.listingState.load("Films");
       await settle();
-      expect(left).toHaveBeenCalledWith("Films");
+      // No mount named: the window's active one, which is every single-pane
+      // listing and was the only case before two panes.
+      expect(left).toHaveBeenCalledWith("Films", undefined);
       expect(right).not.toHaveBeenCalled();
     });
   });
@@ -129,6 +131,19 @@ describe("a pane", () => {
       await settle();
       // Twenty dropped files finishing is one relist, not twenty.
       expect(listDir.mock.calls.length).toBeLessThan(3);
+    });
+  });
+
+  it("lists its own share once it has one", () => {
+    // Two panes can be on two shares, and a listing that went to the window's
+    // active mount would draw the wrong one in whichever pane is not focused
+    // (`twopane.md` XTP-E8-S1).
+    const listDir = vi.fn(emptyListing);
+    withPane((make) => {
+      const pane = make({ listDir });
+      pane.setMountId("xsync:freya.local:/mnt/data");
+      pane.listingState.load("media");
+      expect(listDir).toHaveBeenCalledWith("media", "xsync:freya.local:/mnt/data");
     });
   });
 });

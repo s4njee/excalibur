@@ -12,13 +12,15 @@ pub(crate) async fn list_dir(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     path: String,
+    mount: Option<String>,
 ) -> std::result::Result<Listing, CommandError> {
-    state
-        .backend(&window)
-        .await?
-        .list_dir(&path)
-        .await
-        .map_err(Into::into)
+    // `mount` names which share to list, for a window drawing two panes on two
+    // of them (`twopane.md` XTP-E8-S1). Absent is this window's active mount,
+    // which is every single-pane listing and was the only case until now — the
+    // same rule `rename`, `remove` and `check_conflicts` already follow for a
+    // drop carrying another window's selection (E24-S2).
+    let (_, backend) = state.mount_and_backend(&window, mount.as_deref()).await?;
+    backend.list_dir(&path).await.map_err(Into::into)
 }
 
 /// The mount facts alone, for a status bar refresh that does not need a

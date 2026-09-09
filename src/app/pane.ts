@@ -29,7 +29,14 @@ import type { Listing } from "../state/types";
 export interface PaneOptions {
   /** Where the pane opens. A ⌘N window inherits the folder, not the trail. */
   path?: string;
-  listDir: (path: string) => Promise<Listing>;
+  /**
+   * Reads *this* pane's share.
+   *
+   * The mount is the pane's, not the window's: two panes can be on two shares
+   * (`twopane.md` XTP-E8-S1), and a listing that went to the window's active
+   * mount would draw the wrong share in one of them.
+   */
+  listDir: (path: string, mount?: string) => Promise<Listing>;
   /** The browser preview opens with a row selected; the app does not. */
   selection?: Selection;
 }
@@ -47,13 +54,23 @@ export type Pane = ReturnType<typeof createPane>;
 export type PaneSide = "left" | "right";
 
 export function createPane(options: PaneOptions) {
+  /**
+   * The bookmark this pane is on, or `null` for the window's active mount.
+   *
+   * `null` rather than a guess: a window with one pane has never named a mount
+   * and must keep not naming one, so the shell answers with whatever it made
+   * active. Only a pane a share was deliberately opened into carries an id.
+   */
+  const [mountId, setMountId] = createSignal<string | null>(null);
   // A window opened by ⌘N starts in the folder the window that opened it was
   // showing, with no history behind it: Back in a new window has nowhere to go,
   // and inheriting somebody else's trail would give it somewhere wrong.
   const [history, setHistory] = createSignal<nav.History>(nav.initial(options.path ?? ""));
   const path = () => nav.current(history());
 
-  const listingState = createListing(options.listDir);
+  const listingState = createListing((target) =>
+    options.listDir(target, mountId() ?? undefined),
+  );
   const listing = listingState.listing;
 
   const refresh = coalesce(() => listingState.load(path()));
@@ -82,6 +99,8 @@ export function createPane(options: PaneOptions) {
   const selected = () => selection().paths as Set<string>;
 
   return {
+    mountId,
+    setMountId,
     history,
     setHistory,
     path,

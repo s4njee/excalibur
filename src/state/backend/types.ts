@@ -20,7 +20,14 @@ export interface HttpClientSettings {
   username: string | null;
 }
 export interface Backend {
-  listDir(path: string): Promise<Listing>;
+  /**
+   * List one directory.
+   *
+   * `mount` names which share, for a window drawing two panes on two of them
+   * (`twopane.md` XTP-E8-S1). Absent is the window's active mount, which is
+   * every single-pane listing.
+   */
+  listDir(path: string, mount?: string): Promise<Listing>;
   /** Connect, report what was found, and disconnect again. */
   testConnection(spec: Spec): Promise<MountInfo>;
   /** Connect and keep it, making it the active mount. */

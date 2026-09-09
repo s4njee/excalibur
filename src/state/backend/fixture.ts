@@ -92,7 +92,8 @@ export function fixtureBackend(
   }));
 
   return {
-    async listDir(path = ""): Promise<Listing> {
+    // The preview has one share, so `mount` is accepted and ignored.
+    async listDir(path = "", _mount?: string): Promise<Listing> {
       if (options.disconnected) {
         // The shape `AppState::backend()` rejects with, so the window is
         // reading the same failure it would in the app.
