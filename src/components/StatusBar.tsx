@@ -19,6 +19,16 @@ export function StatusBar(props: {
   onRemount?: () => void;
   /** A remount is in flight. */
   remounting?: boolean;
+  /**
+   * This pane is a folder on this machine (`twopane.md` XTP-E2-S2).
+   *
+   * The badge says `LOCAL` rather than `RW` then: a local folder's writability
+   * is rarely the question, and with two panes the useful thing to know at a
+   * glance is which side is this machine. `RO` still wins over it — a
+   * read-only folder is a warning, and losing it to a label would be trading
+   * the badge's whole job for a convenience.
+   */
+  local?: boolean;
 }) {
   return (
     // A live region (E16-S2): whether the mount is writable, and why it is
@@ -34,9 +44,15 @@ export function StatusBar(props: {
         {(mount) => (
           <>
             <span
-              class={`${styles.badge} ${mount().writable ? styles.badgeRw : styles.badgeRo}`}
+              class={`${styles.badge} ${
+                !mount().writable
+                  ? styles.badgeRo
+                  : props.local
+                    ? styles.badgeLocal
+                    : styles.badgeRw
+              }`}
             >
-              {mount().writable ? "RW" : "RO"}
+              {!mount().writable ? "RO" : props.local ? "LOCAL" : "RW"}
             </span>
             <span class={styles.truncate}>
               <Show

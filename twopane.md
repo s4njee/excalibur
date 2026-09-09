@@ -137,7 +137,15 @@ living in one pane instance.
   item count, and "free of total" right-aligned.
 - Both read from the pane, so neither can drift from the other or from the listing —
   `list_dir` already returns mount facts alongside entries, which is the property that
-  makes this true.
+  makes this true. The event stream and the banner are the window's and describe the
+  *active* mount, so they overlay only the pane holding it: a reconnect on one share
+  must not redden the other pane's dot.
+- **Capacity stays inline and the protocol line keeps the right edge** until XTP-E2-S3
+  moves it to the toolbar; two things cannot claim that corner at once. Recorded in
+  `docs/design-gaps.md`.
+- `RO` outranks `LOCAL`, which the handoff never has to decide because it never draws a
+  read-only local folder. A folder you cannot write is a warning; which machine it is on
+  is not.
 
 #### XTP-E2-S3 — The two-pane toolbar
 **AC**
@@ -530,3 +538,5 @@ The handoff names these as *Not yet designed*, and each one is reachable in this
   XTP-E7-S2: one editable field, in the toolbar).
 - What the protocol line reads for a non-xsync backend, now that it is the only place the
   transport is named in two-pane mode.
+- Whether a read-only folder on this machine wants a badge of its own (XTP-E2-S2): `RO`
+  alone loses the side, and `RO LOCAL` is two chips where the bar has room for one.

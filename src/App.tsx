@@ -186,6 +186,10 @@ export default function App(props: {
   // other way round, so every way of navigating — a double-click, the
   // breadcrumb, Back, the keyboard — goes through one place.
   //
+  // The mount travels with the request: a pane holding its own share must not
+  // have its listing served by the window's (XTP-E8-S1). Dropping the argument
+  // here is how both panes come to show the focused pane's share.
+  const listDir = (target: string, mount?: string) => backend.listDir(target, mount);
   /**
    * Where this window is, and what is selected there (`app/pane.ts`).
    *
@@ -193,7 +197,6 @@ export default function App(props: {
    * Destructured so every reader below says `path()` and `listing()` as it
    * always did — the point of this step is that nothing had to change to fit.
    */
-  const listDir = (target: string) => backend.listDir(target);
   const panes: Record<PaneSide, Pane> = {
     // The browser preview opens with a row selected, because the design's
     // screens draw one and there is no way to click in a screenshot.
@@ -1310,6 +1313,8 @@ export default function App(props: {
   const activeMountId = () =>
     focused().mountId() ?? bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
   const activeBookmark = () => bookmarks().find((bookmark) => bookmark.mounted) ?? null;
+  /** A pane's own mount id, falling back to the window's for a pane that has none. */
+  const mountIdOf = (target: Pane) => target.mountId() ?? activeMountId();
 
   /**
    * Another window changed something on this window's share (E23-S1).
@@ -1360,23 +1365,6 @@ export default function App(props: {
   });
 
   /**
-   * The mount as the status bar should describe it.
-   *
-   * The listing is the authority on `writable` and capacity, because those
-   * travel with it. The *status* comes from the event stream, which is the only
-   * thing that knows about a mount that has stopped answering.
-   */
-  const mountFacts = (): MountInfo | undefined => {
-    const current = listing()?.mount;
-    if (!current) return undefined;
-    const event = mountEvent();
-    // A banner and a green health dot at the same time would be the window
-    // disagreeing with itself, so the dot follows whichever is worse.
-    const status = event?.status ?? (problem() === null ? current.status : "error");
-    return { ...current, status };
-  };
-
-  /**
    * The read-only recovery path.
    *
    * A refused upgrade is not an error: the engine resolves with the mount facts
@@ -1410,6 +1398,18 @@ export default function App(props: {
    */
   const remountAction = () => {
     const id = activeMountId();
+    return id === null ? undefined : () => void remountReadWrite(id);
+  };
+
+  /**
+   * The same button, retrying the share the pane it sits under is holding.
+   *
+   * Taking the id from the window would have the right pane's Remount upgrade
+   * the left pane's share — a button acting on a share the user is not looking
+   * at.
+   */
+  const remountActionFor = (target: Pane) => {
+    const id = mountIdOf(target);
     return id === null ? undefined : () => void remountReadWrite(id);
   };
 
@@ -2422,7 +2422,7 @@ export default function App(props: {
       const cut = candidate.lastIndexOf("/");
       return cut === -1 ? "" : candidate.slice(0, cut);
     };
-    const mine = target.mountId() ?? activeMountId();
+    const mine = mountIdOf(target);
     return transfers().filter((transfer) => {
       if (transfer.status !== "running" && transfer.status !== "queued") return false;
       const parent = parentOf(transfer.destPath);
@@ -2493,11 +2493,11 @@ export default function App(props: {
    * numbers describe one population — "3 of 13" must not compare a filtered
    * count against a total that includes dotfiles the list is not showing.
    */
-  const totalEntries = createMemo(() => {
-    const data = listing();
+  const totalIn = (target: Pane) => {
+    const data = target.listing();
     if (!data) return 0;
     return showHidden() ? data.entries.length : data.entries.filter((e) => !e.hidden).length;
-  });
+  };
 
   /**
    * The selection as it is on screen.
@@ -2755,9 +2755,29 @@ export default function App(props: {
    * rather than asking the window, which now has two.
    */
   const mountOf = (target: Pane) => target.listing()?.mount;
-  const bookmarkOf = (target: Pane) => {
-    const id = target.mountId() ?? activeMountId();
-    return bookmarks().find((candidate) => candidate.id === id);
+  const bookmarkOf = (target: Pane) =>
+    bookmarks().find((candidate) => candidate.id === mountIdOf(target));
+
+  /**
+   * A pane's mount as its own status bar should describe it (XTP-E2-S2).
+   *
+   * The listing is the authority on `writable` and capacity, because those
+   * travel with it — which is the property that lets a pane answer for itself
+   * rather than asking the window, which now has two. What is new is *whose*
+   * status the event stream is talking about: `onMountChanged` and the banner
+   * both follow the active mount, so they only overlay the pane holding it. A
+   * reconnect on the left share reddening the right pane's dot would be the
+   * drift this story exists to remove.
+   */
+  const mountFactsOf = (target: Pane): MountInfo | undefined => {
+    const current = mountOf(target);
+    if (!current) return undefined;
+    if (mountIdOf(target) !== activeMountId()) return current;
+    const event = mountEvent();
+    // A banner and a green health dot at the same time would be the window
+    // disagreeing with itself, so the dot follows whichever is worse.
+    const status = event?.status ?? (problem() === null ? current.status : "error");
+    return { ...current, status };
   };
   const isLocalPane = (target: Pane) => bookmarkOf(target)?.protocol === "local";
   /** A local mount's `share` is its absolute root, so a row's path hangs off it. */
@@ -2871,7 +2891,9 @@ export default function App(props: {
                     fallback={
                       <ColumnView
                         path={side.pane.path()}
-                        listDir={(target) => backend.listDir(target)}
+                        listDir={(target) =>
+                          backend.listDir(target, mountIdOf(side.pane) ?? undefined)
+                        }
                         prepare={(list) => visibleOf(list, side.pane.filter())}
                         selected={side.pane.selected}
                         onSelect={select}
@@ -2909,14 +2931,17 @@ export default function App(props: {
                   />
                   </Show>
                 </Show>
+                {/* Every number here is the pane's own, so two panes on two
+                    shares cannot come to describe each other (XTP-E2-S2). */}
                 <StatusBar
-                  mount={mountFacts()}
+                  mount={mountFactsOf(side.pane)}
+                  local={isLocalPane(side.pane)}
                   path={mountPathOf(side.pane)}
                   items={entriesOf(side.pane).length}
-                  total={totalEntries()}
+                  total={totalIn(side.pane)}
                   selected={selectedVisibleOf(side.pane).length}
                   remounting={remounting()}
-                  onRemount={remountAction()}
+                  onRemount={remountActionFor(side.pane)}
                   selectedBytes={selectedBytesOf(side.pane)}
                 />
           </div>
@@ -3165,7 +3190,7 @@ export default function App(props: {
             entries={entries()}
             from={path()}
             shareName={share() ?? ""}
-            listDir={(at) => backend.listDir(at)}
+            listDir={(at) => backend.listDir(at, mountIdOf(focused()) ?? undefined)}
             onMove={(destination) => void runMove(entries(), destination)}
             onCancel={() => setMoving(null)}
           />
@@ -3282,7 +3307,7 @@ export default function App(props: {
         <GoToFolder
           initial={goingTo() ?? ""}
           shareName={share() ?? ""}
-          listDir={(target) => backend.listDir(target)}
+          listDir={(target) => backend.listDir(target, mountIdOf(focused()) ?? undefined)}
           onGo={(target) => {
             setGoingTo(null);
             goTo(target);

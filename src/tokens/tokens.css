@@ -99,6 +99,10 @@
   --badge-muted-text: #6a6a70;
   --badge-ro-bg: #4a4b50;
   --badge-ro-text: #e8e8ea;
+  /* The handoff's `LOCAL` badge on the two-pane local side: `#e2e2e5` with the
+     ordinary text colour, because it labels rather than warns (XTP-E2-S2). */
+  --badge-local-bg: #e2e2e5;
+  --badge-local-text: #3a3a40;
 
   /* Disabled */
   --disabled-text: #b0b0b6;
@@ -190,6 +194,10 @@
   --badge-success-text: #3fcf96;
   --badge-error-text: #f07575;
   --badge-muted-text: #a7a8ad;
+  /* `RO` keeps its light values in dark, being already a dark chip; `LOCAL`
+     has to invert or it is a white block on a dark bar. */
+  --badge-local-bg: #3a3b3f;
+  --badge-local-text: #d6d6da;
 
   color-scheme: dark;
 }

@@ -979,6 +979,13 @@
   color: #ffffff;
 }
 
+/* A folder on this machine. Neutral, because it is a label rather than a
+   permission: the permission badges are `RW` and `RO`, and `RO` still wins. */
+.badgeLocal {
+  background: var(--badge-local-bg);
+  color: var(--badge-local-text);
+}
+
 .badgeRo {
   background: var(--badge-ro-bg);
   color: var(--badge-ro-text);

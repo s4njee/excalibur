@@ -8,6 +8,26 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## Two panes: what each status bar says *(XTP-E2-S2, 2026-09-09)*
+
+The handoff's two-pane bars carry a badge, counts, and capacity right-aligned —
+and nothing else, because its two-pane toolbar is where the protocol line and
+the health dot live. This app's toolbar has not moved them yet (that is
+XTP-E2-S3), so each pane's bar keeps the single-pane layout it already had:
+capacity inline, protocol and dot at the right edge. Putting capacity on the
+right today would have two things claiming the same corner.
+
+**`LOCAL` is a label, not a permission.** The handoff badges the local side
+`LOCAL` on `#e2e2e5`; with two panes the useful thing to know at a glance is
+which side is this machine. `RO` still wins over it, which the handoff never has
+to decide because it never draws a read-only local folder. A folder you cannot
+write is a warning; which machine it is on is not, and trading the one for the
+other would cost the badge its job.
+
+**For the designer:** whether capacity should move to the right edge as soon as
+XTP-E2-S3 frees it, and whether a read-only local folder wants a badge of its
+own — `RO LOCAL` is two chips, and `RO` alone loses the side.
+
 ## Two panes: what the toolbar keeps *(XTP-E7-S2, 2026-09-09)*
 
 The handoff's two-pane toolbar drops `Download` and `Upload` because direction
