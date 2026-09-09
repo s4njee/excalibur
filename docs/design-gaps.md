@@ -8,6 +8,93 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## The toolbar's View menu *(E17-S1, 2026-09-09)*
+
+The handoff draws no such control: its toolbar is navigation, the path field,
+the share verbs and a filter, and the row layouts `1f`/`1g`/`1h` are presented
+as a pick for the designer rather than as something the user switches between.
+The window nevertheless shipped all three behind ⌘1/⌘2/⌘3, plus `Show hidden`
+and `Folders first` in Preferences — settings with no visible affordance.
+*Asked for directly: "there should be a view hamburger style menu in the
+toolbar that lets you hide dotfiles or make the view icons instead of details".*
+
+A `☰` icon button beside Preferences opens the file list's own `ContextMenu`,
+so Escape, the arrow keys and the focus ring are the ones already built. The
+rows carry a leading `✓` rather than a checked state, because `MenuItem` has
+none and adding one would touch every other menu for the sake of this one; the
+tick's space is always present so the labels stay aligned.
+
+**Amended the same day: there is an icon view now (E26-S4).** *Asked for
+directly: "yes build the icon view".* A fourth layout the handoff does not
+draw — a wrapping grid of cells, each a scaled-up copy of the row glyphs over
+a name that wraps to two lines and then ellipsises. It is ⌘4 and the menu's
+fourth row.
+
+What it keeps from the row layouts, because losing any of them would be the
+real cost: the virtual window (`gridRange` is `visibleRange` done in grid rows
+and multiplied back out, so a 10,000-entry folder still draws a bounded number
+of cells), the selection, the drop target and the hidden-file dimming — a cell
+is `.row` with the grid's geometry, so those rules stay written once.
+
+Three decisions worth recording:
+
+- **The `..` row is not a cell.** It stays a full-width row above the grid at
+  the columns layout's height; a cell's 96px would draw an enormous empty band
+  over the listing.
+- **Selection paints the cell's inner box, not the grid square.** A cell is
+  mostly whitespace, and filling it edge to edge reads as a block rather than
+  as a selected thing.
+- **Cells stretch to share out the width.** `ICON_CELL_WIDTH` is a minimum the
+  list divides by, not a drawn width, so a wide window has no ragged margin.
+
+**Band selection understands the grid** *(added the same day, asked for
+directly: "yes add band selection for the grid")*. `rowsInBand` could not
+answer it: a band over rows is a vertical extent and so a contiguous range of
+indices, while a band over cells is a rectangle whose cells are a block —
+rows 2–4, columns 1–3 — which is not contiguous in index order at all. So
+`cellsInBand` returns the covered indices, by intersection rather than
+containment, because dragging across the corner of a cell selects it in every
+file manager. The band itself gained a horizontal extent; the row layouts leave
+it unset and keep stretching edge to edge.
+
+That changed `onBand` from `(start, end, additive)` to `(paths, additive)`.
+There is no range to slice for a grid, and the list already holds the entries
+in the order it drew them — it is the only place that can turn a rectangle into
+files, so it does, and the window stops reproducing the list's ordering to do
+the same job.
+
+**Column view is built too** *(asked for directly: "now build column view")*.
+The other half of E26-S4, and the only layout that is not this directory drawn
+differently: it draws the *ancestors* as well, one pane per level of the path,
+each its own listing. That makes it a component beside `FileList` rather than a
+fifth arm inside it — `App` switches between them.
+
+- **Each pane loads itself**, the way `GoToFolder` does, rather than the window
+  fetching a list of listings and holding them. The panes are derived from the
+  path, so the path changing is the only event that matters, and
+  `createResource` already keys a load to exactly that.
+- **The window's filter, hidden-file and sort rules are handed down** as one
+  function. A pane that sorted differently from the one beside it, or showed
+  dotfiles the list was hiding, would be describing a different folder.
+- **A single click on a folder opens its pane** — the gesture of this view —
+  where every other layout wants a double. A file is only selected, because
+  there is no pane past it.
+- **The child that opened the next pane is marked with the design's soft
+  selection**, not the full one: it says where the path goes rather than what a
+  verb would act on, and both can be true of different rows at once.
+- **Each pane virtualises separately.** A pane is narrow, not short; a folder
+  with ten thousand files has ten thousand of them here too.
+- **A pane that cannot be read says so in place.** The window's banner is about
+  the *mount*, and one level of a path being unreadable is not that.
+
+**Not carried over into this layout:** the rubber band, drag-and-drop, inline
+rename, and the file preview pane Finder shows in the last column. The verbs in
+the toolbar act on the selection and work; the gestures that live on the list
+itself do not reach the panes.
+
+**For the designer:** whether these belong in a menu at all, or as a segmented
+control in the toolbar the way the reference draws its row-layout pick.
+
 ## Downloads as a tab, not the reference's whole app *(XDL-E2-S1, 2026-09-07)*
 
 **The reference** (`design_handoff_aria2_download_manager/`) is a whole app:
@@ -40,6 +127,52 @@ the global success green never reaches 4.5:1 on a light fill — and the table
 adds a narrow actions column the reference does not draw, because its
 right-click menu has no equivalent here and the rows must keep their
 Pause/Cancel/Resume/Retry.
+
+**Amended 2026-09-09 (asked for directly: "make a transfers pane and move out
+the categories from the sidebar and have it in a pane that opens when you
+click a button in the menubar"): the tab is gone and the pane is the only
+queue.** The window now always browses. CATEGORIES left the sidebar and became
+a tab strip inside the transfers sheet, which is reached from a Transfers
+button in the toolbar and from the View menu's Transfers item (⇧⌘T, the
+accelerator `state/shortcuts.ts` already declared). Three consequences worth
+naming:
+
+- **The sheet adopted the table, and the compact rows are gone.** Two
+  densities were only ever justified by two surfaces; with one surface the
+  denser rows were the half nobody would see. The sheet is 720px rather than
+  the handoff's 560px because the table's Host and Size columns collapse into
+  each other below that, and `ROW_CAP` went with the rows — the table
+  virtualises, which is what the cap was standing in for.
+- **Add URL stayed in the toolbar, where the reference draws it.** It moved
+  into the pane's header on 2026-09-09 — reasoning that the toolbar belonged to
+  the file list — and that was wrong: it made the only route to the HTTP
+  downloader "open the transfers pane and notice a button in its header", which
+  is no route at all. *Asked for directly: "there is no obvious way to access
+  the http downloader. there should be a button in the toolbar to open it".* It
+  now sits beside the Transfers button, the two queue controls grouped at the
+  end of the toolbar, and the pane's header is back to Queue actions and Close.
+- **The share verbs no longer disappear.** The pane is a sheet over the
+  window rather than a place the window goes, so Quick Look, Edit, Download
+  and Upload stay live behind it — the opposite of what the downloads view
+  did, and the reason the "drops the share verbs" test inverted.
+
+**Amended 2026-09-09: the Add Download dialog no longer reads the clipboard.**
+It used to, on mount and on every window focus, offering a URL it found there
+without filling the field — a nicety with an AC behind it. macOS Sequoia made a
+programmatic pasteboard read raise a system Paste confirmation the user has to
+click, so on macOS 26 the offer cost a prompt every time the dialog opened and
+reaching the downloader took two clicks. *Reported directly: "it takes two
+clicks to get to the downloader, the first click opens a context menu, the
+second opens the download window".* A real ⌘V is not a programmatic read and
+raises nothing, and the URL field is focused the moment the dialog opens, so
+pasting is one keystroke with no prompt. The offer could come back behind an
+explicit "Paste from clipboard" button — the prompt would then be the user's
+own doing — if the convenience is judged worth the click.
+
+**For the designer:** the pane is a floating sheet, not the docked bottom
+drawer that `design_handoff_share_browser 2/`'s two-pane mode specifies
+(`twopane.md` XTP-E4). When that lands, these are two presentations of one
+queue and should probably become one component.
 
 **Amended 2026-09-07 (XDL-E2-S3): the indeterminate bar the reference does
 not draw.** A download with no declared length needs a liveness signal, so
@@ -790,11 +923,19 @@ Seven judgement calls, in the order they will be argued about:
    Labelling it "Videos" everywhere would name a folder a Mac does not have.
    By the same rule Linux gets no `Applications` row at all, because it has no
    such folder anyone browses.
-4. **Opening a favourite also leaves a bookmark behind.** The window's model is
-   one mount at a time and a mount is a bookmark, so a favourite that has been
-   opened appears under `MOUNTED` and afterwards under `BOOKMARKS`. The
-   alternative is a second way to hold a mount, and two answers to "what is
-   this window on".
+4. **Opening a favourite mounts it without leaving a bookmark behind**
+   *(amended 2026-09-09)*. The window's model is still one mount at a time and
+   a mount is still a bookmark, so opening a folder from `FAVORITES` produces
+   one — it appears under `MOUNTED`, because the window has to be able to say
+   what it is on. It no longer outlives the mount: the bookmark is kept in
+   memory, left out of the store, and never drawn under `BOOKMARKS`. *Asked for
+   directly: "browsing the favorites shouldnt add them to the bookmarks, thats
+   redundant".* This originally read the other way, on the grounds that the
+   alternative was a second way to hold a mount; keeping the bookmark and
+   hiding it costs no second mechanism, so that objection does not apply.
+   Tracked by id, not by path — the OS folders are seeded as favourites, so a
+   path test would also hide a bookmark the user had deliberately saved for one
+   of them.
 5. **A drop highlights the whole section**, not a row: the drop adds to a list
    rather than landing in any one folder. The ring says `Add to Favorites` even
    when the drag is carrying a file, because the pasteboard carries no kind

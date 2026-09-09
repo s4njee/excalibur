@@ -51,8 +51,6 @@ export function AddDownloadDialog(props: {
 }) {
   const [text, setText] = createSignal(props.initialUrls?.join("\n") ?? "");
   const [dest, setDest] = createSignal(props.folder);
-  /** The URL the clipboard is offering to fill, while it is being offered. */
-  const [offered, setOffered] = createSignal<string | null>(null);
   const [mode, setMode] = createSignal<"separate" | "mirrors">("separate");
   const [limits, setLimits] = createSignal<HttpDownloadLimits | null>(null);
   const [connectionChoice, setConnectionChoice] = createSignal<number | null>(null);
@@ -61,30 +59,19 @@ export function AddDownloadDialog(props: {
 
   let urlBox: HTMLTextAreaElement | undefined;
 
-  // The window's focus is the "tab focused" of the AC: read the clipboard
-  // when the dialog is first shown and when the window comes back to the
-  // front, and offer — never fill — when it holds a single usable URL.
-  const offerFromClipboard = async () => {
-    try {
-      const read = navigator.clipboard?.readText;
-      if (!read) return;
-      const raw = (await read.call(navigator.clipboard)).trim();
-      if (raw === "" || validateDownloadUrl(raw) !== null) {
-        setOffered(null);
-        return;
-      }
-      setOffered(raw);
-    } catch {
-      // No permission, or no clipboard in this shell. Nothing to offer, and a
-      // prompt to grant access is not the point of the AC.
-      setOffered(null);
-    }
-  };
+  // The dialog deliberately does *not* read the clipboard.
+  //
+  // It used to, on mount and on every window focus, to offer a URL it found
+  // there without filling the field. macOS Sequoia made a programmatic
+  // pasteboard read raise a system "Paste" confirmation the user has to click,
+  // so the offer cost a prompt every single time the dialog opened — two
+  // clicks to reach a downloader that should take one (reported 2026-09-09).
+  //
+  // A real ⌘V is not a programmatic read and raises nothing, and the field
+  // below is focused the moment this opens, so pasting is already one
+  // keystroke. Recorded in `docs/design-gaps.md`.
   onMount(() => {
     urlBox?.focus();
-    void offerFromClipboard();
-    const onFocus = () => void offerFromClipboard();
-    window.addEventListener("focus", onFocus);
     // Capture phase, stopped here, the way Move to… does: the window's own
     // Escape clears the filter and then the selection in the list underneath,
     // and one Escape must close one thing.
@@ -96,7 +83,6 @@ export function AddDownloadDialog(props: {
     };
     window.addEventListener("keydown", onKey, true);
     onCleanup(() => {
-      window.removeEventListener("focus", onFocus);
       window.removeEventListener("keydown", onKey, true);
     });
   });
@@ -255,27 +241,6 @@ export function AddDownloadDialog(props: {
               </Show>
             </div>
 
-            <Show when={offered()}>
-              {(url) => (
-                <>
-                  <span />
-                  <div class={styles.clipboard}>
-                    <span class={styles.clipboardText}>
-                      Clipboard: {redactUrlHost(url()) ?? url()}
-                    </span>
-                    <button
-                      class={dialog.action}
-                      onClick={() => {
-                        setText(url());
-                        setOffered(null);
-                      }}
-                    >
-                      Use it
-                    </button>
-                  </div>
-                </>
-              )}
-            </Show>
 
             <Show when={validUrls().length > 0 && props.backend?.probeHttpDownload}>
               <span />

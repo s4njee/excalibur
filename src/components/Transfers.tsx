@@ -1,25 +1,16 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import styles from "./transfers.module.css";
 import { ContextMenu } from "./ContextMenu";
-import { DownloadsTable, transferRemountable } from "./DownloadsTable";
+import { DownloadsTable } from "./DownloadsTable";
 import { Sparkline } from "./Sparkline";
-import { fractionOf } from "../state/downloads";
+import { filterByCategory, type DownloadCategory } from "../state/downloads";
+import { resized, type PaneSize } from "../state/paneSize";
 import { activeCount, aggregateRate, pushSample, remainingBytes } from "../state/throughput";
-import { formatRate, formatSize, formatTransferStatus } from "../state/format";
+import { formatRate, formatSize } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
 import type { NamedQueue } from "../state/types";
 import { QueueControls } from "./QueueControls";
-
-/**
- * Rows drawn before the panel stops and offers the rest.
- *
- * Generous on purpose: an ordinary queue is a handful of rows and never reaches
- * this, and a folder is one row now (E22-S3). It exists for the batch of
- * individual files that used to be the normal case, where the panel opening on
- * launch cost seconds of a blank window.
- */
-const ROW_CAP = 200;
 
 /**
  * The transfer queue (E13-S1, E13-S2).
@@ -29,17 +20,29 @@ const ROW_CAP = 200;
  * preference that would offer the other has nowhere to live until E17.
  * Recorded in `docs/design-gaps.md`.
  *
- * `embedded` draws the same queue as the window's downloads view instead
- * (XDL-E2-S1): a region titled Downloads with no Close button, because there
- * is no panel to dismiss — leaving is the sidebar's job. The rows, the bulk
- * menu and the footer are untouched, so the sheet and the tab cannot disagree.
+ * The only transfers surface there is: the window always browses, and the
+ * categories that used to be sidebar rows are this panel's tab strip. It
+ * draws the reference's table rather than a second, compact row shape — one
+ * queue seen one way, so the two densities can no longer disagree.
  */
 export function Transfers(props: {
   transfers: Transfer[];
-  /** Absent in the embedded view, where leaving is the sidebar's job. */
-  onClose?: () => void;
-  /** Draw as the downloads view rather than the sheet. */
-  embedded?: boolean;
+  /** Required: a sheet with no way out is a trap. */
+  onClose: () => void;
+  /**
+   * The queue grouped the way the reference groups it (XDL-E2-S1), with counts
+   * off the *whole* queue so a tab's number does not change as tabs are
+   * switched. Owned by the window, which persists the chosen one.
+   */
+  categories: { id: DownloadCategory; label: string; count: number }[];
+  category: DownloadCategory;
+  onCategory: (id: DownloadCategory) => void;
+  /** Remembered across launches; `height: null` is as tall as the queue needs. */
+  size: PaneSize;
+  /** During a drag, every frame. */
+  onResize: (size: PaneSize) => void;
+  /** On release, which is when it is worth writing to the store. */
+  onResizeEnd: () => void;
   onPauseAll: () => void;
   onClearFinished: () => void;
   onRetryFailed: () => void;
@@ -79,22 +82,20 @@ export function Transfers(props: {
     onCleanup(() => clearInterval(timer));
   });
 
-  /** How many rows are drawn before the panel offers the rest. */
-  const [cap, setCap] = createSignal<number>(ROW_CAP);
   const [selectedQueue, setSelectedQueue] = createSignal("all");
   const queues = () => props.queues ?? [];
-  const queueTransfers = createMemo(() => selectedQueue() === "all"
-    ? props.transfers
-    : props.transfers.filter((transfer) => (transfer.queueId ?? "default") === selectedQueue()));
+  // Two independent narrowings, applied in the order the user thinks of them:
+  // the tab says which *kind* of row, the queue control says which *queue*.
+  const queueTransfers = createMemo(() => {
+    const byCategory = filterByCategory(props.transfers, props.category);
+    return selectedQueue() === "all"
+      ? byCategory
+      : byCategory.filter((transfer) => (transfer.queueId ?? "default") === selectedQueue());
+  });
   createEffect(() => {
     const id = selectedQueue();
     if (id !== "all" && !queues().some((queue) => queue.id === id)) setSelectedQueue("all");
   });
-  const shown = createMemo(() => {
-    const rows = queueTransfers();
-    return rows.length > cap() ? rows.slice(0, cap()) : rows;
-  });
-
   /** Where the overflow menu was opened, while it is open. */
   const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | null>(null);
   let hamburger!: HTMLButtonElement;
@@ -109,6 +110,42 @@ export function Transfers(props: {
     // fixed control, not by right-clicking a row, so it should appear in the
     // same place whether it was reached by mouse or by keyboard.
     setMenuAt({ x: box.left, y: box.bottom + 2 });
+  };
+
+  let panel!: HTMLDivElement;
+
+  /**
+   * Drag one edge, or the corner.
+   *
+   * The measurements are taken here rather than in `paneSize` because they are
+   * the DOM's: what the panel is drawing right now (which is how a `null`
+   * height becomes a number the user can pull on), and how much room it has
+   * left in the window. `resized` is the arithmetic over those.
+   */
+  const startResize = (edges: { left: boolean; bottom: boolean }) => (event: PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const box = panel.getBoundingClientRect();
+    const start = { width: box.width, height: box.height };
+    const origin = { x: event.clientX, y: event.clientY };
+    // The pane is anchored under the chrome, so the room below it is the
+    // window minus where it starts. A margin keeps a corner reachable.
+    const available = {
+      width: Math.max(0, window.innerWidth - 16),
+      height: Math.max(0, window.innerHeight - box.top - 16),
+    };
+    const move = (moved: PointerEvent) => {
+      props.onResize(
+        resized(start, { x: moved.clientX - origin.x, y: moved.clientY - origin.y }, edges, available),
+      );
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      props.onResizeEnd();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   };
 
   const runMenuAction = (action: TransferMenuAction) => {
@@ -130,12 +167,41 @@ export function Transfers(props: {
 
   return (
     <div
-      class={`${styles.panel} ${props.embedded ? styles.panelEmbedded : ""}`}
-      role={props.embedded ? "region" : "dialog"}
-      aria-label={props.embedded ? "Downloads" : "Transfers"}
+      ref={panel}
+      class={styles.panel}
+      role="dialog"
+      aria-label="Transfers"
+      style={{
+        width: `${props.size.width}px`,
+        ...(props.size.height === null ? {} : { height: `${props.size.height}px` }),
+      }}
     >
+      {/* Three grips for two dimensions. `separator` with an orientation is
+          what the column dividers use, and the corner is given the vertical
+          one because width is the dimension people reach for it to change. */}
+      <div
+        class={styles.resizeLeft}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize pane width"
+        onPointerDown={startResize({ left: true, bottom: false })}
+      />
+      <div
+        class={styles.resizeBottom}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize pane height"
+        onPointerDown={startResize({ left: false, bottom: true })}
+      />
+      <div
+        class={styles.resizeCorner}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize pane"
+        onPointerDown={startResize({ left: true, bottom: true })}
+      />
       <div class={styles.header}>
-        <span class={styles.title}>{props.embedded ? "Downloads" : "Transfers"}</span>
+        <span class={styles.title}>Transfers</span>
         <Show when={props.queues && props.onCreateQueue && props.onUpdateQueue && props.onDeleteQueue && props.onMoveToQueue && props.onReorderQueue && props.onReorderQueues}>
           <QueueControls
             queues={queues()}
@@ -162,13 +228,34 @@ export function Transfers(props: {
         >
           ☰
         </button>
-        <Show when={!props.embedded && props.onClose}>
-          {(close) => (
-            <button class={styles.headerAction} aria-label="Close" onClick={() => close()()}>
-              ✕
-            </button>
-          )}
-        </Show>
+        <button class={styles.headerAction} aria-label="Close" onClick={props.onClose}>
+          ✕
+        </button>
+      </div>
+
+      {/* CATEGORIES (XDL-E2-S1), which used to be sidebar rows. A tab strip
+          rather than a list: these narrow one queue rather than switching the
+          window between locations, and a location list is what the sidebar is
+          for. A count is live and a zero is an answer, so every tab is drawn
+          whether or not it has rows. Recorded in `docs/design-gaps.md`. */}
+      <div class={styles.tabs} role="tablist" aria-label="Categories">
+        <For each={props.categories}>
+          {(category) => {
+            const active = () => category.id === props.category;
+            return (
+              <button
+                class={`${styles.tab} ${active() ? styles.tabActive : ""}`}
+                role="tab"
+                data-category={category.id}
+                aria-selected={active()}
+                onClick={() => props.onCategory(category.id)}
+              >
+                {category.label}
+                <span class={styles.tabCount}>{category.count}</span>
+              </button>
+            );
+          }}
+        </For>
       </div>
 
       <Show when={menuAt()}>
@@ -184,59 +271,20 @@ export function Transfers(props: {
         )}
       </Show>
 
-      {/* The tab is the reference's table; the sheet keeps its compact rows.
-          Two densities for two jobs, sharing the header, the bulk menu and
-          the footer above and below (XDL-E2-S2). */}
-      <Show
-        when={props.embedded}
-        fallback={
-          <div class={styles.rows}>
-            <Show
-              when={queueTransfers().length > 0}
-              fallback={<div class={styles.empty}>Nothing transferring</div>}
-            >
-              <For each={shown()}>
-                {(transfer) => (
-                  <Row
-                    transfer={transfer}
-                    onPause={() => props.onPause(transfer.id)}
-                    onCancel={() => props.onCancel(transfer.id)}
-                    onRemove={() => props.onRemove?.(transfer.id)}
-                    onRetry={() => props.onRetry(transfer.id)}
-                    onRemount={props.onRemount}
-                  />
-                )}
-              </For>
-              {/* A queue this long is a batch of individual files, and every row
-                  carries a bar and a caption — rendering all of them is seconds of
-                  a frozen window, which is exactly what the panel opening on launch
-                  used to cost. Bounded rather than virtualised because these rows
-                  are not one height: a finished row drops its bar. The rest are one
-                  click away, and the click is the user accepting the wait. */}
-              <Show when={queueTransfers().length > shown().length}>
-                <button class={styles.showAll} onClick={() => setCap(Infinity)}>
-                  Show {queueTransfers().length - shown().length} more
-                </button>
-              </Show>
-            </Show>
-          </div>
-        }
-      >
-        <DownloadsTable
-          transfers={queueTransfers()}
-          onPause={props.onPause}
-          onCancel={props.onCancel}
-          onRemove={props.onRemove}
-          onRetry={props.onRetry}
-          onOpenFolder={props.onOpenFolder}
-          onCopyUrl={props.onCopyUrl}
-          onRemount={props.onRemount}
-          queues={queues()}
-          selectedQueue={selectedQueue()}
-          onMoveToQueue={props.onMoveToQueue}
-          onReorder={props.onReorderQueue}
-        />
-      </Show>
+      <DownloadsTable
+        transfers={queueTransfers()}
+        onPause={props.onPause}
+        onCancel={props.onCancel}
+        onRemove={props.onRemove}
+        onRetry={props.onRetry}
+        onOpenFolder={props.onOpenFolder}
+        onCopyUrl={props.onCopyUrl}
+        onRemount={props.onRemount}
+        queues={queues()}
+        selectedQueue={selectedQueue()}
+        onMoveToQueue={props.onMoveToQueue}
+        onReorder={props.onReorderQueue}
+      />
 
       <div class={styles.footer}>
         <span class={styles.footerStats}>
@@ -259,142 +307,3 @@ export function Transfers(props: {
     </div>
   );
 }
-
-function Row(props: {
-  transfer: Transfer;
-  onPause: () => void;
-  onCancel: () => void;
-  onRemove?: () => void;
-  onRetry: () => void;
-  onRemount?: () => void;
-}) {
-  const finished = () =>
-    props.transfer.status === "done" || props.transfer.status === "cancelled";
-  const failed = () => props.transfer.status === "failed";
-  // The engine decides this: it knows whether the failure was a permission
-  // problem on an upload, which is the only case reconnecting read-write
-  // would fix. Offering it on a timeout would be a button that changes
-  // nothing. Shared with the downloads table, which offers the same action.
-  const remountable = () => transferRemountable(props.transfer);
-  // The engine's rule (XDL-E2-S3): null while the size is unknown, so an
-  // unfinished row that cannot name a total draws indeterminate rather than
-  // a bar parked at zero.
-  const fraction = () => fractionOf(props.transfer);
-
-  return (
-    <div
-      class={`${styles.row} ${finished() ? styles.rowFinished : ""}`}
-      // Which transfer this row is, the way a file row carries `data-path`.
-      // Class names are mangled by CSS modules, so there is otherwise nothing
-      // stable to count rows by.
-      data-transfer={props.transfer.id}
-    >
-      <div class={styles.rowTop}>
-        <span
-          class={`${styles.chip} ${
-            failed() ? styles.chipFailed : props.transfer.direction === "up" ? styles.chipUp : styles.chipDown
-          }`}
-        >
-          {props.transfer.from?.kind === "http"
-            ? "↓ HTTP"
-            : props.transfer.direction === "up" ? "↑ UP" : "↓ DOWN"}
-        </span>
-        <span
-          class={`${styles.name} ${props.transfer.status === "running" ? styles.nameActive : ""}`}
-        >
-          {props.transfer.name}
-        </span>
-        <span
-          class={`${styles.status} ${props.transfer.status === "done" ? styles.statusDone : ""}`}
-        >
-          {formatTransferStatus(props.transfer)}
-        </span>
-      </div>
-
-      <Show
-        when={!finished() && !failed()}
-        fallback={
-          <Show when={failed()}>
-            <div class={styles.rowFailure}>
-              <span class={styles.error}>{props.transfer.error}</span>
-              <button class={styles.rowAction} onClick={props.onRetry}>
-                Retry
-              </button>
-              <Show when={remountable() && props.onRemount}>
-                {(remount) => (
-                  <button class={styles.rowAction} onClick={() => remount()()}>
-                    Remount as RW
-                  </button>
-                )}
-              </Show>
-            </div>
-          </Show>
-        }
-      >
-        {/* Queued rows show an empty track, per the design: the row is there
-            and its bar has not started, which is exactly the state. A row
-            that cannot name a total draws indeterminate instead — a bar at
-            zero for a whole transfer looks broken (XDL-E2-S3). */}
-        {fraction() === null ? (
-          <div
-            class={styles.track}
-            role="progressbar"
-            aria-label={`${props.transfer.name} progress, size unknown`}
-          >
-            <div class={styles.fillIndeterminate} />
-          </div>
-        ) : (
-          <div
-            class={styles.track}
-            role="progressbar"
-            aria-label={`${props.transfer.name} progress`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round((fraction() ?? 0) * 100)}
-          >
-            <div class={styles.fill} style={{ width: `${(fraction() ?? 0) * 100}%` }} />
-          </div>
-        )}
-      </Show>
-
-      <div class={styles.rowBottom}>
-        <span class={styles.dest}>{props.transfer.destPath}</span>
-        <Show when={props.transfer.status === "running" || props.transfer.status === "queued"}>
-          <button class={styles.rowAction} onClick={props.onPause}>
-            Pause
-          </button>
-          <button class={styles.rowAction} onClick={props.onCancel}>
-            Cancel
-          </button>
-        </Show>
-        <Show when={props.transfer.status === "paused"}>
-          <button class={styles.rowAction} onClick={props.onRetry}>
-            Resume
-          </button>
-        </Show>
-        <Show when={true}>
-          <button
-            class={styles.rowAction}
-            onClick={() => {
-              const wording = finished()
-                ? "Remove this completed download from the queue?"
-                : "Remove this download and delete its partial file?";
-              if (window.confirm(wording)) props.onRemove?.();
-            }}
-          >
-            Remove
-          </button>
-        </Show>
-      </div>
-    </div>
-  );
-}
-
-/** Bytes so far across everything unfinished, for the toolbar's hint. */
-export function pendingBytes(transfers: Transfer[]): number {
-  return transfers
-    .filter((transfer) => transfer.status === "running" || transfer.status === "queued")
-    .reduce((total, transfer) => total + Math.max(0, transfer.bytesTotal - transfer.bytesDone), 0);
-}
-
-export { formatSize };

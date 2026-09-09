@@ -156,9 +156,12 @@ The engine is
     re-queued and both ends derived lazily. `Direction` removal stays E22-S3's.
     (`legacy/xdl.md:129`, `crates/engine/tests/queue.rs`,
     `crates/engine/tests/transfer_model.rs`)
-- **XDL-E2** — the tab: where it lives in the window (S1, done 2026-09-07 — the
-  window has a browse/downloads view, CATEGORIES with live counts, share verbs
-  absent on downloads, view remembered per window label), the table with its
+- **XDL-E2** — the tab: where it lives in the window (S1, done 2026-09-07;
+  **superseded 2026-09-09** — the browse/downloads view is gone, the window
+  always browses, and CATEGORIES moved out of the sidebar into a tab strip in
+  the transfers pane, opened by a toolbar button and the View menu's Transfers
+  item. The pane adopted the table, so the sheet's compact rows and `ROW_CAP`
+  went with the view. `docs/design-gaps.md`), the table with its
   five status badges and redacted origin host (S2, done 2026-09-07 — reference
   columns in this palette, mono type rule, badge tokens held to 4.5:1, same
   `visibleRange` virtualisation as the file list), the indeterminate row (S3,
@@ -287,6 +290,58 @@ The engine is
   prints a table rather than asserting. (`legacy/plan.md:3814`, `:4660`)
 - **An accessibility test harness** for E24-S1's real-Finder drag. A story, not
   a step. (`legacy/plan.md:5101`)
+
+## Two-pane browser (xtp)
+
+The design handoff was re-issued 2026-09-09 as `design_handoff_share_browser 2/`, a
+strict superset of the folder beside it: options `1a`–`1h` unchanged, plus `2a`/`2b`
+— a two-pane transfer-client mode with a docked drawer — and the two-pane halves of
+§Interactions and §State Management. Planned as `twopane.md`, in its own `XTP-`
+namespace on the `XDL-` precedent (`../AGENTS.md:86`), because the plan namespace is
+full to E27 and this is a second app mode rather than a stripe across existing epics.
+*Asked for directly 2026-09-09: "so that it uses the xsync protocol and that it is
+used like filezilla".*
+
+- **XTP-E1 — The pane as a thing.** The long pole, and the one epic with no visible
+  feature. `src/App.tsx` owns exactly one of everything the mode wants two of: one
+  `history` (`src/App.tsx:160`), one `selection` (`:466`), one listing, sort, filter
+  and column-width set, and a fixed `Sidebar + listColumn` body (`:2596`). No
+  dual-pane, split-view or splitter code exists anywhere in the tree. Done means
+  single pane behaves exactly as today with its state in one `Pane` instance.
+  (`twopane.md` XTP-E1)
+- **XTP-E2 — The two-pane window.** Pane shell, draggable splitter, per-pane status
+  bars, the reduced two-pane toolbar (no Download/Upload — direction is spatial), and
+  the directory tree. The tree is the app's first: `MoveTo.tsx:18` explicitly declined
+  one. (`twopane.md` XTP-E2)
+- **XTP-E3 — Moving files between panes.** Gutter arrows, double-click-to-transfer,
+  drag between panes, and in-flight rows in the destination list. Extends
+  `src/state/dnd.ts` rather than adding a second drag path. **Carries a known bug in
+  the path it depends on:** `Keep both` computes a free name, shows it, then re-sends
+  the original paths and behaves as `Replace` (`backlog.md:117`). (`twopane.md` XTP-E3)
+- **XTP-E4 — The drawer.** Bottom-docked, collapsible, tabs `Queued`/`Failed`/
+  `Finished`/`Log`. The queue does not change — this is a second view onto it. The
+  queue table wants E22-S3's `from`/`to: Endpoint` change to have two named ends to
+  render (`:107`); until then it renders the pane pair that created the row.
+  (`twopane.md` XTP-E4)
+- **XTP-E5 — The message log.** `log://line` is specced by the handoff and
+  implemented nowhere. It cannot be built inside Excalibur: `xsync-client` has no
+  `tracing` dependency and exposes no callback, channel or observer, and every frame
+  goes through a private `Connection::request`. Filed against xsync as
+  `integration.md` §8. (`twopane.md` XTP-E5)
+- **XTP-E6 / E7 / E8 — Sync browsing, mode switch, Site Manager.** Independent of
+  each other. The mode switch preserves mount, cwd and selection, and the queue is
+  shared across modes. Site Manager is a second presentation of the built bookmark
+  and connection machinery, not new machinery. (`twopane.md` XTP-E6)
+- **XTP-E9 — xsync as the two-pane transport.** The handoff's prose is SMB/NFS
+  throughout ("SMB tree connect flags, NFS export options", `ro,root_squash`); this
+  epic restates each requirement in xsync's terms instead. Writability from
+  `MountInfo.effective_writable` and its reason, which the server both computes and
+  enforces; capacity from `statfs` `available_bytes` (never `free_bytes`, and never
+  the inode or `fs_type` fields, which the server hardcodes to zero and empty);
+  `READ_DIR_PATH` in place of the open/page/close that `list_dir` does today
+  (`crates/engine/src/backend/xsync.rs:812`); and refresh-on-focus until Notify
+  exists, which is the same Phase 4 blocker E8-S9 is parked on (`:51`).
+  (`twopane.md` XTP-E9)
 
 ## Awaiting design sign-off
 

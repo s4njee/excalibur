@@ -304,6 +304,9 @@ impl ShareBackend for SmbBackend {
                 kind,
                 size: entry.size,
                 modified_ms: system_time_ms(entry.mtime),
+                // SMB carries a creation time on the wire, but the directory
+                // entry this client hands back does not expose one.
+                added_ms: None,
                 mode: None,
                 link_target: None,
                 // SMB has no change cookie the client can see, so edit-in-place
@@ -487,6 +490,7 @@ fn attrs_of(stat: &SmbStat) -> Attrs {
         kind,
         size: stat.size,
         modified_ms: system_time_ms(stat.modified),
+        added_ms: None,
         mode: None,
         link_target: None,
         change_cookie: None,

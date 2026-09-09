@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const SOURCE = readFileSync(resolve(process.cwd(), "src/state/backend.ts"), "utf8");
+const SOURCE = readFileSync(resolve(process.cwd(), "src/state/backend/tauri.ts"), "utf8");
 
 /** Events the shell sends with `emit_to`, so they belong to one window. */
 const ADDRESSED = [

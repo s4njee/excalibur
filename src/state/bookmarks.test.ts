@@ -3,6 +3,7 @@ import {
   bookmarkId,
   bookmarkSubtitle,
   fromDraft,
+  matchBookmark,
   probePort,
   remove,
   restore,
@@ -134,5 +135,55 @@ describe("a local bookmark (E21-S2)", () => {
     expect(reopened.protocol).toBe("local");
     expect(reopened.share).toBe("/Users/dorian/Documents");
     expect(reopened.host).toBe("");
+  });
+});
+
+describe("the bookmark a typed URI names", () => {
+  const saved = (over: Partial<Bookmark>): Bookmark => ({
+    id: "x", name: "n", protocol: "xsync", host: "freya.local", share: "/mnt/data",
+    mountPreference: "rw", mounted: false, reachable: true, ...over,
+  });
+  const typed = (over: Partial<Draft>): Draft => ({ ...emptyDraft("xsync"), ...over });
+
+  it("finds the one saved share under a host named on its own", () => {
+    // `xsync://freya.local` — the reported case. The id would be
+    // `xsync:freya.local:` and match nothing, so this went to the dialog for a
+    // host that had a working bookmark.
+    const one = saved({});
+    expect(matchBookmark([one], typed({ host: "freya.local" }))).toBe(one);
+  });
+
+  it("will not guess when a host has more than one saved share", () => {
+    // Opening the wrong share silently is worse than asking.
+    const a = saved({ id: "a", share: "/mnt/data" });
+    const b = saved({ id: "b", share: "/mnt/media" });
+    expect(matchBookmark([a, b], typed({ host: "freya.local" }))).toBeNull();
+  });
+
+  it("ignores the leading slash a URI cannot carry", () => {
+    // `previewUri` prints `/mnt/data` as `…/mnt/data`, so reading it back gives
+    // `mnt/data`. Comparing ids made those two different shares, which meant a
+    // second bookmark and a keychain lookup that missed.
+    const one = saved({ share: "/mnt/data" });
+    expect(matchBookmark([one], typed({ host: "freya.local", share: "mnt/data" }))).toBe(one);
+  });
+
+  it("matches a host and a share whatever their casing", () => {
+    const one = saved({ host: "Freya.local", share: "/Mnt/Data" });
+    expect(matchBookmark([one], typed({ host: "freya.local", share: "mnt/data" }))).toBe(one);
+  });
+
+  it("does not cross protocols or hosts", () => {
+    const one = saved({});
+    expect(matchBookmark([one], typed({ host: "other.local" }))).toBeNull();
+    expect(
+      matchBookmark([one], { ...emptyDraft("sftp"), host: "freya.local", share: "mnt/data" }),
+    ).toBeNull();
+  });
+
+  it("returns nothing when the named share is not saved", () => {
+    // Then it is a new place, and the caller builds a fresh bookmark for it.
+    const one = saved({ share: "/mnt/data" });
+    expect(matchBookmark([one], typed({ host: "freya.local", share: "elsewhere" }))).toBeNull();
   });
 });

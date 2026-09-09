@@ -39,7 +39,9 @@ describe("the connection draft", () => {
     // sftp://host:22 is noise; a non-default port is information.
     expect(previewUri(draft({ protocol: "sftp", port: "22" }))).toBe("sftp://nas.local/media");
     expect(previewUri(draft({ protocol: "sftp", port: "2222" }))).toBe(
-      "sftp://nas.local/media:2222",
+      // Before the path, where a URI's port goes — this used to read
+      // `sftp://nas.local/media:2222`, which cannot be pasted back.
+      "sftp://nas.local:2222/media",
     );
   });
 

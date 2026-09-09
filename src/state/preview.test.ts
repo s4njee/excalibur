@@ -16,6 +16,7 @@ const entry = (over: Partial<Entry>): Entry => ({
   kind: "file",
   size: 1,
   modifiedMs: null,
+  addedMs: null,
   mode: null,
   linkTarget: null,
   kindLabel: "Document",

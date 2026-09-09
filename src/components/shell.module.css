@@ -22,14 +22,18 @@
   padding: 0 12px;
   background: var(--titlebar);
   border-bottom: 1px solid var(--hairline-chrome);
-  /* The window is dragged by its title bar; the buttons inside opt out. */
-  -webkit-app-region: drag;
+  /* The window is dragged by its title bar. Tauri's mechanism is the
+     `data-tauri-drag-region` attribute on the element itself, not
+     `-webkit-app-region`, which is an Electron rule WKWebView ignores. */
 }
 
 .title {
   font-size: 12px;
   font-weight: 600;
   color: var(--titlebar-text);
+  /* Tauri reads the drag attribute off the mousedown target, so the title
+     must not be one: a click on the text has to reach the bar behind it. */
+  pointer-events: none;
 }
 
 /* Toolbar ------------------------------------------------------------------ */
@@ -98,6 +102,10 @@
 }
 
 .button {
+  /* Every other toolbar child says this; `.button` did not, so the two
+     text-labelled ones at the end — Add URL and Transfers — were shrunk to
+     nothing by the `flex: 1` path field instead of shrinking it. */
+  flex: none;
   height: var(--height-control);
   padding: 0 9px;
   border: 1px solid var(--control-border);
@@ -152,6 +160,26 @@
   white-space: nowrap;
 }
 
+/* The same box, typed into (E1-S2). Every dimension is shared with
+   `.pathField` so switching between them does not move the toolbar by a
+   pixel; only the caret and the accent border say which one you are looking
+   at. `user-select` is re-enabled because this one *is* text. */
+.pathInput {
+  flex: 1;
+  min-width: 0;
+  height: var(--height-control);
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .crumbScheme {
   color: var(--text-tertiary);
 }
@@ -201,8 +229,20 @@
   flex-direction: column;
   flex: none;
   width: var(--width-sidebar);
+  /* Without this the sidebar grows to its content and the overflow leaves the
+     window, which scrolls the document rather than the list it belongs to. */
+  min-height: 0;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--hairline-chrome);
+}
+
+/* The sections, and only the sections. The footer is a sibling of this, not a
+   child, which is what keeps it on screen when the list is long. */
+.sidebarScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* Hidden outright rather than narrowed to a rail: the design has no rail, and
@@ -250,6 +290,10 @@
   height: 36px;
   padding: 0 12px;
   border-left: 3px solid transparent;
+  /* An arrow, not an I-beam. The row is one control; a text cursor over it
+     invites the drag that `user-select: none` then refuses, which reads as a
+     broken row rather than a deliberate one. */
+  cursor: default;
   transition: background var(--transition-state);
 }
 
@@ -309,7 +353,7 @@
 
 .sidebarFooter {
   display: flex;
-  margin-top: auto;
+  flex: none;
   border-top: 1px solid var(--hairline-chrome);
 }
 
@@ -372,6 +416,9 @@
   column-gap: 16px;
   align-items: center;
   padding: 0 12px;
+  /* Same reason as `.sidebarRow`: a file row is a control, not prose. The
+     rename editor is an `input` and brings its own caret. */
+  cursor: default;
 }
 
 /* The ARIA grid wraps the fixed header and the scrolling body without
@@ -576,6 +623,128 @@
 .row {
   height: var(--height-row);
   border-bottom: 1px solid var(--hairline-row);
+}
+
+/* Column view (E26-S4) -----------------------------------------------------
+   A horizontal strip of panes, each its own scroller. The strip scrolls too,
+   because a deep path has more columns than the window is wide. */
+.columnStrip {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--list-bg);
+}
+
+.column {
+  flex: none;
+  width: 220px;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline-row);
+}
+
+.columnRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  cursor: default;
+}
+
+/* The child that opened the next column. The design's soft selection, not the
+   full one: it says where the path goes, not what a verb would act on, and
+   both can be true of different rows at once — so they must not look alike. */
+.columnRowOnPath {
+  background: var(--selection-soft-bg);
+  color: var(--selection-soft-text);
+}
+
+.columnName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.columnChevron {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.columnProblem {
+  padding: 8px 12px;
+  color: var(--error);
+  font-size: 11.5px;
+}
+
+/* The icon grid (E26-S4) ---------------------------------------------------
+   A grid of cells rather than rows. The column count is set inline, because
+   how many fit is the list's width divided by a cell, and only the list knows
+   its width. */
+.iconGrid {
+  display: grid;
+}
+
+/* A cell is `.row` with the grid's geometry, so selection, drop and hidden
+   states stay written once for every layout. */
+.iconCell {
+  display: flex;
+  align-items: stretch;
+  padding: 6px 4px;
+  border-bottom: 0;
+}
+
+.iconCellInner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 2px;
+  border-radius: var(--radius-control);
+}
+
+/* The row glyphs at grid scale. Scaled rather than resized, so the two shapes
+   keep the proportions they have in a row. */
+.iconGlyph {
+  flex: none;
+  margin: 12px 0;
+  transform: scale(3.4);
+  transform-origin: center;
+}
+
+.iconName {
+  width: 100%;
+  /* Two lines, then an ellipsis. A name is the whole of what a cell says, so
+     it gets more than one line — but a cell that grew to fit would break the
+     one assumption the virtual window makes, that every cell is the same
+     height. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+/* Selection paints the inner box, not the whole grid square: a cell is mostly
+   whitespace, and filling it edge to edge reads as a block rather than as a
+   selected thing. */
+.iconCell.rowSelected {
+  background: none;
+  color: inherit;
+}
+
+.iconCell.rowSelected .iconCellInner {
+  background: var(--selection-bg);
+  color: var(--selection-text);
 }
 
 .rowSelected {

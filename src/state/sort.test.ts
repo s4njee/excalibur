@@ -7,6 +7,7 @@ const entry = (over: Partial<Entry> & { name: string }): Entry => ({
   kind: "file",
   size: 0,
   modifiedMs: null,
+  addedMs: null,
   mode: null,
   linkTarget: null,
   kindLabel: "Document",

@@ -20,6 +20,7 @@ const entry = (over: Partial<Entry> & { name: string; kind: EntryKind }): Entry 
   path: over.name,
   size: 0,
   modifiedMs: null,
+  addedMs: null,
   mode: null,
   linkTarget: null,
   kindLabel: over.kind === "dir" ? "Folder" : "Matroska Video",
@@ -70,6 +71,7 @@ describe("one file", () => {
       kind: "file",
       size: 48_234_496_000,
       modifiedMs: AUG_31,
+      addedMs: null,
     });
 
   it("names it, and says what the engine says it is", () => {

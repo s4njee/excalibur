@@ -27,7 +27,9 @@ export type MenuAction =
   | "newFolder"
   | "upload"
   | "addFavorite"
-  | "removeFavorite";
+  | "removeFavorite"
+  | "editBookmark"
+  | "removeBookmark";
 
 /**
  * One row of a menu, generic in what choosing it means.
@@ -166,6 +168,31 @@ export function favoriteMenu(): MenuItem[] {
       label: "Remove from Favorites",
       disabled: false,
       reason: null,
+    },
+  ];
+}
+
+/**
+ * The menu on a row in MOUNTED or BOOKMARKS (E3-S1).
+ *
+ * Exists because the sidebar footer's `−` was the only way to forget a share,
+ * and a bare glyph acting on a selection nobody can see is not a route anyone
+ * finds — reported as "theres no way to remove bookmarks". Right-clicking the
+ * row is the gesture people try, and FAVORITES already answered it.
+ *
+ * Neither verb touches the share, so neither is gated on the mount: forgetting
+ * a bookmark is a write to local state, and a mounted share can be forgotten
+ * without being unmounted first.
+ */
+export function bookmarkMenu(): MenuItem[] {
+  return [
+    { action: "editBookmark", label: "Edit Connection…", disabled: false, reason: null },
+    {
+      action: "removeBookmark",
+      label: "Remove Bookmark",
+      disabled: false,
+      reason: null,
+      separated: true,
     },
   ];
 }

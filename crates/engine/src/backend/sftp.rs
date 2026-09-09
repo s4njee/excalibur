@@ -911,6 +911,8 @@ fn attrs_of(metadata: &FileAttributes) -> Attrs {
         kind,
         size: metadata.size.unwrap_or(0),
         modified_ms: metadata.mtime.map(|seconds| i64::from(seconds) * 1000),
+        // SFTP's base attribute set has no creation time.
+        added_ms: None,
         mode: metadata.permissions,
         link_target: None,
         // SFTPv3 has nothing like it, so edit-in-place falls back to comparing

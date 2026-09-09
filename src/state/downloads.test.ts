@@ -3,6 +3,7 @@ import {
   DOWNLOAD_CATEGORIES,
   categorize,
   countByCategory,
+  outstanding,
   downloadUrlLines,
   filterByCategory,
   fractionOf,
@@ -210,5 +211,28 @@ describe("origin hosts", () => {
     expect(
       originHost(hosted("d", { from: { kind: "share", mount: null, path: "remote/d" } })),
     ).toBe("Share");
+  });
+});
+
+describe("whether the queue still owes work", () => {
+  const at = (status: TransferStatus) => row("x", status);
+
+  it("counts queued, running and paused", () => {
+    // The engine's own `Status::active` rule, mirrored so the pane and the
+    // worker cannot disagree about what "still going" means.
+    expect(outstanding([at("queued")])).toBe(true);
+    expect(outstanding([at("running")])).toBe(true);
+    expect(outstanding([at("paused")])).toBe(true);
+  });
+
+  it("does not count a queue that is only history", () => {
+    // The bug this exists for: finished rows are kept until `Clear finished`
+    // takes them, so a queue that has ever been used is never empty again.
+    // Opening the pane on "non-empty" opened it on every launch.
+    expect(outstanding([at("done"), at("failed"), at("cancelled")])).toBe(false);
+  });
+
+  it("is false for an empty queue", () => {
+    expect(outstanding([])).toBe(false);
   });
 });

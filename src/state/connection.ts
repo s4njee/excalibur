@@ -175,7 +175,11 @@ export function previewUri(draft: Draft): string {
   const fallback = defaultPort(draft.protocol);
   const port = draft.port && Number(draft.port) !== fallback ? `:${draft.port}` : "";
   const share = draft.share ? `/${draft.share.replace(/^\/+/, "")}` : "";
-  return `${scheme}://${user}${host}${share === "" ? "/" : share}${port === "" ? "" : port}`;
+  // The port belongs to the authority, before the path. It used to be appended
+  // after it — `sftp://nas.local/media:2222` — which is not a URI anyone can
+  // paste back in, and this string is now parsed as well as shown
+  // (`state/location.ts`), so the two have to agree.
+  return `${scheme}://${user}${host}${port}${share === "" ? "/" : share}`;
 }
 
 /** Why the draft cannot be connected yet, or `null` when it can. */

@@ -12,7 +12,6 @@ describe("window parameters", () => {
       label: "browser-2",
       mount: "smb:nas.local:media",
       path: "Films/Arrival 2016",
-      view: "browse",
     });
   });
 
@@ -43,12 +42,4 @@ describe("window parameters", () => {
     expect(parseWindowParams("?label=browser-2&path=").path).toBe("");
   });
 
-  it("opens on downloads only when the shell says so", () => {
-    // The view rides the URL the way the mount does, so a restored window can
-    // come back on the queue (XDL-E2-S1). Anything but an explicit `downloads`
-    // is the file list.
-    expect(parseWindowParams("?label=main&view=downloads").view).toBe("downloads");
-    expect(parseWindowParams("?label=main&view=grid").view).toBe("browse");
-    expect(parseWindowParams("?label=main").view).toBe("browse");
-  });
 });

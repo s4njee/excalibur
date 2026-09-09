@@ -1,9 +1,10 @@
-// Where the Downloads tab lives (XDL-E2-S1).
+// Where the queue lives (XDL-E2-S1).
 //
-// A window can be on downloads the way it is on a mount: the sidebar's
-// CATEGORIES section carries live counts off the queue, opening one switches
-// the window onto the queue, and the toolbar's share verbs are absent there
-// rather than greyed out. Mounting a share switches back.
+// The window always browses; the queue is a pane over it, opened from the
+// toolbar's Transfers button or the View menu's item. CATEGORIES is that
+// pane's tab strip, carrying live counts off the queue, and the file list's
+// verbs stay live behind it — the pane is a sheet, not somewhere the window
+// goes. Superseded the browse/downloads view on 2026-09-09.
 
 import { describe, expect, it, afterEach, beforeEach } from "vitest";
 import { render } from "solid-js/web";
@@ -88,7 +89,7 @@ async function open(options: {
         backend={fixtureBackend({ queue: options.queue ?? queue })}
         prefs={options.prefs ?? memoryPrefs()}
         bookmarks={store()}
-        window={options.window ?? { label: "main", mount: null, path: "", view: "browse" }}
+        window={options.window ?? { label: "main", mount: null, path: "" }}
       />
     ),
     host,
@@ -98,6 +99,22 @@ async function open(options: {
 }
 
 const categoryRow = (id: string) => host.querySelector<HTMLElement>(`[data-category="${id}"]`);
+// Scoped to the dialog: the toolbar button that opens it carries the same
+// label, and it comes first in the DOM.
+const pane = () => host.querySelector('[role="dialog"][aria-label="Transfers"]');
+/**
+ * Make sure the transfers pane is open.
+ *
+ * It opens itself when the queue is not empty, which most of these fixtures
+ * are; going through the button anyway means no test silently depends on that
+ * seed, and the ones with an empty queue take the same path.
+ */
+async function openPane() {
+  if (pane() === null) {
+    click(verb("Transfers"));
+    await settle();
+  }
+}
 const click = (element: HTMLElement | null) => {
   expect(element).not.toBeNull();
   element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -109,10 +126,6 @@ const toolbar = () => host.firstElementChild?.children[1] ?? null;
 const verb = (label: string) =>
   [...(toolbar()?.querySelectorAll("button") ?? [])].find(
     (button) => button.textContent === label,
-  ) ?? null;
-const bookmarkRow = (name: string) =>
-  [...host.querySelectorAll<HTMLElement>("[role='button']")].find((row) =>
-    row.textContent?.includes(name),
   ) ?? null;
 
 beforeEach(() => {
@@ -126,9 +139,10 @@ afterEach(() => {
   host.remove();
 });
 
-describe("the sidebar's CATEGORIES section", () => {
+describe("the transfers pane's category tabs", () => {
   it("counts every group live off the queue", async () => {
     await open();
+    await openPane();
     expect(categoryRow("all")?.textContent).toContain("6");
     expect(categoryRow("downloading")?.textContent).toContain("2");
     expect(categoryRow("paused")?.textContent).toContain("1");
@@ -136,92 +150,70 @@ describe("the sidebar's CATEGORIES section", () => {
     expect(categoryRow("failed")?.textContent).toContain("1");
   });
 
-  it("keeps FAVORITES, MOUNTED and BOOKMARKS where they were", async () => {
+  it("leaves the sidebar its own sections and takes CATEGORIES out of it", async () => {
     await open();
-    expect(host.textContent).toContain("Favorites");
-    expect(host.textContent).toContain("Mounted");
-    expect(host.textContent).toContain("Bookmarks");
-    expect(host.textContent).toContain("Categories");
-  });
-});
-
-describe("a window on downloads", () => {
-  it("drops the share verbs instead of disabling them, and shows the queue", async () => {
-    await open();
-    // Sanity: the verbs are there while browsing.
-    expect(verb("Quick Look")).not.toBeNull();
-    click(categoryRow("downloading"));
-    await settle();
-
-    expect(verb("Quick Look")).toBeNull();
-    expect(verb("Edit")).toBeNull();
-    expect(verb("Download")).toBeNull();
-    expect(verb("Upload")).toBeNull();
-    // The queue, not a sheet over the file list.
-    expect(host.querySelector('[aria-label="Downloads"]')).not.toBeNull();
-    expect(host.querySelector('[aria-label="Transfers"]')).toBeNull();
+    await openPane();
+    // The sidebar's scroll region, which is what holds the sections.
+    const sections = host.querySelector("[data-favorites]")?.parentElement;
+    expect(sections?.textContent).toContain("Favorites");
+    expect(sections?.textContent).toContain("Mounted");
+    expect(sections?.textContent).toContain("Bookmarks");
+    // The rows moved into the pane, so the section header must not still be
+    // in the sidebar drawing a second, stale copy of the same choice.
+    expect(sections?.textContent).not.toContain("Categories");
+    expect(categoryRow("all")?.closest("[data-favorites]")).toBeNull();
   });
 
   it("shows only the chosen category's rows", async () => {
     await open();
+    await openPane();
     click(categoryRow("paused"));
     await settle();
-    const pane = host.querySelector('[aria-label="Downloads"]');
-    expect(pane?.textContent).toContain("paused-file");
-    expect(pane?.textContent).not.toContain("done-file");
-    expect(pane?.textContent).not.toContain("running-file");
+    expect(pane()?.textContent).toContain("paused-file");
+    expect(pane()?.textContent).not.toContain("done-file");
+    expect(pane()?.textContent).not.toContain("running-file");
   });
 
-  it("titles the window after the view, not the mount behind it", async () => {
+  it("opens and closes from the toolbar without disturbing the file list", async () => {
+    await open({ queue: [] });
+    // An empty queue does not open itself, so this is the button's own doing.
+    expect(pane()).toBeNull();
+    click(verb("Transfers"));
+    await settle();
+    expect(pane()).not.toBeNull();
+    click(verb("Transfers"));
+    await settle();
+    expect(pane()).toBeNull();
+  });
+
+  it("keeps the share verbs while the pane is open", async () => {
+    // The pane is a sheet over the window, not a place the window goes: the
+    // file list is still behind it and its verbs still apply. The old
+    // downloads view answered this the other way, and dropped them.
     await open();
-    click(categoryRow("all"));
-    await settle();
-    // TitleBar names Downloads; the native title follows in the app.
-    const titlebar = host.firstElementChild?.children[0];
-    expect(titlebar?.textContent).toContain("Downloads");
+    await openPane();
+    expect(pane()).not.toBeNull();
+    expect(verb("Quick Look")).not.toBeNull();
+    expect(verb("Edit")).not.toBeNull();
+    expect(verb("Download")).not.toBeNull();
+    expect(verb("Upload")).not.toBeNull();
   });
 
-  it("switches back to the file list when a share is mounted", async () => {
-    // The fixture refuses mounts the way the preview does, so this window
-    // gets a backend that connects: the point is what mounting does to the
-    // view, not the connection itself.
-    const backend = { ...fixtureBackend({ queue }), async mount() {} };
-    dispose = render(
-      () => (
-        <App
-          backend={backend}
-          prefs={memoryPrefs()}
-          bookmarks={store()}
-          window={{ label: "main", mount: null, path: "", view: "browse" }}
-        />
-      ),
-      host,
-    );
-    await settle();
-    await settle();
-    click(categoryRow("all"));
-    await settle();
-    expect(verb("Quick Look")).toBeNull();
-
-    const bookmark = bookmarkRow("media");
-    expect(bookmark).not.toBeNull();
-    bookmark?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-    await settle();
-    await settle();
-
-    expect(verb("Quick Look")).not.toBeNull();
-    expect(host.querySelector('[aria-label="Downloads"]')).toBeNull();
+  it("titles the window after the mount, never after the queue", async () => {
+    await open();
+    await openPane();
+    const titlebar = host.firstElementChild?.children[0];
+    expect(titlebar?.textContent).not.toContain("Downloads");
   });
 });
 
 describe("adding a download (XDL-E3-S1)", () => {
-  it("offers Add URL only where the queue is, and opens the dialog from it", async () => {
-    await open();
-    // The share verbs are gone on downloads, and the reference's primary
-    // control takes the toolbar's primary slot there instead.
-    expect(verb("＋ Add URL")).toBeNull();
-    click(categoryRow("all"));
-    await settle();
+  it("offers Add URL in the toolbar, without the pane being open", async () => {
+    await open({ queue: [] });
+    // The HTTP downloader needs a route that does not start with "open the
+    // transfers pane and notice a button in its header", which is where this
+    // briefly lived. The reference draws it as a toolbar control too.
+    expect(pane()).toBeNull();
     const add = verb("＋ Add URL");
     expect(add).not.toBeNull();
     add?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -248,14 +240,12 @@ describe("adding a download (XDL-E3-S1)", () => {
           backend={backend}
           prefs={prefs}
           bookmarks={store()}
-          window={{ label: "main", mount: null, path: "", view: "downloads" }}
+          window={{ label: "main", mount: null, path: "" }}
         />
       ),
       host,
     );
     await settle();
-    await settle();
-    click(categoryRow("all"));
     await settle();
     verb("＋ Add URL")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await settle();
@@ -292,14 +282,12 @@ describe("adding a download (XDL-E3-S1)", () => {
           backend={backend}
           prefs={prefs}
           bookmarks={store()}
-          window={{ label: "main", mount: null, path: "", view: "downloads" }}
+          window={{ label: "main", mount: null, path: "" }}
         />
       ),
       host,
     );
     await settle();
-    await settle();
-    click(categoryRow("all"));
     await settle();
     verb("＋ Add URL")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await settle();
@@ -335,9 +323,8 @@ describe("adding a download (XDL-E3-S1)", () => {
         return `row-${calls.length}`;
       },
     };
-    dispose = render(() => <App backend={backend} prefs={memoryPrefs()} bookmarks={store()} window={{ label: "main", mount: null, path: "", view: "downloads" }} />, host);
+    dispose = render(() => <App backend={backend} prefs={memoryPrefs()} bookmarks={store()} window={{ label: "main", mount: null, path: "" }} />, host);
     await settle(); await settle();
-    click(categoryRow("all")); await settle();
     verb("＋ Add URL")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await settle();
     const box = host.querySelector<HTMLTextAreaElement>("#download-urls")!;
@@ -366,8 +353,8 @@ describe("adding a download (XDL-E3-S1)", () => {
         return "row-1";
       },
     };
-    dispose = render(() => <App backend={backend} prefs={memoryPrefs()} bookmarks={store()} window={{ label: "main", mount: null, path: "", view: "downloads" }} />, host);
-    await settle(); await settle(); click(categoryRow("all")); await settle();
+    dispose = render(() => <App backend={backend} prefs={memoryPrefs()} bookmarks={store()} window={{ label: "main", mount: null, path: "" }} />, host);
+    await settle(); await settle(); await openPane();
     verb("＋ Add URL")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); await settle();
     const box = host.querySelector<HTMLTextAreaElement>("#download-urls")!;
     box.value = "https://a.test/one.iso\nhttps://b.test/one.iso\nhttps://c.test/one.iso";
@@ -382,7 +369,7 @@ describe("adding a download (XDL-E3-S1)", () => {
 
 describe("dropping URLs (XDL-E8-S1)", () => {
   it("opens a prefilled dialog for a browser URL pasteboard", async () => {
-    await open({ window: { label: "main", mount: null, path: "", view: "downloads" } });
+    await open({ window: { label: "main", mount: null, path: "" } });
     const dropped = new Event("drop", { bubbles: true, cancelable: true });
     Object.defineProperty(dropped, "dataTransfer", {
       value: {
@@ -425,7 +412,7 @@ describe("dropping URLs (XDL-E8-S1)", () => {
           backend={backend}
           prefs={memoryPrefs()}
           bookmarks={store()}
-          window={{ label: "main", mount: null, path: "", view: "downloads" }}
+          window={{ label: "main", mount: null, path: "" }}
         />
       ),
       host,
@@ -441,20 +428,11 @@ describe("dropping URLs (XDL-E8-S1)", () => {
   });
 });
 
-describe("remembering the view", () => {
-  it("opens on downloads when the shell says so", async () => {
-    // What a restored window will carry in its URL once E23-S2 persists
-    // window records: no store read, no mount needed.
-    await open({
-      prefs: memoryPrefs(),
-      window: { label: "main", mount: null, path: "", view: "downloads" },
-    });
-    expect(host.querySelector('[aria-label="Downloads"]')).not.toBeNull();
-    expect(verb("Quick Look")).toBeNull();
-  });
-  it("reopens on downloads after a restart, per window", async () => {
+describe("remembering the chosen tab", () => {
+  it("reopens on the same tab after a restart, per window", async () => {
     const prefs = memoryPrefs();
-    await open({ prefs, window: { label: "main", mount: null, path: "", view: "browse" } });
+    await open({ prefs });
+    await openPane();
     click(categoryRow("paused"));
     await settle();
     dispose?.();
@@ -465,33 +443,112 @@ describe("remembering the view", () => {
 
     // A fresh window with the same label and the same prefs: what a relaunch
     // is, minus the shell.
-    await open({ prefs, window: { label: "main", mount: null, path: "", view: "browse" } });
-    expect(host.querySelector('[aria-label="Downloads"]')).not.toBeNull();
-    expect(verb("Quick Look")).toBeNull();
+    await open({ prefs });
+    await openPane();
+    expect(pane()?.textContent).toContain("paused-file");
+    expect(pane()?.textContent).not.toContain("done-file");
   });
 
-  it("restores the remembered view only for windows opened onto nothing", async () => {
+  it("keeps the tab per window label", async () => {
+    const prefs = memoryPrefs();
+    await prefs.set("transfers-category:browser-2", "failed");
+    // This window is `main`, so the other window's tab is not its own.
+    await open({ prefs });
+    await openPane();
+    expect(pane()?.textContent).toContain("done-file");
+  });
+
+  it("ignores a stale record from when the queue was a view", async () => {
+    // `window-view:` is what the removed downloads view wrote, and it carried
+    // a view beside the category. Reading it here is exactly how a deleted
+    // view comes back: the pane would be suppressed on launch by a record
+    // written months ago. A different key means it can only be ignored.
     const prefs = memoryPrefs();
     await prefs.set("window-view:main", { view: "downloads", category: "paused" });
-    // The shell opened this window with no view and no mount: the remembered
-    // answer applies, category included.
-    await open({ prefs, window: { label: "main", mount: null, path: "", view: "browse" } });
-    expect(host.querySelector('[aria-label="Downloads"]')).not.toBeNull();
-    const pane = host.querySelector('[aria-label="Downloads"]');
-    expect(pane?.textContent).toContain("paused-file");
-    expect(pane?.textContent).not.toContain("done-file");
+    await open({ prefs });
+    // The queue is not empty, so the pane opened itself and stayed open.
+    expect(pane()).not.toBeNull();
+    // And on All, not on the stale record's `paused`.
+    expect(pane()?.textContent).toContain("done-file");
+  });
+});
+
+describe("remembering the pane's size", () => {
+  const grip = () => pane()?.querySelector<HTMLElement>('[aria-label="Resize pane width"]') ?? null;
+
+  it("opens at the size it was left at", async () => {
+    const prefs = memoryPrefs();
+    await prefs.set("transfersPane", { width: 880, height: 420 });
+    await open({ prefs });
+    await openPane();
+    expect((pane() as HTMLElement).style.width).toBe("880px");
+    expect((pane() as HTMLElement).style.height).toBe("420px");
   });
 
-  it("does not mistake a ⌘N window for a restored one", async () => {
+  it("draws no explicit height until one has been dragged", async () => {
+    // `null` is content-height: a queue of two rows should not open as a
+    // half-screen box of empty list.
     const prefs = memoryPrefs();
-    await prefs.set("window-view:browser-2", { view: "downloads", category: "all" });
-    // ⌘N carries the mount it opened on. That explicit answer wins over
-    // whatever a previous window with a recycled label chose.
-    await open({
-      prefs,
-      queue: [],
-      window: { label: "browser-2", mount: "smb:nas.local:media", path: "", view: "browse" },
+    await prefs.set("transfersPane", { width: 800, height: null });
+    await open({ prefs });
+    await openPane();
+    expect((pane() as HTMLElement).style.width).toBe("800px");
+    expect((pane() as HTMLElement).style.height).toBe("");
+  });
+
+  it("writes the size when the drag ends, not on every frame", async () => {
+    // A file write per pointermove is the thing this split exists to avoid,
+    // so the assertion is as much about the silence during the drag.
+    const prefs = memoryPrefs();
+    await open({ prefs });
+    await openPane();
+    const handle = grip();
+    expect(handle).not.toBeNull();
+
+    handle?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 400 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 300 }));
+    await settle();
+    expect(await prefs.get("transfersPane")).toBeUndefined();
+
+    window.dispatchEvent(new PointerEvent("pointerup", {}));
+    await settle();
+    expect(await prefs.get("transfersPane")).toEqual({
+      width: expect.any(Number),
+      height: null,
     });
-    expect(host.querySelector('[aria-label="Downloads"]')).toBeNull();
+  });
+
+  it("pulls a size from a bigger display back inside this window", async () => {
+    const prefs = memoryPrefs();
+    await prefs.set("transfersPane", { width: 5000, height: null });
+    await open({ prefs });
+    await openPane();
+    // jsdom's window is 1024 wide; the clamp leaves a margin for the grip.
+    expect(Number.parseInt((pane() as HTMLElement).style.width, 10)).toBeLessThanOrEqual(
+      window.innerWidth,
+    );
+  });
+});
+
+describe("what the pane does on launch", () => {
+  it("stays shut when the queue is only history", async () => {
+    // The bug: finished rows are kept until `Clear finished` takes them, so a
+    // queue that has ever been used is never empty again. Opening on
+    // "non-empty" meant the pane opened on every launch, forever, for anyone
+    // who had ever downloaded anything (reported 2026-09-09).
+    await open({ queue: [row("done-file", "done"), row("failed-file", "failed")] });
+    expect(pane()).toBeNull();
+  });
+
+  it("opens when something is still queued, running or paused", async () => {
+    // The other half: a transfer that outlived the last session is worth
+    // surfacing without being asked.
+    await open({ queue: [row("done-file", "done"), row("paused-file", "paused")] });
+    expect(pane()).not.toBeNull();
+  });
+
+  it("stays shut on an empty queue", async () => {
+    await open({ queue: [] });
+    expect(pane()).toBeNull();
   });
 });

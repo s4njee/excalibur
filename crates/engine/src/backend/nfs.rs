@@ -739,6 +739,7 @@ impl ShareBackend for NfsBackend {
                         kind: EntryKind::Other,
                         size: 0,
                         modified_ms: None,
+                        added_ms: None,
                         mode: None,
                         link_target: None,
                         change_cookie: None,
@@ -1196,6 +1197,9 @@ fn attrs_of(fattr: &nfs3::fattr3) -> Attrs {
         kind,
         size: fattr.size,
         modified_ms: Some(i64::from(fattr.mtime.seconds) * 1000),
+        // NFSv3 `fattr3` has ctime, which is not a birth time. Nothing here
+        // can answer when the file arrived, so the column draws a dash.
+        added_ms: None,
         mode: Some(fattr.mode),
         link_target: None,
         // NFSv3 has no change cookie, so edit-in-place falls back to comparing

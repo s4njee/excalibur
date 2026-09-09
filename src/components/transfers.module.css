@@ -12,7 +12,12 @@
   right: 0;
   display: flex;
   flex-direction: column;
-  width: 560px;
+  /* Width and height are inline: the pane is resizable and remembers its
+     size (`state/paneSize.ts`). The default is wider than the handoff's 560px
+     sketch because the panel draws the reference's table rather than compact
+     rows, and at 560px the Host and Size columns collapse into each other.
+     Recorded in docs/design-gaps.md. `max-height` still caps the default
+     content height, which is what the pane draws until a height is dragged. */
   max-height: 70%;
   border: 1px solid var(--hairline-chrome);
   border-top: 0;
@@ -22,16 +27,39 @@
   z-index: 15;
 }
 
-/* The downloads tab: the same component in-flow, filling the list column
-   rather than floating over it (XDL-E2-S1). */
-.panelEmbedded {
-  position: static;
-  width: auto;
-  height: 100%;
-  max-height: none;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+/* Resize grips. Wider than they look: 4px of visible edge is a hard target,
+   so the hit area straddles the border and the visible line stays 1px. */
+.resizeLeft,
+.resizeBottom,
+.resizeCorner {
+  position: absolute;
+  z-index: 1;
+}
+
+.resizeLeft {
+  top: 0;
+  bottom: 10px;
+  left: -3px;
+  width: 7px;
+  cursor: ew-resize;
+}
+
+.resizeBottom {
+  right: 0;
+  bottom: -3px;
+  left: 10px;
+  height: 7px;
+  cursor: ns-resize;
+}
+
+/* The corner wins where they meet: it is the only one that does both, and a
+   10px square is what the other two step aside for above. */
+.resizeCorner {
+  bottom: -3px;
+  left: -3px;
+  width: 13px;
+  height: 13px;
+  cursor: nesw-resize;
 }
 
 .header {
@@ -175,114 +203,53 @@
   cursor: pointer;
 }
 
-.rows {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+.headerPrimary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 500;
 }
 
-.empty {
-  padding: 24px;
-  text-align: center;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
+/* CATEGORIES as a tab strip (XDL-E2-S1). Under the header rather than in it:
+   the header's controls act on the queue, and these choose which queue you
+   are looking at. */
+.tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hairline-chrome);
+  background: var(--toolbar-bg);
 }
 
-.row {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--hairline-row);
-}
-
-/* Finished rows drop their bar and recede, per the design. */
-.rowFinished {
-  opacity: 0.6;
-}
-
-.rowTop,
-.rowBottom,
-.rowFailure {
+.tab {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  /* The active marker is a border on the element itself, so an inactive tab
+     reserves the same 2px and the strip does not shift by two pixels as the
+     selection moves. */
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color var(--transition-state), border-color var(--transition-state);
 }
 
-.rowBottom,
-.rowFailure {
-  margin-top: 4px;
+.tabActive {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
-.chip {
-  flex: none;
-  padding: 1px 5px;
-  border-radius: var(--radius-chip);
+.tabCount {
   font-family: var(--font-mono);
   font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-}
-
-.chipUp {
-  background: var(--chip-accent-bg);
-  color: var(--accent);
-}
-
-.chipDown {
-  background: var(--chip-neutral-bg);
-  color: var(--text-secondary);
-}
-
-.chipFailed {
-  background: var(--error-chip-bg);
-  color: var(--error);
-}
-
-.name {
-  flex: 1;
-  min-width: 0;
-  font-size: 11.5px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.nameActive {
-  font-weight: 500;
-}
-
-.status {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-secondary);
-}
-
-.statusDone {
-  color: var(--success);
-}
-
-.track {
-  height: 4px;
-  margin-top: 6px;
-  border-radius: 2px;
-  background: #e8e8eb;
-  overflow: hidden;
-}
-
-.fill {
-  height: 100%;
-  border-radius: 2px;
-  background: var(--accent);
-  transition: width var(--transition-state);
-}
-
-/* Same indeterminate treatment as the downloads table (XDL-E2-S3). */
-.fillIndeterminate {
-  height: 100%;
-  width: 40%;
-  border-radius: 2px;
-  background: var(--accent);
-  animation: indeterminate-slide 1.2s ease-in-out infinite;
+  color: var(--text-tertiary);
 }
 
 @keyframes indeterminate-slide {
@@ -294,46 +261,7 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .fillIndeterminate {
-    animation: none;
-  }
-}
-
-.dest {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.error {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--error);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rowAction {
-  flex: none;
-  height: 20px;
-  padding: 0 7px;
-  border: 1px solid var(--control-border);
-  border-radius: 4px;
-  background: var(--control-bg);
-  color: var(--text-control);
-  font-size: 10.5px;
-  cursor: pointer;
-}
-
-.footer {
+@media (prefers-reduced-motion: reduce) {}.footer {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -365,20 +293,3 @@
   color: var(--accent);
 }
 
-/* The rest of a long queue, one click away. A row rather than a control in the
-   header, because it belongs at the end of what it continues. */
-.showAll {
-  display: block;
-  width: 100%;
-  padding: 10px;
-  background: none;
-  border: none;
-  border-top: 1px solid var(--hairline-row);
-  color: var(--accent);
-  font-size: var(--text-row);
-  cursor: default;
-}
-
-.showAll:hover {
-  background: var(--row-hover-bg);
-}

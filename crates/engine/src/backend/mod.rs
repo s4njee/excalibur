@@ -189,6 +189,18 @@ pub struct Attrs {
     pub size: u64,
     /// Modification time, milliseconds since the Unix epoch.
     pub modified_ms: Option<i64>,
+    /// When the file came into being *here*, milliseconds since the Unix epoch.
+    ///
+    /// Birth time, not Finder's `kMDItemDateAdded`: the two agree for a file
+    /// that was created where it sits — a download, which is the case this
+    /// column exists for — and differ for one moved in from elsewhere. Reading
+    /// the Finder value needs `getattrlist`, and this workspace denies
+    /// `unsafe_code`.
+    ///
+    /// `None` where the filesystem or the protocol has no answer, which is
+    /// most of them: it is what tells the column to draw a dash rather than
+    /// the epoch.
+    pub added_ms: Option<i64>,
     /// Unix mode bits, when the protocol exposes them.
     pub mode: Option<u32>,
     /// Symlink target, when it is one.
@@ -386,6 +398,7 @@ pub trait ShareBackend: Send + Sync {
                         kind: EntryKind::Other,
                         size: 0,
                         modified_ms: None,
+                        added_ms: None,
                         mode: None,
                         link_target: None,
                         change_cookie: None,

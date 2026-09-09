@@ -313,62 +313,32 @@ describe("starting", () => {
   });
 });
 
-describe("the clipboard offer", () => {
-  it("offers a clipboard URL without filling the field", async () => {
-    stubClipboard(null);
-    dispose = render(
-      () => (
-        <AddDownloadDialog
-          folder="/Users/dorian/Downloads"
-          onCancel={() => undefined}
-          onAdd={() => undefined}
-        />
-      ),
-      host,
-    );
-    // A clipboard the test controls: the dialog reads on mount and on
-    // window focus, and offers — never fills — what it finds.
+describe("the clipboard", () => {
+  it("is never read, because reading it costs the user a click", async () => {
+    // macOS Sequoia raises a system "Paste" confirmation for a programmatic
+    // pasteboard read. The dialog used to read on mount and on every window
+    // focus to offer a URL it found, which meant reaching the downloader took
+    // two clicks: one for the button, one to grant the paste
+    // (reported 2026-09-09). A real Cmd+V raises nothing.
+    let reads = 0;
     vi.stubGlobal("navigator", {
-      clipboard: { readText: async () => "https://cdn.test/big.iso" },
-    });
-    window.dispatchEvent(new Event("focus"));
-    await settle();
-    await settle();
-    expect(urls().value).toBe("");
-    expect(text()).toContain("cdn.test");
-  });
-
-  it("fills only when asked, and says whose host it is first", async () => {
-    vi.stubGlobal("navigator", {
-      clipboard: { readText: async () => "https://user:pw@host/f" },
+      clipboard: {
+        readText: async () => {
+          reads += 1;
+          return "https://cdn.test/big.iso";
+        },
+      },
     });
     await show();
-    // Credentialed: refused the way a typed one is, so nothing is offered.
-    expect(text()).not.toContain("Clipboard:");
-    vi.stubGlobal("navigator", {
-      clipboard: { readText: async () => "https://cdn.test/big.iso" },
-    });
     window.dispatchEvent(new Event("focus"));
     await settle();
     await settle();
-    const use = [...host.querySelectorAll("button")].find(
-      (candidate) => candidate.textContent?.trim() === "Use it",
-    );
-    expect(text()).toContain("cdn.test");
-    expect(text()).not.toContain("cdn.test/big.iso");
-    use?.click();
-    await settle();
-    expect(urls().value).toBe("https://cdn.test/big.iso");
-    expect(startButton()?.disabled).toBe(false);
+    expect(reads).toBe(0);
   });
 
-  it("offers nothing when the clipboard holds no URL", async () => {
-    vi.stubGlobal("navigator", { clipboard: { readText: async () => "not a url" } });
+  it("leaves the URL field focused, so a paste needs no clicks at all", async () => {
     await show();
-    window.dispatchEvent(new Event("focus"));
-    await settle();
-    await settle();
-    expect(text()).not.toContain("Clipboard:");
+    expect(document.activeElement).toBe(urls());
   });
 });
 

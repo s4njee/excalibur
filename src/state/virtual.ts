@@ -60,3 +60,91 @@ export function rowsInBand(
   const end = Math.max(start, Math.min(count, Math.ceil(bottom / rowHeight)));
   return { start, end };
 }
+
+/**
+ * How many cells fit across a wrapping grid (E26-S4).
+ *
+ * At least one, always: a list narrower than a cell still has to draw them,
+ * and a zero would make the row count infinite. An unmeasured width — the
+ * `Infinity` the list starts at before its first layout — answers one for the
+ * same reason, and the real number arrives with the resize observer.
+ */
+export function itemsPerRow(width: number, cellWidth: number): number {
+  if (!Number.isFinite(width) || width <= 0 || cellWidth <= 0) return 1;
+  return Math.max(1, Math.floor(width / cellWidth));
+}
+
+/**
+ * Which cells to render for a wrapping grid, as cell indices.
+ *
+ * The same arithmetic as `visibleRange`, done in grid rows and then multiplied
+ * back out: a grid scrolls by row, so the window has to start and end on a row
+ * boundary or the first drawn cell lands in the wrong column.
+ */
+export function gridRange(
+  scrollTop: number,
+  viewportHeight: number,
+  cellHeight: number,
+  perRow: number,
+  cells: number,
+  overscan: number = OVERSCAN,
+): Range {
+  if (cells <= 0 || perRow <= 0 || cellHeight <= 0) return { start: 0, end: 0 };
+  const rows = visibleRange(
+    scrollTop,
+    viewportHeight,
+    cellHeight,
+    Math.ceil(cells / perRow),
+    overscan,
+  );
+  return {
+    start: Math.min(cells, rows.start * perRow),
+    end: Math.min(cells, rows.end * perRow),
+  };
+}
+
+/**
+ * Which cells a rubber band covers in a wrapping grid (E26-S4).
+ *
+ * `rowsInBand` cannot answer this. A band over rows is a vertical extent and
+ * so a contiguous range of indices; a band over a grid is a *rectangle*, and
+ * the cells it covers are a block — rows 2 to 4, columns 1 to 3 — which is not
+ * contiguous in index order at all.
+ *
+ * Intersection, not containment: dragging across the corner of a cell selects
+ * it, the way it does in every file manager. A band with no area selects
+ * nothing, so a click that never moved stays a click.
+ */
+export function cellsInBand(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  cellWidth: number,
+  cellHeight: number,
+  perRow: number,
+  count: number,
+): number[] {
+  if (count <= 0 || perRow <= 0 || cellWidth <= 0 || cellHeight <= 0) return [];
+  const left = Math.min(from.x, to.x);
+  const right = Math.max(from.x, to.x);
+  const top = Math.min(from.y, to.y);
+  const bottom = Math.max(from.y, to.y);
+  if (right === left || bottom === top) return [];
+
+  const rows = Math.ceil(count / perRow);
+  // `ceil(edge) - 1` rather than `floor(edge)`: a band whose edge lands exactly
+  // on a boundary touches the cell before it, not the one after.
+  const firstRow = Math.max(0, Math.floor(top / cellHeight));
+  const lastRow = Math.min(rows - 1, Math.ceil(bottom / cellHeight) - 1);
+  const firstColumn = Math.max(0, Math.floor(left / cellWidth));
+  const lastColumn = Math.min(perRow - 1, Math.ceil(right / cellWidth) - 1);
+
+  const covered: number[] = [];
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      const index = row * perRow + column;
+      // The last row is usually short; it has no cells past the count.
+      if (index < count) covered.push(index);
+    }
+  }
+  return covered;
+}

@@ -9,6 +9,7 @@
 // and that a refused row is inert rather than absent.
 
 import { describe, expect, it, afterEach, beforeEach } from "vitest";
+import { DEFAULT_PANE_SIZE } from "../state/paneSize";
 import { render } from "solid-js/web";
 import { Transfers } from "./Transfers";
 import type { Transfer, TransferStatus } from "../state/types";
@@ -42,6 +43,12 @@ function open(transfers: Transfer[]) {
   dispose = render(
     () => (
       <Transfers
+        size={DEFAULT_PANE_SIZE}
+        onResize={() => undefined}
+        onResizeEnd={() => undefined}
+        categories={[{ id: "all", label: "All", count: 0 }]}
+        category="all"
+        onCategory={() => undefined}
         transfers={transfers}
         onPause={() => undefined}
         onCancel={() => undefined}
@@ -87,18 +94,27 @@ describe("the transfers panel's overflow menu", () => {
       from: { kind: "http", url: "https://example.com/http.bin" },
       to: { kind: "local", path: "/Users/dorian/Downloads" },
     }]);
-    expect(host.textContent).toContain("↓ HTTP");
-    expect(host.textContent).not.toContain("↓ DOWN");
+    // The panel draws the reference's table now, which says where a row came
+    // from by naming its origin host rather than by stamping a direction chip
+    // on it. `This Mac` is what a local origin reads as, so its absence is the
+    // half of this that says the HTTP row was not mistaken for a share copy.
+    expect(host.textContent).toContain("example.com");
+    expect(host.textContent).not.toContain("This Mac");
   });
 
   it("keeps only Close in the header and puts the queue's verbs behind one control", async () => {
     // The panel's own verb stays a button; everything that acts on the *queue*
-    // moved. A header of five buttons is what this replaced.
+    // moved. A header of five buttons is what this replaced. Add URL is the
+    // toolbar's, not the panel's — putting it here meant the only route to the
+    // HTTP downloader was to open the pane and spot a button in its header.
     await open([row("a", "failed")]);
 
-    // The header's own, not a row's — a failed row has its own `Retry`.
+    // The header's own: not a row's — a failed row has its own `Retry` — and
+    // not the category strip's, which chooses what to look at rather than
+    // acting on anything.
     const buttons = [...host.querySelectorAll("button")]
       .filter((button) => button.closest("[data-transfer]") === null)
+      .filter((button) => button.getAttribute("role") !== "tab")
       .map((button) => button.getAttribute("aria-label") ?? button.textContent ?? "");
     expect(buttons).toEqual(["Queue actions", "Close"]);
     expect(menu()).toBeNull();

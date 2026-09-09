@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_WIDTHS } from "./columns";
 import { memoryPrefs } from "./prefs";
 import {
   DEFAULTS,
@@ -164,6 +165,9 @@ describe("settings", () => {
     await prefs.set("columnWidths.columns", { size: 120, modified: 150, kind: 130 });
     expect((await loadSettings(prefs)).columnWidths).toEqual({
       size: 120,
+      // A record written before Added existed has no width for it, and falls
+      // back per column rather than discarding the three the user did drag.
+      added: DEFAULT_WIDTHS.added,
       modified: 150,
       kind: 130,
     });

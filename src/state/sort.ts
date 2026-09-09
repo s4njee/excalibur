@@ -40,6 +40,11 @@ function value(entry: Entry, column: SortColumn): number | string {
       // A missing timestamp sorts as the oldest thing there is rather than
       // as 1970, which is a real date some file could legitimately have.
       return entry.modifiedMs ?? Number.NEGATIVE_INFINITY;
+    case "added":
+      // Same rule, and it matters more here: most protocols cannot answer, so
+      // a whole listing of nulls must not sort as if every file arrived at the
+      // epoch on the same day.
+      return entry.addedMs ?? Number.NEGATIVE_INFINITY;
     case "kind":
       return entry.kindLabel;
     case "name":

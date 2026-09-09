@@ -17,29 +17,6 @@
   min-width: 0;
 }
 
-.clipboard {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  grid-column: 2;
-  margin: -2px 0 0;
-  padding: 4px 6px 4px 8px;
-  border: 1px dashed var(--control-border);
-  border-radius: var(--radius-control);
-  background: var(--chip-accent-bg);
-}
-
-.clipboardText {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .probes,
 .connections,
 .modeRow {

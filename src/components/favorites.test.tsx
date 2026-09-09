@@ -118,7 +118,7 @@ function open(
           save: async () => undefined,
         }}
         favorites={favorites}
-        window={{ label: "main", mount: options.mount ?? null, path: "", view: "browse" }}
+        window={{ label: "main", mount: options.mount ?? null, path: "" }}
       />
     ),
     host,
@@ -151,7 +151,7 @@ afterEach(() => {
 });
 
 describe("the FAVORITES section", () => {
-  it("is seeded on a first run and sits above MOUNTED", async () => {
+  it("is seeded on a first run and sits under MOUNTED", async () => {
     const saving = store(null);
     await open(machine(), saving);
 
@@ -163,11 +163,13 @@ describe("the FAVORITES section", () => {
       "Pictures",
       "Movies",
     ]);
-    // Order, not merely presence: "above Mounted" is the requirement, and a
-    // section rendered after it would satisfy every other assertion here.
+    // Order, not merely presence: a section rendered elsewhere would satisfy
+    // every other assertion here. Favourites sat above the shares until
+    // 2026-09-09, when it was asked for the other way round — what the window
+    // is on now reads first.
     const text = sidebarText();
-    expect(text.indexOf("Favorites")).toBeLessThan(text.indexOf("Mounted"));
-    expect(text.indexOf("Mounted")).toBeLessThan(text.indexOf("Bookmarks"));
+    expect(text.indexOf("Mounted")).toBeLessThan(text.indexOf("Favorites"));
+    expect(text.indexOf("Favorites")).toBeLessThan(text.indexOf("Bookmarks"));
     // Written once, so the next launch reads a list rather than seeding again.
     expect(saving.latest()?.map((favorite) => favorite.name)).toContain("Home");
   });

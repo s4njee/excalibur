@@ -23,6 +23,7 @@ const listingOf = (name: string): Listing => ({
       kind: "file",
       size: 1,
       modifiedMs: null,
+      addedMs: null,
       mode: null,
       linkTarget: null,
       kindLabel: "Document",

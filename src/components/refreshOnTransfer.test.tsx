@@ -104,7 +104,7 @@ function open(backend: Backend, mount: string | null) {
         backend={backend}
         prefs={memoryPrefs()}
         bookmarks={{ load: async () => saved, save: async () => undefined }}
-        window={{ label: "browser-2", mount, path: "", view: "browse" }}
+        window={{ label: "browser-2", mount, path: "" }}
       />
     ),
     host,

@@ -14,6 +14,7 @@ const entry = (name: string, kind: EntryKind, size: number, modifiedMs: number |
   path: name,
   kind,
   size,
+  addedMs: null,
   modifiedMs,
   mode: null,
   linkTarget: null,

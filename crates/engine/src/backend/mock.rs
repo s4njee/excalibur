@@ -298,6 +298,9 @@ impl ShareBackend for MockBackend {
                         kind: node.kind,
                         size: node.size,
                         modified_ms: Some(node.modified_ms),
+                        // The design harness wants a plausible column, and a
+                        // file is never added after it was last modified.
+                        added_ms: Some(node.modified_ms),
                         mode: Some(if node.kind == EntryKind::Dir {
                             0o755
                         } else {
@@ -326,6 +329,7 @@ impl ShareBackend for MockBackend {
                 kind: node.kind,
                 size: node.size,
                 modified_ms: Some(node.modified_ms),
+                added_ms: Some(node.modified_ms),
                 mode: Some(0o644),
                 link_target: None,
             })

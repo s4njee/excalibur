@@ -624,6 +624,9 @@ fn attrs_of(metadata: &std::fs::Metadata, link_target: Option<String>) -> Attrs 
         kind,
         size: metadata.len(),
         modified_ms: metadata.modified().ok().map(millis),
+        // Birth time where the filesystem keeps one — APFS and ext4 do, and
+        // a downloaded file's is the moment it landed here.
+        added_ms: metadata.created().ok().map(millis),
         mode: mode_of(metadata),
         link_target,
         // No cheap, stable per-file version on a POSIX filesystem: the inode

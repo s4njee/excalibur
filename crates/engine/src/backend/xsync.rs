@@ -744,7 +744,7 @@ const fn kind_of(kind: u8) -> EntryKind {
 /// Each optional block costs the server work per entry, so asking for
 /// everything would make a 10,000-entry directory pay for fields no column
 /// shows.
-const LISTING_MASK: u32 = attr_presence::SYMLINK_TARGET;
+const LISTING_MASK: u32 = attr_presence::SYMLINK_TARGET | attr_presence::BTIME;
 
 fn attrs_of(attrs: &xsync_client::Attrs) -> Attrs {
     Attrs {
@@ -752,6 +752,9 @@ fn attrs_of(attrs: &xsync_client::Attrs) -> Attrs {
         size: attrs.size,
         // The wire carries nanoseconds; the UI works in milliseconds.
         modified_ms: Some(attrs.mtime_ns / 1_000_000),
+        // Present only where the server's filesystem records one, which is
+        // why it stays an `Option` rather than defaulting to the mtime.
+        added_ms: attrs.btime_ns.map(|ns| ns / 1_000_000),
         mode: Some(attrs.mode),
         link_target: attrs
             .symlink_target

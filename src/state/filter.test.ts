@@ -8,6 +8,7 @@ const entry = (name: string): Entry => ({
   kind: "file",
   size: 0,
   modifiedMs: null,
+  addedMs: null,
   mode: null,
   linkTarget: null,
   kindLabel: "Document",

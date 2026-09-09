@@ -40,7 +40,7 @@ function open(saved: Favorite[]) {
         prefs={memoryPrefs()}
         bookmarks={{ load: async () => [], save: async () => undefined }}
         favorites={{ load: async () => saved, save: async () => undefined }}
-        window={{ label: "main", mount: null, path: "", view: "browse" }}
+        window={{ label: "main", mount: null, path: "" }}
       />
     ),
     host,

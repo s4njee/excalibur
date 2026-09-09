@@ -1,4 +1,4 @@
-// The sidebar's CATEGORIES section (XDL-E2-S1): the download queue, grouped
+// The transfers pane's CATEGORIES tab strip (XDL-E2-S1): the queue, grouped
 // the way the reference groups it, counted live from the window's transfer
 // signal rather than a second store. The queue is the app's and every window
 // sees the same rows; the *selected category* is the window's, like the path.
@@ -189,4 +189,22 @@ export function originHost(transfer: Transfer): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Whether the queue still owes the user work.
+ *
+ * The same rule as the engine's `Status::active` — queued, running or paused —
+ * and deliberately not "the queue is non-empty": a finished row is kept until
+ * `Clear finished` takes it, so a queue that has ever been used is never empty
+ * again. Opening the transfers pane on that meant it opened on every launch
+ * for anyone who had ever downloaded anything (reported 2026-09-09).
+ */
+export function outstanding(transfers: Transfer[]): boolean {
+  return transfers.some(
+    (transfer) =>
+      transfer.status === "queued" ||
+      transfer.status === "running" ||
+      transfer.status === "paused",
+  );
 }

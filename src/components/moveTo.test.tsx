@@ -34,6 +34,7 @@ const entry = (path: string, kind: Entry["kind"]): Entry => ({
   kind,
   size: 0,
   modifiedMs: null,
+  addedMs: null,
   mode: null,
   linkTarget: null,
   kindLabel: kind === "dir" ? "Folder" : "Document",

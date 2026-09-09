@@ -8,7 +8,7 @@
 // is the failure that would otherwise slip through.
 
 import { describe, expect, it } from "vitest";
-import { downloadMenu, favoriteMenu, menuFor, type MenuAction } from "./menu";
+import { bookmarkMenu, downloadMenu, favoriteMenu, menuFor, type MenuAction } from "./menu";
 import { READ_AFFORDANCES, WRITE_AFFORDANCES, type Context } from "./permissions";
 import type { Category, Entry } from "./types";
 
@@ -19,6 +19,7 @@ function entry(name: string, kindCategory: Category = "text", kind: "file" | "di
     kind,
     size: 10,
     modifiedMs: 0,
+    addedMs: null,
     mode: null,
     linkTarget: null,
     kindLabel: kindCategory,
@@ -173,11 +174,14 @@ describe("the context menu's items", () => {
       upload: true,
       addFavorite: true,
       removeFavorite: true,
+      editBookmark: true,
+      removeBookmark: true,
     };
     const offered = new Set([
       ...byAction(menuFor([entry("a.txt")], RW)),
       ...byAction(menuFor([], { ...RW, hasSelection: false })),
       ...byAction(favoriteMenu()),
+      ...byAction(bookmarkMenu()),
     ]);
     expect([...offered].sort()).toEqual(Object.keys(all).sort());
   });

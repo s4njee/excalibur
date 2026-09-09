@@ -9,6 +9,7 @@ const at = (path: string, kind: Entry["kind"] = "dir"): Entry => ({
   kind,
   size: 0,
   modifiedMs: null,
+  addedMs: null,
   mode: null,
   linkTarget: null,
   kindLabel: kind === "dir" ? "Folder" : "Document",

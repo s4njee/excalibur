@@ -68,6 +68,8 @@ export interface Entry {
   kind: EntryKind;
   size: number;
   modifiedMs: number | null;
+  /** When the file came into being here; `null` where nothing can say. */
+  addedMs: number | null;
   mode: number | null;
   linkTarget: string | null;
   kindLabel: string;
@@ -254,6 +256,6 @@ export interface Bookmark {
   reachable: boolean;
 }
 
-export type SortColumn = "name" | "size" | "modified" | "kind";
-export type RowLayout = "columns" | "name-led" | "mono";
+export type SortColumn = "name" | "size" | "added" | "modified" | "kind";
+export type RowLayout = "columns" | "name-led" | "mono" | "icons" | "column-view";
 export type Theme = "light" | "dark";

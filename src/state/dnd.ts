@@ -143,6 +143,7 @@ function asEntries(paths: string[]): Entry[] {
     kind: "other",
     size: 0,
     modifiedMs: null,
+    addedMs: null,
     mode: null,
     linkTarget: null,
     kindLabel: "",

@@ -10,7 +10,7 @@
 import { describe, expect, it, afterEach, beforeEach } from "vitest";
 import { render } from "solid-js/web";
 import { ConnectionDialog } from "./ConnectionDialog";
-import { StatusBar } from "./Shell";
+import { StatusBar } from "./StatusBar";
 import App from "../App";
 import { fixtureBackend } from "../state/backend";
 import { memoryPrefs } from "../state/prefs";

@@ -83,6 +83,8 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
 | E22-S2 hash cache by mount id + path (`:4460`) | a cache-key change inside xsync |
 | E26-S6 owner/group in Properties (`:5750`) | the `OWNER_NAMES` feature bit |
 | xsync↔xsync on one host round-trips through us | a server-side `Copy` |
+| XTP-E5-S1 the message log (`twopane.md` XTP-E5) | a frame tap on `xsync-client` — §8 |
+| XTP-E9-S5 cancel in flight (`twopane.md` XTP-E9-S5) | `Cancel` (type 18) reachable from the client — §8 |
 
 ### 6. `xsync-download` — the whole Downloads tab
 
@@ -147,6 +149,36 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
   No sidecar, no version stamp in the bundle. Interacts with seam 2: a sidecar
   `xs` and a user-supplied remote `xs` are different version stories, and only the
   handshake covers the second. (`scripts/stage-xs.sh:1`; `../ROADMAP.md` §3 Phase 4.)
+
+### 8. A frame tap and a reachable `Cancel` on `xsync-client`
+
+- **What / why.** The re-issued share-browser handoff specs a protocol message log
+  as a first-class surface — "The log is where protocol truth lives: mount command
+  and its export flags, listing timings, and failures verbatim"
+  (`design_handoff_share_browser 2/README.md`, §Screens/8) — and states the
+  mechanism: every protocol command and response emits a `log://line`, with the log
+  pane a view onto that stream rather than a separate thing. Excalibur cannot
+  produce that stream. **Proposed:** an opt-in observer on `xsync-client` — an
+  `mpsc` tap or an `Fn(&V3Message, Direction)` installed at `Client::from_split` —
+  off by default, allocation-free when unarmed, dropping frames and reporting the
+  drop rather than applying back-pressure to the protocol. It belongs at
+  `Connection::request` (`../xsync/crates/xsync-client/src/lib.rs:286`) rather than
+  `Connection::call` (`:322`), because `call` converts a server `Error` reply into
+  an `Err` and loses the frame the log's `Error:` category needs verbatim. Second and
+  smaller: `Cancel` (type 18) is defined and the server handles it, but the client
+  crate offers no way to send one, so an in-flight request can only be abandoned by
+  dropping the `OpenFile`, `Stage` or `Client`. **Proposed:** expose it, so a
+  drawer's per-row cancel need not wait for a chunk boundary.
+- **Current state.** Neither exists. `xsync-client` has no `tracing` or `log`
+  dependency and no callback, channel or observer anywhere; `Connection::request` is
+  private and every frame passes through it. `V3Message` already derives `Debug`, so
+  no new formatting contract is needed in xsync. On the Excalibur side `log://line`
+  appears nowhere in the tree, and `SshStderr` (`crates/engine/src/backend/xsync.rs:450`)
+  drains the remote's stderr into a bounded ring — lifecycle text, not frames, and the
+  nearest thing that exists today. Backends that cannot produce frames would log at the
+  `ShareBackend` seam (`crates/engine/src/backend/mod.rs:295`) at engine-verb
+  resolution, which the pane must say it is showing rather than imply frames it does
+  not have. (`twopane.md` XTP-E5-S0, XTP-E9-S5.)
 
 ---
 

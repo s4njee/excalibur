@@ -3,6 +3,7 @@
 // that keeps 10,000 rows at the file list's frame rate.
 
 import { describe, expect, it, vi, afterEach } from "vitest";
+import { DEFAULT_PANE_SIZE } from "../state/paneSize";
 import { render } from "solid-js/web";
 import { DownloadsTable, downloadWindow, DOWNLOAD_ROW_HEIGHT } from "./DownloadsTable";
 import { Transfers } from "./Transfers";
@@ -269,6 +270,12 @@ describe("the sheet's rows", () => {
     const stop = render(
       () => (
         <Transfers
+        size={DEFAULT_PANE_SIZE}
+        onResize={() => undefined}
+        onResizeEnd={() => undefined}
+        categories={[{ id: "all", label: "All", count: 0 }]}
+        category="all"
+        onCategory={() => undefined}
           transfers={[row("stream", "running", { bytesTotal: 0, bytesDone: 512 })]}
           onPause={() => undefined}
           onCancel={() => undefined}
@@ -296,6 +303,12 @@ describe("the footer (XDL-E2-S4)", () => {
     const stop = render(
       () => (
         <Transfers
+        size={DEFAULT_PANE_SIZE}
+        onResize={() => undefined}
+        onResizeEnd={() => undefined}
+        categories={[{ id: "all", label: "All", count: 0 }]}
+        category="all"
+        onCategory={() => undefined}
           transfers={transfers}
           onPause={() => undefined}
           onCancel={() => undefined}

@@ -11,6 +11,11 @@
 // to everything.
 
 import { DEFAULT_WIDTHS, sanitise as sanitiseWidths, type Widths } from "./columns";
+import {
+  DEFAULT_PANE_SIZE,
+  sanitise as sanitisePaneSize,
+  type PaneSize,
+} from "./paneSize";
 import { DEFAULT_SORT, type Sort } from "./sort";
 import type { Prefs } from "./prefs";
 import type { RowLayout, SortColumn } from "./types";
@@ -70,6 +75,8 @@ export interface Settings {
   transferConcurrency: number;
   conflictDefault: ConflictDefault;
   columnWidths: Widths;
+  /** The transfers pane's remembered size; `height: null` is content-height. */
+  transfersPane: PaneSize;
   sort: Sort;
 }
 
@@ -97,6 +104,7 @@ export const DEFAULTS: Settings = {
   // and E13-S4's prompt is what makes it one.
   conflictDefault: "ask",
   columnWidths: DEFAULT_WIDTHS,
+  transfersPane: DEFAULT_PANE_SIZE,
   sort: DEFAULT_SORT,
 };
 
@@ -124,13 +132,14 @@ const KEYS: Record<keyof Settings, string> = {
   // Shaped for `1g`/`1h`, which have no columns to size, so those need no
   // migration when they land.
   columnWidths: "columnWidths.columns",
+  transfersPane: "transfersPane",
   sort: "sort",
 };
 
 const THEMES: readonly ThemeChoice[] = ["system", "light", "dark"];
-const LAYOUTS: readonly RowLayout[] = ["columns", "name-led", "mono"];
+const LAYOUTS: readonly RowLayout[] = ["columns", "name-led", "mono", "icons", "column-view"];
 const CONFLICTS: readonly ConflictDefault[] = ["ask", "replace", "skip", "keepBoth"];
-const SORT_COLUMNS: readonly SortColumn[] = ["name", "size", "modified", "kind"];
+const SORT_COLUMNS: readonly SortColumn[] = ["name", "size", "added", "modified", "kind"];
 
 /** The most transfers that may run at once, whatever the file says. */
 export const MAX_CONCURRENCY = 8;
@@ -269,6 +278,8 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return sanitiseConcurrency(value) as Settings[K];
     case "columnWidths":
       return sanitiseWidths(value) as Settings[K];
+    case "transfersPane":
+      return sanitisePaneSize(value) as Settings[K];
     case "sort":
       return sanitiseSort(value) as Settings[K];
     default: {

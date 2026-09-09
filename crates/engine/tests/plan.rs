@@ -102,6 +102,7 @@ fn entry(name: &str, path: &str, kind: EntryKind) -> Entry {
             kind,
             size: 1,
             modified_ms: None,
+            added_ms: None,
             mode: None,
             link_target: None,
             change_cookie: None,

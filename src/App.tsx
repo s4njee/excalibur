@@ -5,6 +5,7 @@ import { Transfers } from "./components/Transfers";
 import {
   defaultBookmarkStore,
   fromDraft,
+  matchBookmark,
   probePort,
   remove as removeBookmark,
   restore,
@@ -29,18 +30,19 @@ import {
   type Favorite,
   type FavoriteStore,
 } from "./state/favorites";
-import { toSpec, uriScheme, type Draft } from "./state/connection";
+import { defaultPort, toSpec, uriScheme, type Draft } from "./state/connection";
 import { thisMachine } from "./state/platform";
-import {
-  Banner,
-  EmptyState,
-  FileList,
-  shellStyles as styles,
-  Sidebar,
-  StatusBar,
-  TitleBar,
-  Toolbar,
-} from "./components/Shell";
+import { Banner } from "./components/Banner";
+import { EmptyState } from "./components/EmptyState";
+import { FileList } from "./components/FileList";
+import { ColumnView } from "./components/ColumnView";
+import { Sidebar } from "./components/Sidebar";
+import { StatusBar } from "./components/StatusBar";
+import { TitleBar } from "./components/TitleBar";
+import { Toolbar } from "./components/Toolbar";
+// The window's own chrome — the body, the list column, the scrims and sheets
+// App draws itself — shares the shell stylesheet with the components above.
+import styles from "./components/shell.module.css";
 import {
   defaultBackend,
   fixtureBackend,
@@ -55,10 +57,8 @@ import type {
   Entry,
   MountEvent,
   MountInfo,
+  RowLayout,
   Theme,
-  Transfer,
-  HttpDownloadOptions,
-  NamedQueue,
 } from "./state/types";
 import { createListing } from "./state/listing";
 import * as nav from "./state/navigation";
@@ -72,6 +72,8 @@ import {
   type Context as PermissionContext,
 } from "./state/permissions";
 import { engineFailure } from "./state/errors";
+import { createQueues } from "./app/queues";
+import { createAddDownload } from "./app/addDownload";
 import {
   EMPTY_SELECTION,
   band,
@@ -96,17 +98,28 @@ import {
   type DropMount,
   type DropPlan,
 } from "./state/dnd";
-import { favoriteMenu, menuFor, type MenuAction, type MenuItem } from "./state/menu";
+import { viewMenu, type ViewMenuAction } from "./state/viewMenu";
+import { bookmarkMenu, favoriteMenu, menuFor, type MenuAction, type MenuItem } from "./state/menu";
 import { editable } from "./state/preview";
-import { DEFAULT_WIDTHS, resize, type Divider, type Widths } from "./state/columns";
+import {
+  DEFAULT_WIDTHS,
+  resize,
+  type Divider,
+  type VisibleColumns,
+  type Widths,
+} from "./state/columns";
 import { defaultPrefs, inTauri, type Prefs } from "./state/prefs";
 import * as shortcuts from "./state/shortcuts";
 import { coalesce } from "./state/refresh";
-import { windowParams, type WindowParams, type WindowView } from "./state/window";
+import { windowParams, type WindowParams } from "./state/window";
+import { parseLocation } from "./state/location";
+// The same resolver ⌘⇧G uses, so a path typed in either place means one thing.
+import { resolve as resolveGoto } from "./state/goto";
+import { DEFAULT_PANE_SIZE, clampToWindow, type PaneSize } from "./state/paneSize";
 import {
   DOWNLOAD_CATEGORIES,
   countByCategory,
-  filterByCategory,
+  outstanding,
   validDownloadDrop,
   type DownloadCategory,
 } from "./state/downloads";
@@ -119,6 +132,24 @@ import {
   saveSetting,
   type Settings,
 } from "./state/settings";
+
+/**
+ * Which layout each verb names.
+ *
+ * One table because two paths reach it — ⌘1–⌘4 and the View menu — and they
+ * used to say it twice, in a nested ternary that a fourth layout would have
+ * made unreadable.
+ */
+const LAYOUT_KEYS: Record<
+  "layoutColumns" | "layoutNameLed" | "layoutMono" | "layoutIcons" | "layoutColumnView",
+  RowLayout
+> = {
+  layoutColumns: "columns",
+  layoutNameLed: "name-led",
+  layoutMono: "mono",
+  layoutIcons: "icons",
+  layoutColumnView: "column-view",
+};
 
 export default function App(props: {
   backend?: Backend;
@@ -163,62 +194,36 @@ export default function App(props: {
   const listing = listingState.listing;
 
   /**
-   * What the window is looking at: the share, or the download queue
-   * (XDL-E2-S1). Per-window state like the path — each webview holds its
-   * own — starting from what the shell opened it on.
+   * Which category the transfers pane is filtered to (XDL-E2-S1).
    *
-   * The choice is remembered per window label so a restart keeps it. Only the
-   * *view* is remembered, not the mount: restoring a share means
-   * re-establishing a session, which is E23-S2's job, while downloads need no
-   * session and come back for free. An explicit `?view=` or a `mount` from
-   * ⌘N always wins over the remembered answer.
+   * Remembered per window label so a restart keeps the tab, the way the view
+   * used to be. A *new* key rather than the old `window-view:` record: that
+   * one carried a `view` alongside the category, and reading it here is how a
+   * removed view comes back from the dead. Stale records are simply never
+   * read again.
    */
-  const [view, setView] = createSignal<WindowView>(self.view);
-  /** Which queue category the downloads view shows. Session-local. */
   const [category, setCategory] = createSignal<DownloadCategory>("all");
-  const viewKey = () => `window-view:${self.label}`;
-  const rememberView = (next: WindowView, nextCategory: DownloadCategory) => {
-    setView(next);
-    setCategory(nextCategory);
-    void prefs.set(viewKey(), { view: next, category: nextCategory });
-  };
+  const categoryKey = () => `transfers-category:${self.label}`;
   onMount(async () => {
-    if (self.view !== "browse" || self.mount !== null) return;
-    const saved = await prefs.get(viewKey());
-    if (
-      typeof saved === "object" &&
-      saved !== null &&
-      (saved as { view?: unknown }).view === "downloads"
-    ) {
-      const savedCategory = (saved as { category?: unknown }).category;
-      setView("downloads");
-      if (DOWNLOAD_CATEGORIES.some((candidate) => candidate.id === savedCategory)) {
-        setCategory(savedCategory as DownloadCategory);
-      }
-      // The queue seed may have opened the sheet before this read came back;
-      // the tab shows the same rows, so it goes (XDL-E2-S1).
-      setShowTransfers(false);
+    const saved = await prefs.get(categoryKey());
+    // Only ever `setCategory`. Anything else here runs *after* the queue seed
+    // below has decided whether to open the pane, and would silently overrule
+    // it on every launch.
+    if (DOWNLOAD_CATEGORIES.some((candidate) => candidate.id === saved)) {
+      setCategory(saved as DownloadCategory);
     }
   });
 
-  /** The sidebar's CATEGORIES rows, with live counts off the queue. */
+  /** The pane's tab strip, with live counts off the whole queue. */
   const categories = () => {
     const counts = countByCategory(transfers());
     return DOWNLOAD_CATEGORIES.map(({ id, label }) => ({ id, label, count: counts[id] }));
   };
-  /** The queue rows the downloads view shows for the chosen category. */
-  const visibleTransfers = () => filterByCategory(transfers(), category());
 
-  /**
-   * Switch the window onto downloads (XDL-E2-S1). The sheet, the preview and
-   * the file selection all belong to the browse view: leaving them open
-   * behind the queue would stack two answers to what the window shows.
-   */
+  /** Choose a tab in the transfers pane, and remember it for next launch. */
   const openCategory = (id: DownloadCategory) => {
-    rememberView("downloads", id);
-    setShowTransfers(false);
-    setQuickLook(false);
-    setSelection(EMPTY_SELECTION);
+    setCategory(id);
+    void prefs.set(categoryKey(), id);
   };
 
   createEffect(() => listingState.load(path()));
@@ -264,6 +269,7 @@ export default function App(props: {
   >();
   const [keychainAvailable, setKeychainAvailable] = createSignal<boolean | undefined>();
   const [widths, setWidths] = createSignal<Widths>(DEFAULT_WIDTHS);
+  const [paneSize, setPaneSize] = createSignal<PaneSize>(DEFAULT_PANE_SIZE);
 
   const nativeHttpProxy = (proxy: Settings["downloadProxy"]) =>
     proxy === "environment"
@@ -279,86 +285,19 @@ export default function App(props: {
   };
 
   const [showPreferences, setShowPreferences] = createSignal(false);
-  /**
-   * The Add Download dialog (XDL-E3-S1). `addingDest` is the resolved default
-   * folder: the configured download folder, else this window's last-used
-   * destination, else the OS folder the engine names — each may need an async
-   * answer, so it is resolved before the dialog opens rather than by it.
-   */
-  const [addingDownload, setAddingDownload] = createSignal(false);
-  const [addingDest, setAddingDest] = createSignal("");
-  const [addingUrls, setAddingUrls] = createSignal<string[]>([]);
-  const [addingBusy, setAddingBusy] = createSignal(false);
-  const downloadDestKey = () => `download-dest:${self.label}`;
-  const openAddDownload = async (initialUrls: string[] = []) => {
-    setAddingUrls(initialUrls);
-    try {
-      const stored = await prefs.get(downloadDestKey());
-      if (typeof stored === "string" && stored.trim() !== "") {
-        setAddingDest(stored);
-        setAddingDownload(true);
-        return;
-      }
-      const downloadFolder = settings().downloadFolder;
-      if (downloadFolder !== null) {
-        setAddingDest(downloadFolder);
-        setAddingDownload(true);
-        return;
-      }
-      setAddingDest((await backend.downloadFolder()) ?? "");
-    } catch {
-      setAddingDest("");
-    }
-    setAddingDownload(true);
-  };
-  const addDownloads = async (
-    urls: string[],
-    folder: string,
-    options: HttpDownloadOptions[] = [],
-  ) => {
-    // Remembered before the rows are: the folder is the part the queue would
-    // own, and queues do not exist yet, so it is remembered per window label
-    // instead (XDL-E6-S1 is the real home).
-    void prefs.set(downloadDestKey(), folder);
-    setAddingBusy(true);
-    let started = 0;
-    let failure: string | null = null;
-    // Mirror mode represents one object: the first URL is primary and the
-    // remaining URLs are failover sources carried in its options.
-    const jobs = options[0]?.mirrors?.length
-      ? [{ url: urls[0], options: options[0] }]
-      : urls.map((url, index) => ({ url, options: options[index] }));
-    for (const item of jobs) {
-      if (!item.url) continue;
-      try {
-        // The Preferences value is the per-download default. An explicit
-        // choice in Add Download wins, while `null` preserves the provider's
-        // automatic selection.
-        const configured = settings().downloadConnections;
-        const withDefault: HttpDownloadOptions = {
-          ...item.options,
-          ...(configured !== null && item.options?.connections === undefined
-            ? { connections: configured }
-            : {}),
-          retry: settings().downloadRetry,
-        };
-        const override =
-          Object.keys(withDefault).length > 0 ? withDefault : undefined;
-        await backend.enqueueHttpDownload(item.url, folder, override);
-        started += 1;
-      } catch (error) {
-        failure ??= engineFailure(error).message;
-      }
-    }
-    setAddingBusy(false);
-    setAddingDownload(false);
-    refreshTransfers();
-    if (failure !== null) {
-      setProblem(`Started ${started} of ${jobs.length} downloads — ${failure}`);
-    } else {
-      setNotice(started === 1 ? "Download started" : `${started} downloads started`);
-    }
-  };
+  // The Add Download dialog and its submit path (`app/addDownload.ts`).
+  const addDownload = createAddDownload({
+    backend,
+    prefs,
+    label: self.label,
+    settings,
+    // Thunks: this runs before those are declared, and a direct reference
+    // would be a use-before-declaration rather than a late call.
+    refreshTransfers: () => refreshTransfers(),
+    onProblem: (message) => setProblem(message),
+    onNotice: (message) => setNotice(message),
+  });
+  const openAddDownload = addDownload.open;
   // Held so ⌘F can put the caret in the filter box, which is a DOM action
   // rather than a state change.
   let filterInput: HTMLInputElement | undefined;
@@ -417,6 +356,15 @@ export default function App(props: {
     const loaded = await loadSettings(prefs);
     setSettings(loaded);
     setWidths(loaded.columnWidths);
+    // Clamped on the way in: a pane sized on a bigger display would otherwise
+    // come back wider than this window, with its left edge — and the grip on
+    // it — off screen, so it could never be made smaller again.
+    setPaneSize(
+      clampToWindow(loaded.transfersPane, {
+        width: Math.max(0, window.innerWidth - 16),
+        height: Math.max(0, window.innerHeight - 16),
+      }),
+    );
     // The engine holds the transfer worker, so its concurrency has to be told
     // rather than read.
     void backend.setTransferConcurrency(loaded.transferConcurrency);
@@ -460,10 +408,22 @@ export default function App(props: {
 
   // The drag itself only moves the signal. Writing on every pointermove would
   // be a file write per frame, so it is persisted once when the drag ends.
-  const onResize = (divider: Divider, delta: number) =>
-    setWidths((current) => resize(current, divider, delta));
+  const onResize = (divider: Divider, delta: number, visible: VisibleColumns) =>
+    setWidths((current) => resize(current, divider, delta, visible));
   const onResizeEnd = () => void saveSetting(prefs, "columnWidths", widths());
-  const [selection, setSelection] = createSignal(clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"));
+  const onPaneResizeEnd = () => void saveSetting(prefs, "transfersPane", paneSize());
+  /**
+   * Nothing is selected until something is clicked.
+   *
+   * The browser preview starts with a row selected, because the design's
+   * screens draw one and there is no way to click in a screenshot. That seed
+   * was ungated: every window in the app began with `Arrival.2016.mkv` in its
+   * selection — harmless while no such file exists, and a row highlighted by
+   * nobody the moment one does (swept 2026-09-09).
+   */
+  const [selection, setSelection] = createSignal(
+    inTauri() ? EMPTY_SELECTION : clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"),
+  );
   // The row type-to-select jumped to, so the list can scroll it into view.
   const [reveal, setReveal] = createSignal<number | null>(null);
   /**
@@ -483,10 +443,39 @@ export default function App(props: {
   const [selectedBookmark, setSelectedBookmark] = createSignal<string | null>(null);
   const [undo, setUndo] = createSignal<{ bookmark: Bookmark; index: number } | null>(null);
 
+  /**
+   * Bookmarks that exist only because a favourite was opened.
+   *
+   * The window's model is one mount at a time and a mount is a bookmark, so
+   * opening a folder from FAVORITES has to produce one. It should not *outlive*
+   * the mount: the favourite is already the permanent row for that folder, and
+   * a second one under BOOKMARKS saying the same thing is the redundancy this
+   * removes (asked for directly 2026-09-09).
+   *
+   * Membership, not a path test. Asking "is this path a favourite?" would also
+   * hide a bookmark the user deliberately saved for a folder that happens to
+   * be one — and the OS folders are seeded as favourites, so that is most of
+   * them. Only a bookmark *this window created by opening a favourite* is
+   * transient, and only when there was not already one saved for it.
+   */
+  const [favoriteMounts, setFavoriteMounts] = createSignal<ReadonlySet<string>>(new Set());
+  const isFavoriteMount = (bookmark: Bookmark) => favoriteMounts().has(bookmark.id);
+
   const persist = (next: Bookmark[]) => {
     setBookmarks(next);
-    void store.save(next);
+    // Held in memory so MOUNTED can draw it and the window knows what it is
+    // on, and left out of the store so it is not there next launch.
+    void store.save(next.filter((bookmark) => !isFavoriteMount(bookmark)));
   };
+
+  /**
+   * What the sidebar draws: everything, less the favourite-derived mounts that
+   * are not currently mounted. Filtering here rather than in `Sidebar` because
+   * the section split is `mounted` — a row removed from this list simply never
+   * reaches BOOKMARKS, while a mounted one still reaches MOUNTED.
+   */
+  const sidebarBookmarks = () =>
+    bookmarks().filter((bookmark) => bookmark.mounted || !isFavoriteMount(bookmark));
 
   // FAVORITES (E27-S1). The saved list, and separately the subset whose
   // folders are actually there — kept apart so that unplugging a disk hides a
@@ -790,7 +779,6 @@ export default function App(props: {
 
         case "quickLook":
           // The button is absent on downloads, so the key is too (XDL-E2-S1).
-          if (view() === "downloads") return;
           if (renaming() !== null) return;
           event.preventDefault();
           toggleQuickLook();
@@ -926,25 +914,21 @@ export default function App(props: {
         case "download":
           // Share verbs act on the file list, which downloads has none of.
           // The toolbar leaves them out there, and the keys follow (XDL-E2-S1).
-          if (view() === "downloads") return;
           event.preventDefault();
           void downloadSelected();
           return;
 
         case "upload":
-          if (view() === "downloads") return;
           event.preventDefault();
           void uploadHere();
           return;
 
         case "edit":
-          if (view() === "downloads") return;
           event.preventDefault();
           void editSelected();
           return;
 
         case "newFolder":
-          if (view() === "downloads") return;
           event.preventDefault();
           void newFolder();
           return;
@@ -965,21 +949,21 @@ export default function App(props: {
           return;
 
         case "transfers":
-          // Already looking at the queue when on downloads — the sheet would
-          // draw the same rows over the tab (XDL-E2-S1).
-          if (view() === "downloads") return;
+          // Toggles: it is the same key the View menu's item carries, and a
+          // control that only opens leaves ⇧⌘T unable to undo itself. On
+          // macOS the menu answers this first and the webview never sees it;
+          // this is the path everywhere else.
           event.preventDefault();
-          setShowTransfers(true);
+          setShowTransfers((open) => !open);
           return;
 
         case "layoutColumns":
         case "layoutNameLed":
         case "layoutMono":
+        case "layoutIcons":
+        case "layoutColumnView":
           event.preventDefault();
-          update(
-            "rowLayout",
-            verb === "layoutColumns" ? "columns" : verb === "layoutNameLed" ? "name-led" : "mono",
-          );
+          update("rowLayout", LAYOUT_KEYS[verb]);
           return;
 
         default:
@@ -1031,9 +1015,6 @@ export default function App(props: {
           mounted: candidate.id === bookmark.id,
         })),
       );
-      // Back to the file list: mounting a share is choosing what to browse,
-      // which answers the downloads view's question the other way (XDL-E2-S1).
-      rememberView("browse", category());
       setHistory(nav.initial());
       listingState.load("");
     } catch {
@@ -1055,7 +1036,13 @@ export default function App(props: {
       (candidate) => normalisePath(candidate.path) === target,
     );
     if (!favorite) return;
-    void openMount(fromDraft(favoriteDraft(favorite)));
+    const bookmark = fromDraft(favoriteDraft(favorite));
+    // Already saved means the user made it deliberately; opening the favourite
+    // must not quietly turn their bookmark into a transient one.
+    if (!bookmarks().some((candidate) => candidate.id === bookmark.id)) {
+      setFavoriteMounts((current) => new Set(current).add(bookmark.id));
+    }
+    void openMount(bookmark);
   };
 
   const [remounting, setRemounting] = createSignal(false);
@@ -1073,16 +1060,44 @@ export default function App(props: {
   // from the listing because a mount that has *dropped* has no listing to
   // carry its state — that is exactly when the health dot has to turn red.
   const [mountEvent, setMountEvent] = createSignal<MountEvent | null>(null);
-  const [transfers, setTransfers] = createSignal<Transfer[]>([]);
-  const [queues, setQueues] = createSignal<NamedQueue[]>([]);
+  // The app-wide queue and the verbs over it (`app/queues.ts`).
+  const {
+    transfers,
+    queues,
+    refreshTransfers,
+    createQueue,
+    updateQueue,
+    deleteQueue,
+    moveTransferToQueue,
+    reorderQueue,
+    reorderQueues,
+  } = createQueues({
+    backend,
+    onProblem: setProblem,
+    onSettled: (changed) => {
+      // A transfer that landed changed the share it landed on, and nothing
+      // else tells the window: `listing://changed` is emitted for this app's
+      // own mutations — a rename, a delete, a new folder — and the queue is
+      // not one of them. Without this a file dragged in from Finder copies
+      // successfully and simply never appears (reported 2026-09-06).
+      //
+      // Through the coalescer rather than straight to `load`: dropping twenty
+      // files finishes twenty transfers, and that is one relist, not twenty.
+      // The mount is checked because the queue event is a broadcast — every
+      // window hears about every transfer, and relisting on someone else's
+      // would be this window refreshing for a share it is not showing.
+      if (changed.status === "done" && changed.mount === activeMountId()) {
+        refresh.request();
+      }
+    },
+  });
   const [showTransfers, setShowTransfers] = createSignal(false);
-  // The preview route seeds a queue; if there is one, show it — unless the
-  // window starts on downloads, where the sheet would cover the tab showing
-  // the same rows (XDL-E2-S1).
+  // Open on launch only when the queue still owes work — something queued,
+  // running or paused. Not "the queue is non-empty": finished rows are kept
+  // until `Clear finished` takes them, so that opened the pane on every launch
+  // for anyone who had ever downloaded anything.
   onMount(() =>
-    void backend
-      .transfers()
-      .then((all) => all.length > 0 && view() !== "downloads" && setShowTransfers(true)),
+    void backend.transfers().then((all) => outstanding(all) && setShowTransfers(true)),
   );
   /** Destinations already taken, awaiting Replace / Keep both / Skip. */
   const [conflicts, setConflicts] = createSignal<{
@@ -1433,10 +1448,62 @@ export default function App(props: {
     setContextMenu({ at, items: favoriteMenu() });
   };
 
+  /** Which bookmark the sidebar menu is open on, while it is open. */
+  const [bookmarkMenuId, setBookmarkMenuId] = createSignal<string | null>(null);
+  /**
+   * The menu on a row in MOUNTED or BOOKMARKS (E3-S1).
+   *
+   * Also selects the row, so the footer's − and Edit — which act on the
+   * selection — agree with what was just right-clicked rather than with
+   * whatever was left selected before.
+   */
+  const openBookmarkMenu = (id: string, at: { x: number; y: number }) => {
+    setSelectedBookmark(id);
+    setBookmarkMenuId(id);
+    setContextMenu({ at, items: bookmarkMenu() });
+  };
+
+  /**
+   * The View menu's verbs (E17-S1).
+   *
+   * Every one of them is a persisted preference, so they go through
+   * `changeSetting` rather than a signal — the same path Preferences uses, and
+   * the reason a layout chosen here is still chosen after a relaunch.
+   */
+  const runViewAction = (action: ViewMenuAction) => {
+    switch (action) {
+      case "toggleHidden":
+        changeSetting("showHidden", !showHidden());
+        return;
+      case "toggleFoldersFirst":
+        changeSetting("foldersFirst", !foldersFirst());
+        return;
+      case "layoutColumns":
+      case "layoutNameLed":
+      case "layoutMono":
+      case "layoutIcons":
+      case "layoutColumnView":
+        changeSetting("rowLayout", LAYOUT_KEYS[action]);
+    }
+  };
+
   const runMenuAction = (action: MenuAction) => {
     setContextMenu(null);
     const chosen = selectedVisible();
     switch (action) {
+      case "removeBookmark": {
+        const id = bookmarkMenuId();
+        setBookmarkMenuId(null);
+        if (id !== null) removeSelected(id);
+        return;
+      }
+      case "editBookmark": {
+        const id = bookmarkMenuId();
+        setBookmarkMenuId(null);
+        const bookmark = bookmarks().find((candidate) => candidate.id === id);
+        if (bookmark) setConnecting(toDraft(bookmark));
+        return;
+      }
       case "quickLook":
         if (chosen.length === 1) setQuickLook(true);
         return;
@@ -1568,90 +1635,6 @@ export default function App(props: {
     }
   };
 
-  onMount(() => {
-    void backend.transfers().then(setTransfers);
-    void backend.downloadQueues().then(setQueues);
-    const stop = backend.onTransferChanged((changed) => {
-      setTransfers((current) => {
-        const index = current.findIndex((transfer) => transfer.id === changed.id);
-        if (index === -1) return [...current, changed];
-        const next = current.slice();
-        next[index] = changed;
-        return next;
-      });
-      // A transfer that landed changed the share it landed on, and nothing
-      // else tells the window: `listing://changed` is emitted for this app's
-      // own mutations — a rename, a delete, a new folder — and the queue is
-      // not one of them. Without this a file dragged in from Finder copies
-      // successfully and simply never appears (reported 2026-09-06).
-      //
-      // Through the coalescer rather than straight to `load`: dropping twenty
-      // files finishes twenty transfers, and that is one relist, not twenty.
-      // The mount is checked because the queue event is a broadcast — every
-      // window hears about every transfer, and relisting on someone else's
-      // would be this window refreshing for a share it is not showing.
-      if (changed.status === "done" && changed.mount === activeMountId()) {
-        refresh.request();
-      }
-    });
-    onCleanup(stop);
-    const stopQueues = backend.onQueueChanged(setQueues);
-    onCleanup(stopQueues);
-  });
-
-  /** Re-read the whole queue, for the cases an event stream cannot cover. */
-  const refreshTransfers = () => void backend.transfers().then(setTransfers);
-  const refreshQueues = () => void backend.downloadQueues().then(setQueues);
-  const createQueue = async (name: string, color: string, concurrency: number) => {
-    try {
-      await backend.createDownloadQueue(name, color, concurrency);
-      refreshQueues();
-    } catch (error) {
-      setProblem(engineFailure(error).message);
-    }
-  };
-  const updateQueue = async (id: string, name: string, color: string, concurrency: number) => {
-    try {
-      await backend.updateDownloadQueue(id, name, color, concurrency);
-      refreshQueues();
-    } catch (error) {
-      setProblem(engineFailure(error).message);
-    }
-  };
-  const deleteQueue = async (id: string) => {
-    try {
-      await backend.deleteDownloadQueue(id);
-      refreshQueues();
-      refreshTransfers();
-    } catch (error) {
-      setProblem(engineFailure(error).message);
-    }
-  };
-  const moveTransferToQueue = async (id: string, queueId: string) => {
-    try {
-      const changed = await backend.moveTransferToQueue(id, queueId);
-      setTransfers((current) => current.map((transfer) => transfer.id === changed.id ? changed : transfer));
-    } catch (error) {
-      setProblem(engineFailure(error).message);
-    }
-  };
-  const reorderQueue = async (queueId: string, ids: string[]) => {
-    try {
-      await backend.reorderDownloadQueue(queueId, ids);
-      refreshTransfers();
-    } catch (error) {
-      setProblem(engineFailure(error).message);
-    }
-  };
-  const reorderQueues = async (ids: string[]) => {
-    try {
-      await backend.reorderDownloadQueues(ids);
-      refreshQueues();
-      refreshTransfers();
-    } catch (error) {
-      setProblem(engineFailure(error).message);
-    }
-  };
 
   /**
    * Start a transfer, asking about anything already at the destination.
@@ -1776,6 +1759,14 @@ export default function App(props: {
 
   onMount(() => {
     const stop = backend.onEditSaved((session) => void writeBack(session, false));
+    onCleanup(stop);
+  });
+
+  // The View menu's Transfers item. Same toggle as ⇧⌘T and the toolbar
+  // button — on macOS the menu is the only one of the three that ever sees
+  // the key, because an accelerator is answered before the webview.
+  onMount(() => {
+    const stop = backend.onMenuTransfers(() => setShowTransfers((open) => !open));
     onCleanup(stop);
   });
 
@@ -2208,10 +2199,15 @@ export default function App(props: {
     }, 8000);
   };
 
-  const entries = createMemo(() => {
-    const data = listing();
-    if (!data) return [];
-    const matching = filterEntries(data.entries, filter());
+  /**
+   * The window's own rules about which entries are visible, and in what order.
+   *
+   * Shared because the column view lists directories this window is not "in",
+   * and a column that sorted differently, or showed dotfiles the list was
+   * hiding, would be describing a different folder from the one beside it.
+   */
+  const visibleOf = (list: Entry[]) => {
+    const matching = filterEntries(list, filter());
     const visible = showHidden() ? matching : matching.filter((entry) => !entry.hidden);
     // A row waiting out its undo window is already gone as far as the user is
     // concerned. It is hidden rather than deleted, which is what makes Undo
@@ -2219,6 +2215,11 @@ export default function App(props: {
     const doomed = new Set(pendingDelete()?.paths ?? []);
     const remaining = doomed.size === 0 ? visible : visible.filter((e) => !doomed.has(e.path));
     return sortEntries(remaining, sort(), foldersFirst());
+  };
+
+  const entries = createMemo(() => {
+    const data = listing();
+    return data ? visibleOf(data.entries) : [];
   });
 
   /**
@@ -2284,6 +2285,17 @@ export default function App(props: {
         root,
       };
     }
+    // Demo chrome, for the browser preview only — the same rule
+    // `defaultBookmarkStore` uses for its demo rows. The preview has no engine
+    // behind it, so without this the design's screens have no share to name.
+    //
+    // Gated, because this used to be the plain fallback for "a listing with no
+    // bookmark behind it" and there are real windows in that state: they
+    // titled themselves after a share that does not exist and drew
+    // `smb://nas.local/media` in the path field. In the app, a window that
+    // cannot name its mount says nothing — `null` here is already drawn as an
+    // empty path field and an unnamed title bar (E1-S6).
+    if (inTauri()) return null;
     return props.readOnly
       ? {
           host: "10.0.0.4",
@@ -2322,16 +2334,79 @@ export default function App(props: {
    */
   createEffect(() => {
     const named =
-      view() === "downloads"
-        ? "Downloads"
-        : share() !== null && host() !== null
-          ? `${share()} — ${host()}`
-          : "Excalibur";
+      share() !== null && host() !== null ? `${share()} — ${host()}` : "Excalibur";
     void backend.setWindowTitle(named);
   });
   const rootSegments = () => named()?.root ?? [];
   const segments = () => [...rootSegments(), ...nav.segments(path())];
   const mountPath = () => ["", ...segments()].join("/");
+  /**
+   * The whole location as one URI, which is what the path field's editor opens
+   * on. Built from the same three parts the breadcrumbs draw, so what is shown
+   * and what is edited cannot disagree.
+   */
+  const locationUri = () =>
+    scheme() === null ? "" : `${scheme()}://${uriHost() ?? ""}${mountPath()}`;
+
+  /**
+   * A path or a URI typed into the path field (E1-S2).
+   *
+   * Three outcomes, because three things can be typed. A bare path moves inside
+   * the mount already open. A `file://` folder needs no credentials, so it is
+   * opened directly. Anything else goes to the connection dialog *prefilled*
+   * rather than being connected here: a remote share may need a password or an
+   * unknown host key trusted, and that conversation already exists there. The
+   * dialog is one Return away, and the alternative is reimplementing both.
+   */
+  const goToLocation = (text: string) => {
+    const parsed = parseLocation(text, home());
+    if (parsed === null) return;
+    if (parsed.kind === "invalid") {
+      setProblem(parsed.reason);
+      return;
+    }
+    if (parsed.kind === "navigate") {
+      goTo(resolveGoto(parsed.path));
+      return;
+    }
+    if (parsed.draft.protocol === "local") {
+      void openMount(fromDraft(parsed.draft));
+      return;
+    }
+    // A port cannot survive this route: `Bookmark` has no field for one, so
+    // `fromDraft` would drop it and the mount would go to the protocol's
+    // default. Connecting to the wrong port silently is worse than asking, so
+    // a non-default port goes to the dialog, which has the field.
+    const fallback = defaultPort(parsed.draft.protocol);
+    if (parsed.draft.port !== "" && Number(parsed.draft.port) !== fallback) {
+      setConnecting(parsed.draft);
+      return;
+    }
+    // Otherwise try it. `openMount` reaches the keychain — the shell reads the
+    // credential by `spec.id`, and `bookmarkId` is `protocol:host:share`, so a
+    // URI typed for a share already saved finds the stored secret — and falls
+    // back to the prefilled dialog by itself when the connection is refused.
+    //
+    // The saved bookmark is preferred over a fresh one when the URI adds no
+    // username, so typing a bare `xsync://nas.local/media` cannot quietly drop
+    // the username or the read-only preference configured in the dialog.
+    //
+    // Matched on normalised values rather than on the id: `xsync://freya.local`
+    // names a host and no share, and the id of a share read back out of a URI
+    // has lost its leading slash. Both used to miss, and a miss here is a
+    // connection dialog for a share that would have opened by itself.
+    const existing = matchBookmark(bookmarks(), parsed.draft);
+    // A host with no share, and nothing saved that says which share is meant:
+    // there is no location here to open. Mounting the empty share would be a
+    // guess, so the dialog gets it with the host already filled in.
+    if (existing === null && parsed.draft.share.trim() === "") {
+      setConnecting(parsed.draft);
+      return;
+    }
+    void openMount(
+      existing && parsed.draft.username === "" ? existing : fromDraft(parsed.draft),
+    );
+  };
 
   /**
    * A breadcrumb click, by depth across the whole path field.
@@ -2358,8 +2433,16 @@ export default function App(props: {
     setReveal(null);
   };
 
-  const selectBand = (start: number, end: number, additive: boolean) => {
-    setSelection((current) => band(current, order().slice(start, end), additive));
+  /**
+   * The rubber band's result.
+   *
+   * The list hands over paths rather than an index range: a band over the icon
+   * grid covers a rectangle, and the cells in a rectangle are not contiguous
+   * in index order, so there is no range to slice. The list already holds the
+   * entries in the order it drew them, so it is the one place that can answer.
+   */
+  const selectBand = (paths: string[], additive: boolean) => {
+    setSelection((current) => band(current, paths, additive));
   };
 
   /** Browser URL pasteboards complement Tauri's native path drop (XDL-E8-S1). */
@@ -2389,38 +2472,39 @@ export default function App(props: {
         void openAddDownload(urls);
       }}
     >
-      <TitleBar
-        share={share()}
-        host={host()}
-        title={view() === "downloads" ? "Downloads" : undefined}
-      />
+      <TitleBar share={share()} host={host()} />
       <Toolbar
         mount={listing()?.mount}
-        view={view()}
         scheme={scheme()}
         host={uriHost()}
         segments={segments()}
         hasSelection={selectedVisible().length > 0}
         filter={filter()}
         onFilter={setFilter}
-        canBack={view() === "browse" && nav.canBack(history())}
-        canForward={view() === "browse" && nav.canForward(history())}
-        canAscend={view() === "browse" && nav.canAscend(path())}
+        canBack={nav.canBack(history())}
+        canForward={nav.canForward(history())}
+        canAscend={nav.canAscend(path())}
         onBack={() => setHistory(nav.back)}
         onForward={() => setHistory(nav.forward)}
         onAscend={ascend}
-        onRefresh={() =>
-          view() === "downloads" ? void refreshTransfers() : listingState.load(path())
-        }
+        onRefresh={() => listingState.load(path())}
         onCrumb={onCrumb}
+        uri={locationUri()}
+        onGo={goToLocation}
         filterRef={(element) => (filterInput = element)}
-        // Absent on downloads, not just unwired: the buttons are not rendered
-        // there, and neither are their handlers (XDL-E2-S1).
-        onQuickLook={view() === "browse" ? toggleQuickLook : undefined}
-        onEdit={view() === "browse" ? () => void editSelected() : undefined}
-        onDownload={view() === "browse" ? () => void downloadSelected() : undefined}
-        onUpload={view() === "browse" ? () => void uploadHere() : undefined}
-        onAddDownload={view() === "downloads" ? () => void openAddDownload() : undefined}
+        onQuickLook={toggleQuickLook}
+        onEdit={() => void editSelected()}
+        onDownload={() => void downloadSelected()}
+        onUpload={() => void uploadHere()}
+        viewItems={viewMenu({
+          showHidden: showHidden(),
+          foldersFirst: foldersFirst(),
+          rowLayout: settings().rowLayout,
+        })}
+        onViewAction={runViewAction}
+        onAddDownload={() => void openAddDownload()}
+        onTransfers={() => setShowTransfers((open) => !open)}
+        transfersOpen={showTransfers()}
         sidebarCollapsed={settings().sidebarCollapsed}
         onToggleSidebar={() => update("sidebarCollapsed", !settings().sidebarCollapsed)}
         onPreferences={() => setShowPreferences(true)}
@@ -2470,6 +2554,12 @@ export default function App(props: {
       <Show when={showTransfers()}>
         <Transfers
           transfers={transfers()}
+          categories={categories()}
+          category={category()}
+          onCategory={openCategory}
+          size={paneSize()}
+          onResize={setPaneSize}
+          onResizeEnd={onPaneResizeEnd}
           onClose={() => setShowTransfers(false)}
           onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
           onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
@@ -2596,20 +2686,18 @@ export default function App(props: {
       <div class={styles.body}>
         <Sidebar
           collapsed={settings().sidebarCollapsed}
-          bookmarks={bookmarks()}
+          bookmarks={sidebarBookmarks()}
           // No mount is what the window shows on downloads, so none highlights
           // as active there — the session behind is untouched (XDL-E2-S1).
-          activeId={view() === "downloads" ? "" : (bookmarks().find((bookmark) => bookmark.mounted)?.id ?? "")}
+          activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
           selectedId={selectedBookmark()}
           dropBookmark={dropTarget()?.bookmark ?? null}
           favorites={shownFavorites()}
           userFolders={folders()}
           dropFavorites={dropTarget()?.favorites ?? false}
-          categories={categories()}
-          activeCategory={view() === "downloads" ? category() : null}
-          onOpenCategory={openCategory}
           onOpenFavorite={openFavorite}
           onFavoriteMenu={openFavoriteMenu}
+          onBookmarkMenu={openBookmarkMenu}
           onNewConnection={() => setConnecting(true)}
           onSelect={setSelectedBookmark}
           onOpen={(id) => void mountBookmark(id)}
@@ -2620,84 +2708,68 @@ export default function App(props: {
           }}
         />
         <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
-          {/* On downloads the queue is the window's content, not a sheet over
-              it: the same Transfers component E13 draws, with the rows the
-              chosen category admits (XDL-E2-S1). E2-S2 restyles this into the
-              reference's table; the rows, actions and counts are already the
-              queue's own. */}
-          <Show
-            when={view() === "downloads"}
-            fallback={
-              <>
-                {/* Nothing mounted is not an empty directory: there is no list to
-                    draw, and the one thing to offer is the way out of it (E1-S6). */}
+              {/* Nothing mounted is not an empty directory: there is no list to
+                  draw, and the one thing to offer is the way out of it (E1-S6). */}
+              <Show
+                when={!disconnected()}
+                fallback={<EmptyState onNewConnection={() => setConnecting(true)} />}
+              >
+                {/* Column view is the one layout that is not this directory
+                    drawn differently — it draws the ancestors too, each its
+                    own listing — so it is a component beside `FileList`
+                    rather than a fifth arm inside it (E26-S4). */}
                 <Show
-                  when={!disconnected()}
-                  fallback={<EmptyState onNewConnection={() => setConnecting(true)} />}
+                  when={settings().rowLayout !== "column-view"}
+                  fallback={
+                    <ColumnView
+                      path={path()}
+                      listDir={(target) => backend.listDir(target)}
+                      prepare={visibleOf}
+                      selected={selected}
+                      onSelect={select}
+                      onNavigate={goTo}
+                      onOpen={open}
+                    />
+                  }
                 >
-                  <FileList
-                    layout={settings().rowLayout}
-                    entries={entries()}
-                    selected={selected}
-                    onSelect={select}
-                    onBand={selectBand}
-                    reveal={reveal()}
-                    // A page is the list's viewport in the list's row height, so the
-                    // list is what counts it (E26-S2).
-                    onViewportRows={setPageRows}
-                    onOpen={open}
-                    onContextMenu={openContextMenu}
-                    // Undefined at the share root, which is what withholds the `..`
-                    // row — read from the same `canAscend` as the toolbar's arrow.
-                    onAscend={nav.canAscend(path()) ? ascend : undefined}
-                    slow={listingState.slow()}
-                    sort={sort()}
-                    onSort={onSort}
-                    widths={widths()}
-                    onResize={onResize}
-                    onResizeEnd={onResizeEnd}
-                    renaming={renaming()}
-                    dropTarget={dropTarget()}
-                    onDragOut={(entry) => void dragOut(entry)}
-                    onRename={(from, name) => void commitRename(from, name)}
-                  />
-                </Show>
-                <StatusBar
-                  mount={mountFacts()}
-                  path={mountPath()}
-                  items={entries().length}
-                  total={totalEntries()}
-                  selected={selectedVisible().length}
-                  remounting={remounting()}
-                  onRemount={remountAction()}
-                  selectedBytes={selectedBytes()}
+                <FileList
+                  layout={settings().rowLayout}
+                  entries={entries()}
+                  selected={selected}
+                  onSelect={select}
+                  onBand={selectBand}
+                  reveal={reveal()}
+                  // A page is the list's viewport in the list's row height, so the
+                  // list is what counts it (E26-S2).
+                  onViewportRows={setPageRows}
+                  onOpen={open}
+                  onContextMenu={openContextMenu}
+                  // Undefined at the share root, which is what withholds the `..`
+                  // row — read from the same `canAscend` as the toolbar's arrow.
+                  onAscend={nav.canAscend(path()) ? ascend : undefined}
+                  slow={listingState.slow()}
+                  sort={sort()}
+                  onSort={onSort}
+                  widths={widths()}
+                  onResize={onResize}
+                  onResizeEnd={onResizeEnd}
+                  renaming={renaming()}
+                  dropTarget={dropTarget()}
+                  onDragOut={(entry) => void dragOut(entry)}
+                  onRename={(from, name) => void commitRename(from, name)}
                 />
-              </>
-            }
-          >
-            <Transfers
-              embedded
-              transfers={visibleTransfers()}
-              onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
-              onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
-              onRetryFailed={() => void backend.retryFailedTransfers().then(refreshTransfers)}
-              onClearFailed={() => void backend.clearFailedTransfers().then(refreshTransfers)}
-              onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
-              onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
-              onRemove={(id) => void backend.removeTransfer(id).then(refreshTransfers)}
-              onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
-              onOpenFolder={(path) => void backend.openTransferFolder(path)}
-              onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
-              onRemount={remountAction()}
-              queues={queues()}
-              onCreateQueue={(name, color, concurrency) => void createQueue(name, color, concurrency)}
-              onUpdateQueue={(id, name, color, concurrency) => void updateQueue(id, name, color, concurrency)}
-              onDeleteQueue={(id) => void deleteQueue(id)}
-              onMoveToQueue={(id, queueId) => void moveTransferToQueue(id, queueId)}
-              onReorderQueue={(queueId, ids) => void reorderQueue(queueId, ids)}
-              onReorderQueues={(ids) => void reorderQueues(ids)}
-            />
-          </Show>
+                </Show>
+              </Show>
+              <StatusBar
+                mount={mountFacts()}
+                path={mountPath()}
+                items={entries().length}
+                total={totalEntries()}
+                selected={selectedVisible().length}
+                remounting={remounting()}
+                onRemount={remountAction()}
+                selectedBytes={selectedBytes()}
+              />
         </div>
       </div>
       <Show when={pendingDelete()}>
@@ -2801,26 +2873,22 @@ export default function App(props: {
               // worth remembering.
               persist(upsert(bookmarks(), { ...fromDraft(draft), mounted: true }));
               // A new mount is a new root, so the history starts over
-              // rather than keeping paths that belonged to the old share —
-              // and the window is browsing again, not on downloads (XDL-E2-S1).
-              rememberView("browse", category());
+              // rather than keeping paths that belonged to the old share.
               setHistory(nav.initial());
               listingState.load("");
             }}
           />
         )}
       </Show>
-      <Show when={addingDownload()}>
+      <Show when={addDownload.showing()}>
         <AddDownloadDialog
-          folder={addingDest()}
-          initialUrls={addingUrls()}
+          folder={addDownload.destination()}
+          initialUrls={addDownload.urls()}
           backend={backend}
           pickFolder={inTauri() ? pickShareFolder : undefined}
-          busy={addingBusy()}
-          onCancel={() => {
-            if (!addingBusy()) setAddingDownload(false);
-          }}
-          onAdd={(urls, folder, options) => void addDownloads(urls, folder, options)}
+          busy={addDownload.busy()}
+          onCancel={addDownload.close}
+          onAdd={(urls, folder, options) => void addDownload.submit(urls, folder, options)}
         />
       </Show>
     </div>

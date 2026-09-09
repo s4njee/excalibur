@@ -240,3 +240,42 @@ export function bookmarkSubtitle(bookmark: Bookmark): string {
     ? `LOCAL · ${bookmark.share}`
     : `${bookmark.protocol.toUpperCase()} · ${bookmark.host}`;
 }
+
+/** A share name compared rather than stored: `/media`, `media/` and `Media` are one. */
+function sameShare(a: string, b: string): boolean {
+  const trim = (value: string) => value.replace(/^\/+|\/+$/g, "").toLowerCase();
+  return trim(a) === trim(b);
+}
+
+/**
+ * The saved bookmark a typed URI names, when exactly one does (E1-S2).
+ *
+ * Not `bookmarkId` equality, for two reasons the path field ran into:
+ *
+ * - **`xsync://freya.local` names a host and no share.** The id would be
+ *   `xsync:freya.local:` and match nothing, so a host the user has a bookmark
+ *   for went to the connection dialog. A host with exactly one saved share is
+ *   unambiguous, so it resolves to that share.
+ * - **The leading slash is not part of the share.** `previewUri` prints
+ *   `/media` as `…/media`, so reading it back gives `media` while the dialog
+ *   stored `/media` — different ids for one share, which meant a new bookmark
+ *   and a keychain lookup that missed.
+ *
+ * Returning the *saved* bookmark rather than a repaired draft is the point: it
+ * carries the id the credential is filed under, and the username and
+ * read-only preference that were set when it was saved.
+ */
+export function matchBookmark(bookmarks: Bookmark[], draft: Draft): Bookmark | null {
+  const host = draft.host.trim().toLowerCase();
+  const candidates = bookmarks.filter(
+    (bookmark) =>
+      bookmark.protocol === draft.protocol && bookmark.host.trim().toLowerCase() === host,
+  );
+  // A share was named, so it decides — there is nothing ambiguous to resolve.
+  if (draft.share.trim() !== "") {
+    return candidates.find((bookmark) => sameShare(bookmark.share, draft.share)) ?? null;
+  }
+  // A host alone. One saved share under it is an answer; several is a question
+  // this cannot answer, and guessing would open the wrong share silently.
+  return candidates.length === 1 ? candidates[0]! : null;
+}
