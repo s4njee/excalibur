@@ -167,6 +167,16 @@ pub fn run() {
             // Queue changes reach the window the same way. A lagged receiver
             // drops events silently, which is why `transfers` exists as a
             // command: the window can always ask for the truth.
+            // The message log reaches the window the same way, and `log_lines`
+            // is the catch-up for whatever a window missed.
+            let handle = app.handle().clone();
+            let mut lines = sessions.log().subscribe();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(line) = lines.recv().await {
+                    let _ = handle.emit(events::LOG_LINE, &line);
+                }
+            });
+
             let handle = app.handle().clone();
             let mut moved = queue.events();
             tauri::async_runtime::spawn(async move {
@@ -250,6 +260,8 @@ pub fn run() {
             commands::mounts::unmount,
             commands::mounts::remount_read_write,
             commands::mounts::reconnect,
+            commands::log::log_lines,
+            commands::log::clear_log,
             commands::mounts::set_active,
             commands::windows::set_window_title,
             commands::windows::new_window,

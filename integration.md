@@ -169,7 +169,11 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
   crate offers no way to send one, so an in-flight request can only be abandoned by
   dropping the `OpenFile`, `Stage` or `Client`. **Proposed:** expose it, so a
   drawer's per-row cancel need not wait for a chunk boundary.
-- **Current state.** Neither exists. `xsync-client` has no `tracing` or `log`
+- **Excalibur side, done 2026-09-09.** The pane, the `log://line` event and the
+  ring are built (XTP-E5-S1), recording at the `ShareBackend` seam — one line per
+  engine verb, with the pane saying so. When the tap lands, frame lines join the
+  same stream and only the pane's resolution note changes.
+- **Current state.** Neither exists in xsync. `xsync-client` has no `tracing` or `log`
   dependency and no callback, channel or observer anywhere; `Connection::request` is
   private and every frame passes through it. `V3Message` already derives `Debug`, so
   no new formatting contract is needed in xsync. On the Excalibur side `log://line`

@@ -210,6 +210,104 @@
   font-weight: 500;
 }
 
+/* The message log (XTP-E5-S1). The handoff's own metrics: 7px/12px of
+   padding, mono 10.5px, and a 1.7 line-height that makes a wall of lines
+   readable rather than dense. */
+.log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 7px 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.7;
+  /* Selectable, because copying one line out of a log is what a log is for —
+     the app disables selection nearly everywhere else. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Pinned, because it is a caveat about everything below it and a reader who
+   scrolls to the newest line must not lose it. */
+.logResolution {
+  position: sticky;
+  top: -7px;
+  margin: -7px -12px 4px;
+  padding: 3px 12px;
+  background: var(--statusbar-bg);
+  border-bottom: 1px solid var(--hairline-chrome);
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+}
+
+.logLine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.logTime {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.logCategory {
+  flex: none;
+}
+
+.logText {
+  color: var(--log-text);
+}
+
+.logCommand {
+  color: var(--accent);
+}
+
+.logStatus {
+  color: var(--success);
+}
+
+.logError {
+  color: var(--error);
+}
+
+.logMuted {
+  color: var(--text-secondary);
+}
+
+/* The inline recovery `2b` draws on a hint line. */
+.logAction {
+  flex: none;
+  align-self: center;
+  height: 19px;
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+/* The drawer's own controls, when it is showing the log rather than the queue. */
+.logControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logVerbose {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
 /* The docked drawer (XTP-E4-S1). The same queue as `.panel`, along the bottom
    of the pane row: with two panes a sheet over the window covers the very
    columns the transfer is between. It takes its width from its column and its

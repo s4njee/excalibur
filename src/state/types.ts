@@ -91,6 +91,32 @@ export interface MountEvent {
   reason: string | null;
 }
 
+/**
+ * The message log's six categories, which are also its six colours
+ * (`twopane.md` XTP-E5-S1).
+ */
+export type LogCategory =
+  | "command"
+  | "response"
+  | "status"
+  | "listing"
+  | "hint"
+  | "error";
+
+/** A recovery a log line offers, named by verb rather than by label. */
+export type LogAction = "remountRw";
+
+export interface LogLine {
+  /** Milliseconds since the Unix epoch; the pane draws `HH:MM:SS`. */
+  at: number;
+  category: LogCategory;
+  /** Verbatim. A message the server sent is never paraphrased. */
+  text: string;
+  action?: LogAction;
+  /** Which mount the line is about, when it is about one. */
+  mount?: string;
+}
+
 export type TransferDirection = "up" | "down";
 export type TransferEndpoint =
   | { kind: "local"; path: string }

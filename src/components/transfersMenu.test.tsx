@@ -49,6 +49,13 @@ function open(transfers: Transfer[]) {
         categories={[{ id: "all", label: "All", count: 0 }]}
         category="all"
         onCategory={() => undefined}
+        log={[]}
+        view="queue"
+        onView={() => undefined}
+        verbose={false}
+        onVerbose={() => undefined}
+        onClearLog={() => undefined}
+        onLogAction={() => undefined}
         transfers={transfers}
         onPause={() => undefined}
         onCancel={() => undefined}

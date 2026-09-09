@@ -8,6 +8,36 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## The message log's resolution *(XTP-E5-S1, 2026-09-09)*
+
+**The mock** draws a log of protocol frames: `Command:` with the mount line and
+its export flags, `Response:` with what came back, `Listing:` with a timing,
+`Error:` verbatim, and a `Hint:` carrying `Remount as RW`.
+
+**What was built** is that pane, against a stream this app can actually
+produce. `xsync-client` exposes no frame tap — no callback, channel or observer
+anywhere in it, and every frame goes through a private `Connection::request` —
+which is XTP-E5-S0, in another repo (`integration.md` §8). SMB, NFS and SFTP
+have no frames to expose in the first place. So the engine records one line per
+verb at the `ShareBackend` seam, and the pane carries a pinned line saying
+`Engine operations — not protocol frames`. A pane that let a reader believe
+they were seeing the wire would be worse than one that says which they are
+seeing.
+
+**`Verbose` is the design's word for a filter it does not define.** Off leaves
+out `Response` and `Listing`, which are the chatty half — a browse writes one
+of each per directory — and keeps what was asked for, what the mount is doing,
+what failed, and what can be done about it.
+
+**The controls are the mock's three**, with `Verbose` drawn as a checkbox
+rather than the mock's bare word: it is a state, and a word that does not say
+whether it is on cannot be read.
+
+**For the designer:** whether the log should be per mount rather than app-wide
+— every line names its share, so filtering to one pane's is available and not
+drawn; and what a frame-resolution line should look like beside a verb one,
+once both exist in the same pane.
+
 ## The docked drawer *(XTP-E4-S1, 2026-09-09)*
 
 **The mock** draws the queue docked along the bottom of the two-pane window,

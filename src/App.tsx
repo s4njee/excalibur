@@ -56,12 +56,15 @@ import type {
   Conflict,
   EditSession,
   Entry,
+  LogAction,
+  LogLine,
   MountEvent,
   MountInfo,
   RowLayout,
   Theme,
   Transfer,
 } from "./state/types";
+import { LOG_CAPACITY } from "./state/log";
 import * as nav from "./state/navigation";
 import { sortEntries, toggle } from "./state/sort";
 import { filterEntries } from "./state/filter";
@@ -1296,6 +1299,43 @@ export default function App(props: {
     },
   });
   const [showTransfers, setShowTransfers] = createSignal(false);
+  /**
+   * The message log, and which of the two the transfers surface is showing
+   * (`twopane.md` XTP-E5-S1).
+   *
+   * The ring first, then the stream: a window opened later would otherwise
+   * start empty and be missing exactly the lines explaining why it was opened.
+   * `Verbose` is per window and not persisted — it is a way of looking at what
+   * is on screen now, not a setting about the app.
+   */
+  const [log, setLog] = createSignal<LogLine[]>([]);
+  const [logView, setLogView] = createSignal<"queue" | "log">("queue");
+  const [verbose, setVerbose] = createSignal(false);
+  onMount(() => {
+    void backend.logLines().then(setLog);
+    const stop = backend.onLogLine((line) =>
+      // Capped where the engine caps its own ring, so a window left open for a
+      // week holds what the engine holds rather than a week of lines.
+      setLog((current) => [...current, line].slice(-LOG_CAPACITY)),
+    );
+    onCleanup(stop);
+  });
+  const clearLog = () => {
+    setLog([]);
+    void backend.clearLog();
+  };
+  /**
+   * The recovery a hint line offers.
+   *
+   * The line names the *mount*, so this acts on the share the line is about
+   * rather than on whatever the focused pane happens to be holding — a log is
+   * read after the fact, and the pane has usually moved on.
+   */
+  const runLogAction = (action: LogAction, mount: string | undefined) => {
+    if (action !== "remountRw") return;
+    const id = mount ?? activeMountId();
+    if (id !== null) void remountReadWrite(id);
+  };
   // Open on launch only when the queue still owes work — something queued,
   // running or paused. Not "the queue is non-empty": finished rows are kept
   // until `Clear finished` takes them, so that opened the pane on every launch
@@ -3100,6 +3140,13 @@ export default function App(props: {
       onResizeHeightEnd={saveDrawer}
       onToggleCollapse={toggleDrawer}
       transfers={transfers()}
+      log={log()}
+      view={logView()}
+      onView={setLogView}
+      verbose={verbose()}
+      onVerbose={setVerbose}
+      onClearLog={clearLog}
+      onLogAction={runLogAction}
       categories={categories()}
       category={category()}
       onCategory={openCategory}

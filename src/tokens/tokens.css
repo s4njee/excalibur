@@ -50,6 +50,10 @@
      `#7f9fe0` glyph on the folder the pane is in. */
   --tree-bg: #fafafb;
   --tree-glyph-current: #7f9fe0;
+  /* The message log's message text (XTP-E5-S1). The handoff's `#c4c4c8` is a
+     dark-mode value; light gets the ordinary body colour, which is what that
+     one is on its own ground. */
+  --log-text: #1a1a1c;
   /* From #a8adb5, which was 2.26:1 on the list — below even the 3:1 floor
      for non-text. Still lighter than the folder glyph, so the two remain
      distinguishable. */
@@ -172,6 +176,7 @@
      the soft selection's blue, which is the one that reads on `#1f3358`. */
   --tree-bg: #26272a;
   --tree-glyph-current: #8fa8d8;
+  --log-text: #c4c4c8;
 
   /* `1g`'s soft selection needs its own dark values. Inheriting the light
      `#e8effd` left near-white text on a pale blue fill — the row's name

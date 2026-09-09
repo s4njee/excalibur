@@ -6,6 +6,7 @@
 
 pub(crate) mod edits;
 pub(crate) mod fs;
+pub(crate) mod log;
 pub(crate) mod mounts;
 pub(crate) mod secrets;
 pub(crate) mod transfers;

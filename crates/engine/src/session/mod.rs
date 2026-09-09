@@ -26,8 +26,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::backend::logged::LoggedBackend;
 use crate::backend::{Access, ConnectionSpec, MountInfo, MountStatus, ShareBackend};
 use crate::error::{EngineError, Result};
+use crate::log::{LogAction, LogCategory, LogLine, MessageLog};
 
 /// Builds a backend for a connection.
 ///
@@ -138,6 +140,13 @@ pub struct SessionManager {
     /// and it is deliberately not used by any command that has a window to ask.
     recent: Arc<RwLock<Option<String>>>,
     events: broadcast::Sender<SessionEvent>,
+    /// The app's message log (`twopane.md` XTP-E5-S1).
+    ///
+    /// Held here because this is where a mount's life happens — connecting,
+    /// coming back read-only, going away — and those are the lines the design
+    /// calls protocol truth. Every backend handed out is wrapped so its verbs
+    /// join the same stream.
+    log: Arc<MessageLog>,
     /// Health tasks, aborted when their mount goes or the manager drops.
     tasks: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
@@ -162,8 +171,53 @@ impl SessionManager {
             // than growing the queue without limit. Lagging is survivable
             // because every event carries the full state, not a delta.
             events: broadcast::channel(64).0,
+            log: Arc::new(MessageLog::new()),
             tasks: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// What a mount came back as, and what can be done about it.
+    ///
+    /// The handoff's `2b` draws exactly this pair: a `Status:` line naming the
+    /// export flags, and a `Hint:` under it offering `Remount as RW`. The hint
+    /// carries the verb rather than a label, so the shell is not matching on
+    /// prose to decide which button to draw.
+    fn announce_mount(&self, id: &str, info: &MountInfo) {
+        let access = if info.writable {
+            "read-write"
+        } else {
+            "read-only"
+        };
+        let options = if info.options.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", info.options)
+        };
+        self.log.record(LogLine::on(
+            id,
+            LogCategory::Status,
+            format!("mounted {access}{options}"),
+        ));
+        if !info.writable {
+            self.log.record(
+                LogLine::on(
+                    id,
+                    LogCategory::Hint,
+                    if info.reason.is_empty() {
+                        "the export is read-only".to_owned()
+                    } else {
+                        info.reason.clone()
+                    },
+                )
+                .with_action(LogAction::RemountRw),
+            );
+        }
+    }
+
+    /// The message log every mount and verb writes to.
+    #[must_use]
+    pub fn log(&self) -> Arc<MessageLog> {
+        Arc::clone(&self.log)
     }
 
     /// Subscribe to mount changes.
@@ -244,6 +298,11 @@ impl SessionManager {
 
     async fn connect(&self, window: Option<&str>, spec: ConnectionSpec) -> Result<()> {
         let id = spec.id.clone();
+        self.log.record(LogLine::on(
+            &id,
+            LogCategory::Command,
+            format!("mount {}", describe(&spec)),
+        ));
         {
             let mut sessions = self.sessions.write().await;
             sessions.insert(
@@ -267,6 +326,14 @@ impl SessionManager {
         match self.connector.connect(&spec).await {
             Ok(backend) => {
                 let info = backend.mount_info();
+                self.announce_mount(&id, &info);
+                // Wrapped from here on, so every verb the shell asks of this
+                // share joins the same stream the mount did.
+                let backend: Arc<dyn ShareBackend> = Arc::new(LoggedBackend::new(
+                    backend,
+                    Arc::clone(&self.log),
+                    id.clone(),
+                ));
                 {
                     let mut sessions = self.sessions.write().await;
                     if let Some(session) = sessions.get_mut(&id) {
@@ -295,6 +362,11 @@ impl SessionManager {
                 Ok(())
             }
             Err(error) => {
+                self.log.record(LogLine::on(
+                    &id,
+                    LogCategory::Error,
+                    format!("mount failed: {error}"),
+                ));
                 {
                     let mut sessions = self.sessions.write().await;
                     if let Some(session) = sessions.get_mut(&id) {
@@ -378,8 +450,22 @@ impl SessionManager {
             spec.mount_preference = access;
         }
 
-        let backend = self.connector.connect(&spec).await?;
+        self.log.record(LogLine::on(
+            id,
+            LogCategory::Command,
+            format!("reconnect {}", describe(&spec)),
+        ));
+        let backend = self.connector.connect(&spec).await.inspect_err(|error| {
+            self.log.record(LogLine::on(
+                id,
+                LogCategory::Error,
+                format!("reconnect failed: {error}"),
+            ));
+        })?;
         let info = backend.mount_info();
+        self.announce_mount(id, &info);
+        let backend: Arc<dyn ShareBackend> =
+            Arc::new(LoggedBackend::new(backend, Arc::clone(&self.log), id));
         {
             let mut sessions = self.sessions.write().await;
             if let Some(session) = sessions.get_mut(id) {
@@ -740,4 +826,19 @@ pub async fn reachable(host: &str, port: u16, timeout: Duration) -> bool {
         false
     };
     matches!(tokio::time::timeout(timeout, probe).await, Ok(true))
+}
+
+/// A connection as the log names it: `xsync://freya.local/mnt/data (rw)`.
+///
+/// The spec's own fields rather than the bookmark's display name: the log is
+/// where protocol truth lives, and "data" does not say which host it is on.
+fn describe(spec: &ConnectionSpec) -> String {
+    let scheme = format!("{:?}", spec.protocol).to_lowercase();
+    let port = spec.port.map(|port| format!(":{port}")).unwrap_or_default();
+    let share = spec.share.trim_start_matches('/');
+    let access = match spec.mount_preference {
+        Access::Rw => "rw",
+        Access::Ro => "ro",
+    };
+    format!("{scheme}://{}{port}/{share} ({access})", spec.host)
 }

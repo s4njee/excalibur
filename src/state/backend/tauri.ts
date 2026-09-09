@@ -6,7 +6,7 @@
 // actually produces — regenerate it rather than editing it.
 
 import type { Backend, UserFolders, WindowDragEvent, Spec, HttpClientSettings } from "./types";
-import type { Conflict, EditSession, HttpDownloadLimits, HttpDownloadOptions, HttpProbe, Listing, MountEvent, MountInfo, NamedQueue, Protocol, SaveOutcome, Transfer } from "../types";
+import type { Conflict, EditSession, HttpDownloadLimits, HttpDownloadOptions, HttpProbe, Listing, LogLine, MountEvent, MountInfo, NamedQueue, Protocol, SaveOutcome, Transfer } from "../types";
 
 /** True when running inside the Tauri shell rather than a plain browser. */
 export function inTauri(): boolean {
@@ -131,6 +131,26 @@ export function tauriBackend(): Backend {
     async remountReadWrite(id: string): Promise<MountInfo> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<MountInfo>("remount_read_write", { id });
+    },
+    async logLines(): Promise<LogLine[]> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<LogLine[]>("log_lines");
+    },
+    async clearLog(): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("clear_log");
+    },
+    onLogLine(handler: (line: LogLine) => void): () => void {
+      let stop: (() => void) | null = null;
+      let cancelled = false;
+      void listenHere<LogLine>("log://line", handler).then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      });
+      return () => {
+        cancelled = true;
+        stop?.();
+      };
     },
     async reconnect(id: string): Promise<MountInfo> {
       const { invoke } = await import("@tauri-apps/api/core");

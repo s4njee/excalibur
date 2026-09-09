@@ -51,6 +51,14 @@ pub(crate) const LISTING_CHANGED: &str = "listing://changed";
 /// no window is on it yet.
 pub(crate) const MOUNT_CHANGED: &str = "mount://changed";
 
+/// A line joined the message log (`twopane.md` XTP-E5-S1).
+///
+/// Broadcast rather than addressed: the log is the app's, not a window's, and
+/// a second window opened onto the same share is entitled to the same protocol
+/// truth as the first. The line names its mount, so a pane that wants only one
+/// share's lines can say so.
+pub(crate) const LOG_LINE: &str = "log://line";
+
 /// One row of the transfer queue moved, finished or failed.
 pub(crate) const TRANSFER_PROGRESS: &str = "transfer://progress";
 

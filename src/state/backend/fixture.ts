@@ -7,7 +7,7 @@
 
 import fixture from "../fixture.json";
 import type { Backend, UserFolders } from "./types";
-import type { Conflict, EditSession, HttpDownloadLimits, HttpProbe, Listing, MountEvent, MountInfo, NamedQueue, Protocol, SaveOutcome, Transfer } from "../types";
+import type { Conflict, EditSession, HttpDownloadLimits, HttpProbe, Listing, LogLine, MountEvent, MountInfo, NamedQueue, Protocol, SaveOutcome, Transfer } from "../types";
 
 /** Serves the committed fixture, optionally read-only, with optional latency. */
 export function fixtureBackend(
@@ -400,6 +400,52 @@ export function fixtureBackend(
     async remountReadWrite(): Promise<MountInfo> {
       await new Promise((resolve) => setTimeout(resolve, 250));
       throw new Error("not connected to the engine — run the desktop app");
+    },
+    /**
+     * The design's own log lines (§Screens/8), so the pane can be looked at
+     * without a share. Fixed timestamps for the same reason the listing has
+     * fixed dates: a screenshot of this can be compared against the mock.
+     */
+    async logLines(): Promise<LogLine[]> {
+      const at = (seconds: number) => Date.parse("2026-08-31T09:22:00Z") + seconds * 1000;
+      return [
+        {
+          at: at(41),
+          category: "command",
+          text: "mount -t nfs4 -o sec=krb5p 10.0.0.4:/export/backups",
+          mount: "nfs:10.0.0.4:/export/backups",
+        },
+        {
+          at: at(41),
+          category: "response",
+          text: "OK · export flags ro,root_squash,no_subtree_check",
+          mount: "nfs:10.0.0.4:/export/backups",
+        },
+        {
+          at: at(42),
+          category: "listing",
+          text: "/export/backups — 4 entries in 88 ms",
+          mount: "nfs:10.0.0.4:/export/backups",
+        },
+        {
+          at: at(44),
+          category: "error",
+          text: "upload rejected — EROFS on /export/backups/patch-notes.txt",
+          mount: "nfs:10.0.0.4:/export/backups",
+        },
+        {
+          at: at(44),
+          category: "hint",
+          text: "export is mounted read-only",
+          action: "remountRw",
+          mount: "nfs:10.0.0.4:/export/backups",
+        },
+      ];
+    },
+    async clearLog(): Promise<void> {},
+    // Nothing writes to a fixture's log, so there is nothing to hear.
+    onLogLine(): () => void {
+      return () => {};
     },
     async reconnect(): Promise<MountInfo> {
       await new Promise((resolve) => setTimeout(resolve, 250));

@@ -354,6 +354,20 @@ observer; every frame goes through the private `Connection::request`
 - Backends that cannot produce wire frames log at the `ShareBackend` seam instead, and
   the pane says which resolution it is showing rather than implying frames it does not
   have.
+- **Built at the seam, without XTP-E5-S0.** Every backend is wrapped in `LoggedBackend`,
+  so a verb reaches the log by crossing the trait rather than by somebody remembering to
+  write a line beside the call. The pane carries a pinned `Engine operations — not
+  protocol frames`; when the tap lands, frame lines join the same stream and the note is
+  what changes.
+- **Verbose is a category filter, not a second stream.** Off leaves out `Response` and
+  `Listing` — the chatty half, one of each per directory browsed — and keeps what was
+  asked for, what the mount is doing, what failed and what to do about it.
+- Byte-moving verbs (`read_range`, `write_range`, `open_read`) are deliberately not
+  logged: one transfer makes thousands, and a log they fill is one nobody can read.
+- The hint's recovery acts on the **line's** mount, not the focused pane's: a log is read
+  after the fact and the pane has usually moved on.
+- The ring is capped at 500 lines in the engine and again in the window, so a window left
+  open for a week holds what the engine holds.
 
 ---
 

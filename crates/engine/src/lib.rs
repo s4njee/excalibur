@@ -26,6 +26,7 @@ pub mod edit;
 pub mod error;
 pub mod hostkeys;
 pub mod kind;
+pub mod log;
 pub mod secrets;
 pub mod session;
 pub mod transfer;
@@ -37,6 +38,7 @@ pub use backend::{
 pub use edit::{EditSession, EditStore, SaveOutcome};
 pub use error::{EngineError, Result};
 pub use hostkeys::{HostKey, KnownHosts, Trust};
+pub use log::{LogAction, LogCategory, LogLine, MessageLog};
 pub use secrets::{KeyringStore, Secret, SecretStore};
 pub use session::{Connector, HealthPolicy, SessionEvent, SessionManager};
 pub use transfer::{Direction, NamedQueue, Status as TransferStatus, Transfer};

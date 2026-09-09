@@ -19,6 +19,9 @@ import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
 import type { NamedQueue } from "../state/types";
 import { QueueControls } from "./QueueControls";
+import { LogPane } from "./LogPane";
+import { logText, visibleLines } from "../state/log";
+import type { LogAction, LogLine } from "../state/types";
 
 /**
  * The transfer queue (E13-S1, E13-S2).
@@ -58,6 +61,21 @@ export function Transfers(props: {
   onResizeHeightEnd?: () => void;
   /** Docked only: put it away, or bring it back to the height it was. */
   onToggleCollapse?: () => void;
+  /**
+   * The message log, and which of the two things this pane is showing
+   * (`twopane.md` XTP-E5-S1).
+   *
+   * A tab in the same strip as the categories, because that is where the
+   * handoff puts it and because both answer "what is this pane showing" — one
+   * queue, one log, one strip.
+   */
+  log: LogLine[];
+  view: "queue" | "log";
+  onView: (view: "queue" | "log") => void;
+  verbose: boolean;
+  onVerbose: (verbose: boolean) => void;
+  onClearLog: () => void;
+  onLogAction: (action: LogAction, mount: string | undefined) => void;
   /**
    * The queue grouped the way the reference groups it (XDL-E2-S1), with counts
    * off the *whole* queue so a tab's number does not change as tabs are
@@ -244,7 +262,10 @@ export function Transfers(props: {
               role="tab"
               data-category={category.id}
               aria-selected={active()}
-              onClick={() => props.onCategory(category.id)}
+              onClick={() => {
+                props.onView("queue");
+                props.onCategory(category.id);
+              }}
             >
               {category.label}
               <span
@@ -258,7 +279,44 @@ export function Transfers(props: {
           );
         }}
       </For>
+      <button
+        class={`${styles.tab} ${props.view === "log" ? styles.tabActive : ""}`}
+        role="tab"
+        data-category="log"
+        aria-selected={props.view === "log"}
+        onClick={() => props.onView("log")}
+      >
+        Log
+      </button>
       {trailing}
+    </div>
+  );
+
+  /** What is on screen, which is what Copy copies. */
+  const shownLines = () => visibleLines(props.log, props.verbose);
+
+  /* The log's own controls, in the strip where the queue's are. `Verbose` is
+     a checkbox rather than the handoff's bare word: it is a state, and a word
+     that does not say whether it is on cannot be read. */
+  const logControls = () => (
+    <div class={styles.logControls}>
+      <label class={styles.logVerbose}>
+        <input
+          type="checkbox"
+          checked={props.verbose}
+          onChange={(event) => props.onVerbose(event.currentTarget.checked)}
+        />
+        Verbose
+      </label>
+      <button
+        class={styles.headerAction}
+        onClick={() => void navigator.clipboard?.writeText(logText(shownLines()))}
+      >
+        Copy
+      </button>
+      <button class={styles.headerAction} onClick={props.onClearLog}>
+        Clear
+      </button>
     </div>
   );
 
@@ -387,7 +445,9 @@ export function Transfers(props: {
         />
         {tabStrip(
           <div class={styles.tabActions}>
-            {queuePicker()}
+            <Show when={props.view === "log"} fallback={queuePicker()}>
+              {logControls()}
+            </Show>
             {queueActions()}
             {/* Collapsed is the tab strip alone: the counts stay legible and
                 the way back is the control that put it away, rather than a
@@ -408,8 +468,13 @@ export function Transfers(props: {
         {queueMenu()}
         <Show when={open()}>
           <div class={styles.drawerBody} style={{ height: `${props.height}px` }}>
-            {table()}
-            {footer()}
+            <Show
+              when={props.view === "queue"}
+              fallback={<LogPane lines={shownLines()} onAction={props.onLogAction} />}
+            >
+              {table()}
+              {footer()}
+            </Show>
           </div>
         </Show>
       </div>
@@ -459,10 +524,16 @@ export function Transfers(props: {
           ✕
         </button>
       </div>
-      {tabStrip()}
+      {tabStrip(<Show when={props.view === "log"}>{logControls()}</Show>)}
       {queueMenu()}
-      {table()}
-      {footer()}
+      {/* The log records in both shapes; only its surfacing differs. */}
+      <Show
+        when={props.view === "queue"}
+        fallback={<LogPane lines={shownLines()} onAction={props.onLogAction} />}
+      >
+        {table()}
+        {footer()}
+      </Show>
     </div>
   );
 }

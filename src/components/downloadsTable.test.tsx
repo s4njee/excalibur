@@ -276,6 +276,13 @@ describe("the sheet's rows", () => {
         categories={[{ id: "all", label: "All", count: 0 }]}
         category="all"
         onCategory={() => undefined}
+        log={[]}
+        view="queue"
+        onView={() => undefined}
+        verbose={false}
+        onVerbose={() => undefined}
+        onClearLog={() => undefined}
+        onLogAction={() => undefined}
           transfers={[row("stream", "running", { bytesTotal: 0, bytesDone: 512 })]}
           onPause={() => undefined}
           onCancel={() => undefined}
@@ -309,6 +316,13 @@ describe("the footer (XDL-E2-S4)", () => {
         categories={[{ id: "all", label: "All", count: 0 }]}
         category="all"
         onCategory={() => undefined}
+        log={[]}
+        view="queue"
+        onView={() => undefined}
+        verbose={false}
+        onVerbose={() => undefined}
+        onClearLog={() => undefined}
+        onLogAction={() => undefined}
           transfers={transfers}
           onPause={() => undefined}
           onCancel={() => undefined}
