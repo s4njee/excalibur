@@ -336,7 +336,36 @@ impl SessionManager {
     /// # Errors
     ///
     /// Only when the connection itself fails. A refused *upgrade* is `Ok`.
+    /// A share that comes back read-only is `Ok(info)` with `writable == false`.
     pub async fn remount_read_write(&self, id: &str) -> Result<MountInfo> {
+        self.reconnect_with(id, Some(Access::Rw)).await
+    }
+
+    /// Reconnect a mount as it was mounted, and report what came back.
+    ///
+    /// The toolbar's `Reconnect` and the connection banner's. Deliberately not
+    /// [`Self::remount_read_write`]: that one asks for read-write whatever the
+    /// share was mounted as, which is right for a button labelled "Remount as
+    /// RW" and wrong for one labelled "Reconnect" — a share somebody chose to
+    /// mount read-only would come back writable without being asked, which is
+    /// a protection silently removed.
+    ///
+    /// # Errors
+    ///
+    /// When there is no such mount, or the connection fails.
+    pub async fn reconnect(&self, id: &str) -> Result<MountInfo> {
+        self.reconnect_with(id, None).await
+    }
+
+    /// Reconnect, optionally changing what access is asked for.
+    ///
+    /// A server that refuses the access asked for is not an error: the mount
+    /// facts that came back are returned as they are, and the caller re-reads
+    /// `writable` from them. Only the connection failing is an `Err`.
+    ///
+    /// The stored spec is replaced on success, so the next reconnect asks for
+    /// whatever this one settled on.
+    async fn reconnect_with(&self, id: &str, access: Option<Access>) -> Result<MountInfo> {
         let mut spec = {
             let sessions = self.sessions.read().await;
             sessions
@@ -345,7 +374,9 @@ impl SessionManager {
                 .spec
                 .clone()
         };
-        spec.mount_preference = Access::Rw;
+        if let Some(access) = access {
+            spec.mount_preference = access;
+        }
 
         let backend = self.connector.connect(&spec).await?;
         let info = backend.mount_info();
@@ -364,9 +395,9 @@ impl SessionManager {
             mount: Some(info.clone()),
             reason: None,
             // Every window on this mount, not just whoever pressed the button:
-            // the share is read-write for all of them now, and a window still
-            // showing an `RO` badge over a writable mount is the disagreement
-            // this event exists to prevent.
+            // the mount facts are new for all of them, and a window still
+            // showing an `RO` badge over a mount that came back writable is the
+            // disagreement this event exists to prevent.
             audience: self.audience(id, None).await,
         });
         Ok(info)

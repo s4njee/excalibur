@@ -124,6 +124,16 @@ export interface Backend {
    * read-only is an answer, not an error. Read `writable` off the result.
    */
   remountReadWrite(id: string): Promise<MountInfo>;
+  /**
+   * Reconnect a mount as it was mounted, and report what came back.
+   *
+   * Not `remountReadWrite`, which asks for read-write whatever the share was
+   * opened as: a share deliberately mounted read-only must not come back
+   * writable because the user pressed the button that puts a dropped
+   * connection back. Resolves on a refused access the same way, so read
+   * `writable` off the result.
+   */
+  reconnect(id: string): Promise<MountInfo>;
   /** Create one directory. Not `mkdir -p`: the parent must exist. */
   mkdir(path: string): Promise<void>;
   /**

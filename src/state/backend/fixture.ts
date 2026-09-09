@@ -401,6 +401,10 @@ export function fixtureBackend(
       await new Promise((resolve) => setTimeout(resolve, 250));
       throw new Error("not connected to the engine — run the desktop app");
     },
+    async reconnect(): Promise<MountInfo> {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      throw new Error("not connected to the engine — run the desktop app");
+    },
     // A browser cannot run ssh-keyscan, so there is no key to accept. The
     // preview reaches the prompt only through `?screen=trust`, which supplies
     // its own fixed fingerprint.

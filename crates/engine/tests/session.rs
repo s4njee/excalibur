@@ -492,6 +492,32 @@ async fn a_remounted_share_keeps_asking_for_read_write_when_it_reconnects() {
 }
 
 #[tokio::test]
+async fn reconnecting_keeps_the_access_the_share_was_mounted_with() {
+    // `Reconnect` is not `Remount as RW`. A share somebody deliberately opened
+    // read-only must not come back writable because they pressed the button
+    // that puts a dropped connection back — that is a protection removed
+    // without being asked.
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = SessionManager::new(Arc::clone(&connector) as Arc<dyn Connector>);
+
+    let mut ro = spec("media");
+    ro.mount_preference = Access::Ro;
+    sessions.mount("main", ro).await.expect("mount");
+    assert_eq!(connector.last_preference().await, Some(Access::Ro));
+
+    sessions.reconnect("media").await.expect("reconnect");
+
+    assert_eq!(connector.last_preference().await, Some(Access::Ro));
+}
+
+#[tokio::test]
+async fn reconnecting_a_mount_that_is_not_there_is_an_error() {
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = SessionManager::new(connector as Arc<dyn Connector>);
+    assert!(sessions.reconnect("nothing").await.is_err());
+}
+
+#[tokio::test]
 async fn remounting_a_mount_that_is_not_there_is_an_error() {
     let connector = Arc::new(ScriptedConnector::default());
     let sessions = SessionManager::new(connector as Arc<dyn Connector>);

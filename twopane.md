@@ -154,7 +154,22 @@ living in one pane instance.
 - Left to right: `Site Manager`, `Reconnect`, divider, `Quick Look`, `Edit` (both acting
   on the focused pane), divider, `Sync browsing` and `Show hidden` checkboxes, then the
   right-aligned protocol line and health dot.
-- Every verb keeps its existing shortcut and gains a tooltip naming it.
+- Every verb keeps its existing shortcut and gains a tooltip naming it. A verb that is
+  refused shows the reason instead: teaching a shortcut for something the user cannot do
+  is worse than saying nothing.
+- **No `Site Manager`** — it stands in for the sidebar the handoff's two-pane window does
+  not have, and this one keeps its sidebar in both modes (XTP-E8-S1).
+- **No `Sync browsing` checkbox** until XTP-E6 builds the feature; a checkbox that does
+  nothing is worse than its absence. **No `Show hidden` checkbox** either: it has been in
+  the View menu since E17-S1, and two controls for one setting have to agree forever.
+- **The protocol line and health dot stay in each pane's status bar.** The handoff's
+  toolbar can carry one because its window has exactly one connection; either pane here
+  can be remote and both can be, so one line above two panes would describe one of them.
+  Capacity is right-aligned beside it, which is what XTP-E2-S2 asked for.
+- **`Reconnect` keeps the access the share was mounted with.** It shared
+  `remount_read_write` with `Remount as RW`, which asks for read-write whatever the mount
+  was opened as — so recovering a dropped connection silently un-protected a share opened
+  read-only. `reconnect` is its own engine call now, and the banner uses it too.
 
 #### XTP-E2-S4 — The directory tree
 **AC**

@@ -85,15 +85,17 @@ export function StatusBar(props: {
             <span>
               {formatCounts(props.items, props.selected, props.selectedBytes, props.total)}
             </span>
-            <Show when={mount().capacity}>
-              {(capacity) => (
-                <>
-                  <span class={styles.divider} />
-                  <span>{formatCapacity(capacity().free, capacity().total)}</span>
-                </>
-              )}
-            </Show>
             <span class={styles.statusRight}>
+              {/* Right-aligned, as the handoff's two-pane bar draws it
+                  (XTP-E2-S2). Beside the protocol line rather than instead of
+                  it: with two panes that can hold two different shares, the
+                  transport is a fact about *this* pane and has nowhere else to
+                  go — see `docs/design-gaps.md`. */}
+              <Show when={mount().capacity}>
+                {(capacity) => (
+                  <span>{formatCapacity(capacity().free, capacity().total)}</span>
+                )}
+              </Show>
               <span class={styles.protocol}>
                 {formatMountLabels(mount().protocolLabel, mount().securityLabel)}
               </span>

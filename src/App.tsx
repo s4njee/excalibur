@@ -1401,14 +1401,32 @@ export default function App(props: {
    * that came back, and the status bar re-reads the reason from them. Treating
    * it as a failure is how this button becomes a loop.
    */
-  const remountReadWrite = async (id: string) => {
+  const remountReadWrite = (id: string) => reestablish(id, { upgrade: true });
+
+  /**
+   * Put a share's connection back, as it was mounted (XTP-E2-S3).
+   *
+   * The toolbar's `Reconnect` and the banner's. Deliberately not the upgrade
+   * above: a share somebody opened read-only must not come back writable
+   * because they pressed the button that recovers a dropped connection. The
+   * two differ by one flag here and by one flag in the engine, and the labels
+   * on the two buttons are what say which is which.
+   */
+  const reconnect = (id: string) => reestablish(id, { upgrade: false });
+
+  const reestablish = async (id: string, options: { upgrade: boolean }) => {
     setRemounting(true);
     try {
-      await backend.remountReadWrite(id);
+      if (options.upgrade) await backend.remountReadWrite(id);
+      else await backend.reconnect(id);
       // Re-list rather than patching the mount facts by hand: `writable`
       // travels with the listing, and taking it from anywhere else is how the
-      // badge and the rows come to disagree.
-      refresh.request();
+      // badge and the rows come to disagree. Every pane on the share, because
+      // two panes can be on one (XTP-E8-S1) and the one that did not ask is
+      // showing the same stale facts.
+      for (const side of drawnPanes()) {
+        if (mountIdOf(panes[side]) === id) panes[side].refresh.request();
+      }
     } catch (error) {
       // A connection that failed outright, as opposed to an upgrade the server
       // declined. E15-S1's banner is where this belongs; until then it is at
@@ -1441,6 +1459,12 @@ export default function App(props: {
   const remountActionFor = (target: Pane) => {
     const id = mountIdOf(target);
     return id === null ? undefined : () => void remountReadWrite(id);
+  };
+
+  /** `Reconnect`, on the share the focused pane is holding. */
+  const reconnectAction = () => {
+    const id = activeMountId();
+    return id === null ? undefined : () => void reconnect(id);
   };
 
   /**
@@ -3075,6 +3099,8 @@ export default function App(props: {
         filterRef={(element) => (filterInput = element)}
         onQuickLook={toggleQuickLook}
         onEdit={() => void editSelected()}
+        onReconnect={reconnectAction()}
+        reconnecting={remounting()}
         onDownload={() => void downloadSelected()}
         onUpload={() => void uploadHere()}
         viewItems={viewMenu({
@@ -3262,7 +3288,7 @@ export default function App(props: {
           <Banner
             message={message()}
             reconnecting={remounting()}
-            onReconnect={remountAction()}
+            onReconnect={reconnectAction()}
             onDismiss={() => setProblem(null)}
           />
         )}

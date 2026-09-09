@@ -249,6 +249,7 @@ pub fn run() {
             commands::mounts::preconnect,
             commands::mounts::unmount,
             commands::mounts::remount_read_write,
+            commands::mounts::reconnect,
             commands::mounts::set_active,
             commands::windows::set_window_title,
             commands::windows::new_window,

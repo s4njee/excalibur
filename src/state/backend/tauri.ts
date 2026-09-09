@@ -132,6 +132,10 @@ export function tauriBackend(): Backend {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<MountInfo>("remount_read_write", { id });
     },
+    async reconnect(id: string): Promise<MountInfo> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<MountInfo>("reconnect", { id });
+    },
     async mkdir(path: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("mkdir", { path });

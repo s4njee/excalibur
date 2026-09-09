@@ -35,10 +35,12 @@ shows five rows and no scrollbar, so the mocks do not say.
 
 The handoff's two-pane bars carry a badge, counts, and capacity right-aligned —
 and nothing else, because its two-pane toolbar is where the protocol line and
-the health dot live. This app's toolbar has not moved them yet (that is
-XTP-E2-S3), so each pane's bar keeps the single-pane layout it already had:
-capacity inline, protocol and dot at the right edge. Putting capacity on the
-right today would have two things claiming the same corner.
+the health dot live. **Ours cannot move them there** (settled in XTP-E2-S3): the
+handoff's window has one local pane and one remote one, so a single protocol
+line in the toolbar describes the only connection there is. Either pane here can
+hold either kind, and both can be remote — one line in the toolbar would then
+describe one share and sit above two. So the transport stays a fact about its
+own pane, and capacity is right-aligned beside it rather than instead of it.
 
 **`LOCAL` is a label, not a permission.** The handoff badges the local side
 `LOCAL` on `#e2e2e5`; with two panes the useful thing to know at a glance is
@@ -50,6 +52,38 @@ other would cost the badge its job.
 **For the designer:** whether capacity should move to the right edge as soon as
 XTP-E2-S3 frees it, and whether a read-only local folder wants a badge of its
 own — `RO LOCAL` is two chips, and `RO` alone loses the side.
+
+## The two-pane toolbar: what is there, and what is not *(XTP-E2-S3, 2026-09-09)*
+
+The handoff's two-pane toolbar is `Site Manager`, `Reconnect`, a divider,
+`Quick Look`, `Edit`, a divider, `Sync browsing` and `Show hidden`, then the
+protocol line and health dot. Three of those are not here, each for its own
+reason:
+
+**No `Site Manager`.** It exists in the handoff because its two-pane window has
+no sidebar — the dialog is where a share would be chosen. This window keeps the
+sidebar in both modes and opens a bookmark into the focused pane (XTP-E8-S1), so
+the job is done and a dialog would be a second way to do it.
+
+**No `Sync browsing` checkbox.** The feature is XTP-E6 and is not built. A
+checkbox for it would be a control that does nothing, which is worse than its
+absence.
+
+**No `Show hidden` checkbox.** It is in the View menu, with a tick, since
+E17-S1 — and the menu is where this window keeps its view state in both modes.
+A checkbox in the toolbar would be a second control for one setting, and the two
+would have to agree forever.
+
+**`Reconnect` is here**, and building it split a call in two. It shared
+`remount_read_write` with the status bar's `Remount as RW`, which asks for
+read-write whatever the share was mounted as — so recovering a dropped
+connection quietly handed write access to a share somebody had deliberately
+opened read-only. There is now a `reconnect` that keeps the access the mount was
+made with, and the banner's button uses it too.
+
+**For the designer:** whether `Reconnect` should also appear in the single-pane
+toolbar. It is only offered with two panes today, because in single pane the
+connection banner already carries one and that bar is full.
 
 ## Two panes: what the toolbar keeps *(XTP-E7-S2, 2026-09-09)*
 

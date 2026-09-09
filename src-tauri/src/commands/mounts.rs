@@ -131,6 +131,21 @@ pub(crate) async fn remount_read_write(
         .map_err(Into::into)
 }
 
+/// Reconnect a mount as it was mounted.
+///
+/// The toolbar's `Reconnect` and the connection banner's. Not
+/// `remount_read_write`: that asks for read-write whatever the share was
+/// mounted as, which would quietly hand write access to a share somebody chose
+/// to open read-only. Like it, a server that answers read-only is an answer
+/// rather than an error, and the window re-reads `writable` from the result.
+#[tauri::command]
+pub(crate) async fn reconnect(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> std::result::Result<MountInfo, CommandError> {
+    state.sessions.reconnect(&id).await.map_err(Into::into)
+}
+
 /// Switch which mount the calling window is looking at.
 ///
 /// Also how a second window *joins* a share the first one already has: the

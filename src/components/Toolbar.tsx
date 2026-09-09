@@ -34,6 +34,16 @@ export function Toolbar(props: {
   onGo: (text: string) => void;
   onQuickLook?: () => void;
   onEdit?: () => void;
+  /**
+   * Put the focused pane's connection back (`twopane.md` XTP-E2-S3).
+   *
+   * Absent when there is no share to reconnect. Two panes only: the handoff's
+   * two-pane toolbar carries it, and in single pane the banner that appears
+   * when a connection drops already offers exactly this.
+   */
+  onReconnect?: () => void;
+  /** A reconnect is in flight, so the button says so rather than repeating. */
+  reconnecting?: boolean;
   onDownload?: () => void;
   onUpload?: () => void;
   /** The View menu's rows, and what choosing one means. */
@@ -81,6 +91,7 @@ export function Toolbar(props: {
       <button
         class={styles.iconButton}
         aria-label={props.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        title={props.sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
         aria-pressed={!props.sidebarCollapsed}
         onClick={props.onToggleSidebar}
       >
@@ -102,6 +113,7 @@ export function Toolbar(props: {
         class={styles.iconButton}
         ref={viewButton}
         aria-label="View options"
+        title="View options"
         aria-haspopup="menu"
         aria-expanded={viewMenuAt() !== null}
         onClick={() => {
@@ -192,6 +204,30 @@ export function Toolbar(props: {
         />
       </Show>
       <div class={styles.verbs}>
+          {/* The handoff's two-pane toolbar opens with `Site Manager` and
+              `Reconnect`, in place of the sidebar its window does not have.
+              This window keeps its sidebar (XTP-E8-S1), so only `Reconnect`
+              is here — and it acts on the focused pane's share, which is the
+              same question every other verb in this bar answers. */}
+          <Show when={props.dual}>
+            <button
+              class={styles.button}
+              // Gated on the handler, which the window withholds when there is
+              // no share to reconnect — the one condition, rather than a
+              // second one here that could come to disagree with it. Disabled
+              // rather than absent, like `Refresh`: reconnecting is not a
+              // permission, it is only meaningless with nothing mounted.
+              disabled={props.onReconnect === undefined || props.reconnecting}
+              title={
+                props.onReconnect === undefined
+                  ? NO_SHARE_REASON
+                  : "Connect to this share again"
+              }
+              onClick={props.onReconnect}
+            >
+              {props.reconnecting ? "Reconnecting…" : "Reconnect"}
+            </button>
+          </Show>
           {/* Every verb goes through `gate`. None of them reads `writable`
               directly: an inline condition here is exactly how a write affordance
               ends up gated on something that is not the mount. */}
@@ -252,6 +288,7 @@ export function Toolbar(props: {
       <button
         class={`${styles.button} ${styles.primary}`}
         aria-label="Add URL"
+        title="Download a file from a URL"
         onClick={props.onAddDownload}
       >
         ＋ Add URL
