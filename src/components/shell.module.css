@@ -691,12 +691,45 @@
 }
 
 .paneGutter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   flex: none;
   width: 44px;
   border-left: 1px solid var(--hairline-chrome);
   border-right: 1px solid var(--hairline-chrome);
   background: var(--toolbar-bg);
   cursor: col-resize;
+}
+
+/* The direction buttons. The handoff's 30x30, centred, with the gutter's own
+   resize cursor overridden — a press here transfers, it does not drag. */
+.gutterArrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: default;
+  transition:
+    background var(--transition-state),
+    border-color var(--transition-state),
+    color var(--transition-state);
+}
+
+.gutterArrow:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-border);
+  color: var(--disabled-text);
+  cursor: not-allowed;
 }
 
 /* Column view (E26-S4) -----------------------------------------------------

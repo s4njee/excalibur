@@ -2627,6 +2627,93 @@ export default function App(props: {
    * runs the focused pane is the one that was clicked. That is what lets the
    * window's existing handlers work unchanged for two panes.
    */
+  /**
+   * A pane's mount facts, which travel with its listing.
+   *
+   * `list_dir` returns the mount alongside the entries precisely so the two
+   * cannot drift, and that rule is what lets a pane answer for itself here
+   * rather than asking the window, which now has two.
+   */
+  const mountOf = (target: Pane) => target.listing()?.mount;
+  const bookmarkOf = (target: Pane) => {
+    const id = target.mountId() ?? activeMountId();
+    return bookmarks().find((candidate) => candidate.id === id);
+  };
+  const isLocalPane = (target: Pane) => bookmarkOf(target)?.protocol === "local";
+  /** A local mount's `share` is its absolute root, so a row's path hangs off it. */
+  const absoluteIn = (target: Pane, relative: string) => {
+    const root = bookmarkOf(target)?.share ?? "";
+    return relative === "" ? root : `${root}/${relative}`;
+  };
+
+  /**
+   * Whether one pane can send its selection to the other, and why not (XTP-E3-S1).
+   *
+   * The transfer surface is share↔local: `enqueueUploads` takes local paths and
+   * a share destination, `enqueueDownloads` the reverse. So one side has to be
+   * a local mount. Two remote shares is a real thing to want and it is not
+   * built — the engine would have to relay, which is E22-S3 and blocked on
+   * xsync having no server-side copy — so it is refused with that reason
+   * rather than silently doing nothing.
+   */
+  const transferGate = (from: Pane, to: Pane) => {
+    const chosen = selectedVisibleOf(from);
+    if (chosen.length === 0) return { ready: false, reason: "Nothing selected" };
+    const target = mountOf(to);
+    if (!target) return { ready: false, reason: "The other pane has no share" };
+    // The same `writable` the status badge reads, so a blocked write is never
+    // attempted rather than attempted and refused.
+    if (!target.writable) return { ready: false, reason: target.reason };
+    if (!isLocalPane(from) && !isLocalPane(to)) {
+      return {
+        ready: false,
+        reason: "Copying between two remote shares is not built yet",
+      };
+    }
+    return { ready: true, reason: null };
+  };
+
+  const runPaneTransfer = async (from: Pane, to: Pane) => {
+    if (!transferGate(from, to).ready) return;
+    const chosen = selectedVisibleOf(from);
+    if (isLocalPane(from)) {
+      // Local paths into a share folder: an upload, whichever pane it is in.
+      await startTransfer(
+        chosen.map((entry) => absoluteIn(from, entry.path)),
+        to.path(),
+        true,
+        to.mountId() ?? undefined,
+      );
+      return;
+    }
+    // Share paths into a local folder: a download.
+    await startTransfer(
+      chosen.map((entry) => entry.path),
+      absoluteIn(to, to.path()),
+      false,
+      from.mountId() ?? undefined,
+    );
+  };
+
+  /** One arrow in the gutter. */
+  const TransferArrow = (arrow: { from: PaneSide; to: PaneSide; glyph: string }) => {
+    const gate = () => transferGate(panes[arrow.from], panes[arrow.to]);
+    return (
+      <button
+        class={`${styles.gutterArrow} ${gate().ready ? styles.primary : ""}`}
+        disabled={!gate().ready}
+        aria-label={arrow.from === "left" ? "Send to the right pane" : "Send to the left pane"}
+        title={gate().reason ?? undefined}
+        // The gutter is also the splitter; without this a press on an arrow
+        // would start a drag as well as a transfer.
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => void runPaneTransfer(panes[arrow.from], panes[arrow.to])}
+      >
+        {arrow.glyph}
+      </button>
+    );
+  };
+
   const PaneColumn = (side: { pane: Pane; side: PaneSide }) => (
     <div
       class={`${styles.paneColumn} ${
@@ -2735,7 +2822,10 @@ export default function App(props: {
           aria-orientation="vertical"
           aria-label="Resize panes"
           onPointerDown={startSplitDrag}
-        />
+        >
+          <TransferArrow from="left" to="right" glyph="▶" />
+          <TransferArrow from="right" to="left" glyph="◀" />
+        </div>
         <div
           class={styles.paneSlot}
           style={{ "flex-grow": `${1 - splitRatio()}`, "flex-basis": "0" }}

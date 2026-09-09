@@ -482,8 +482,17 @@ should not be split across a release. XTP-E5-S0 lives in another repo, so it sta
 parallel with XTP-E1 and is the only thing here with an external dependency. XTP-E9-S1 is
 wanted early because the gutter's disabled states in XTP-E3-S1 read from it. XTP-E4-S2
 wants E22-S3's `from`/`to: Endpoint` change (`backlog.md:107`) and either follows it or
-ships with the narrower rendering named in its AC. XTP-E6, E7 and E8 are independent of
-each other.
+ships with the narrower rendering named in its AC. XTP-E6 and E7 are independent of each
+other.
+
+**Corrected 2026-09-09, found while starting XTP-E3-S1: XTP-E8-S1 comes before it.** The
+gutter's arrows enqueue through `enqueueUploads`/`enqueueDownloads`, and those are
+share↔local — so a transfer between panes is only expressible once the two panes are on
+*different* mounts, which is what E8-S1 gives them. `list_dir` could not even ask for a
+second share until then. E7-S1's toggle likewise had to land with E2-S1: a shell behind a
+switch that does not exist is unreachable, and the switch without the shell blanks the
+window. Two *remote* shares stays refused whatever the order: relaying is E22-S3, blocked
+on xsync having no server-side copy.
 
 ---
 
