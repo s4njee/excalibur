@@ -29,7 +29,8 @@ export type MenuAction =
   | "addFavorite"
   | "removeFavorite"
   | "editBookmark"
-  | "removeBookmark";
+  | "removeBookmark"
+  | "unmountBookmark";
 
 /**
  * One row of a menu, generic in what choosing it means.
@@ -184,9 +185,23 @@ export function favoriteMenu(): MenuItem[] {
  * a bookmark is a write to local state, and a mounted share can be forgotten
  * without being unmounted first.
  */
-export function bookmarkMenu(): MenuItem[] {
+export function bookmarkMenu(mounted = false): MenuItem[] {
   return [
     { action: "editBookmark", label: "Edit Connection…", disabled: false, reason: null },
+    // Only on a share this window is actually holding (`twopane.md` XTP-E8-S2).
+    // Offering it on a row that is not mounted would be a verb with nothing to
+    // act on, and MOUNTED is the section that says which those are.
+    ...(mounted
+      ? [
+          {
+            action: "unmountBookmark" as const,
+            label: "Unmount",
+            disabled: false,
+            reason: null,
+            separated: true,
+          },
+        ]
+      : []),
     {
       action: "removeBookmark",
       label: "Remove Bookmark",

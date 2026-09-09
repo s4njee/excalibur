@@ -80,6 +80,13 @@ export interface Backend {
    */
   setActive(id: string): Promise<void>;
   /**
+   * Disconnect a share.
+   *
+   * The session goes; the bookmark stays. A window still on it is left with no
+   * mount, which is the first-run state E1-S6 already draws.
+   */
+  unmount(id: string): Promise<void>;
+  /**
    * Fires when this app changes something in a folder on *this window's*
    * mount, whichever window did it. Returns an unsubscribe.
    *

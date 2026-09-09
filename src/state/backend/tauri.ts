@@ -152,6 +152,10 @@ export function tauriBackend(): Backend {
         stop?.();
       };
     },
+    async unmount(id: string): Promise<void> {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("unmount", { id });
+    },
     async setActive(id: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<void>("set_active", { id });

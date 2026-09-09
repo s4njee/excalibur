@@ -1884,7 +1884,10 @@ export default function App(props: {
   const openBookmarkMenu = (id: string, at: { x: number; y: number }) => {
     setSelectedBookmark(id);
     setBookmarkMenuId(id);
-    setContextMenu({ at, items: bookmarkMenu() });
+    setContextMenu({
+      at,
+      items: bookmarkMenu(mountedIds().has(id)),
+    });
   };
 
   /**
@@ -1951,6 +1954,12 @@ export default function App(props: {
         const id = bookmarkMenuId();
         setBookmarkMenuId(null);
         if (id !== null) removeSelected(id);
+        return;
+      }
+      case "unmountBookmark": {
+        const id = bookmarkMenuId();
+        setBookmarkMenuId(null);
+        if (id !== null) void unmountShare(id);
         return;
       }
       case "editBookmark": {
@@ -2452,6 +2461,22 @@ export default function App(props: {
     return side === "left" || side === "right" ? panes[side] : focused();
   };
 
+  /**
+   * Whether a share this window holds may be written to, or `null` for one it
+   * does not hold.
+   *
+   * `null` is not "no": it is "this window has not asked", which is a
+   * different answer and the one a drop onto another window's share deserves.
+   */
+  const writableOfMount = (id: string | null): boolean | null => {
+    if (id === null) return null;
+    for (const side of drawnPanes()) {
+      const pane = panes[side];
+      if (mountIdOf(pane) === id) return pane.listing()?.mount.writable ?? false;
+    }
+    return null;
+  };
+
   const targetUnder = (
     position: { x: number; y: number } | null,
   ): { mount: string | null; path: string; label: string; bookmark: string | null } | null => {
@@ -2534,14 +2559,13 @@ export default function App(props: {
             from: dropMountOf(event.selection.mount),
             to,
             path: target.path,
-            // Only this window's own mount has facts to read. A sidebar row for
-            // a share another window holds is taken at its word and refused by
-            // the server if it was wrong — better than refusing a legal drop on
-            // the strength of not having asked.
-            writable:
-              target.mount === activeMountId()
-                ? (listing()?.mount.writable ?? false)
-                : true,
+            // Whichever pane is holding that share has the facts; a row for a
+            // share only another *window* holds is taken at its word and
+            // refused by the server if that was wrong — better than refusing a
+            // legal drop on the strength of not having asked. It read the
+            // focused pane's mount alone, so a drop onto the other pane's
+            // read-only share was accepted and then failed (XTP-E8-S3).
+            writable: writableOfMount(target.mount) ?? true,
             alt: event.modifiers.alt,
           })
         : { verb: "refused", reason: `Open ${target.label} first.` };
@@ -2666,6 +2690,33 @@ export default function App(props: {
     } catch (error) {
       setProblem(engineFailure(error).message);
     }
+  };
+
+  /**
+   * Disconnect a share, and leave every pane that was not on it alone
+   * (`twopane.md` XTP-E8-S2).
+   *
+   * The bookmark stays — this is the session going, not the row. A pane that
+   * was on it is left with no mount, which is the state E1-S6 already draws:
+   * the empty screen with the way out of it, rather than a listing of a share
+   * this window no longer holds.
+   */
+  const unmountShare = async (id: string) => {
+    try {
+      await backend.unmount(id);
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+      return;
+    }
+    for (const side of drawnPanes()) {
+      const pane = panes[side];
+      if (pane.mountId() !== id) continue;
+      pane.setMountId(null);
+      pane.setHistory(nav.initial());
+      pane.listingState.load("");
+    }
+    const held = mountedIds();
+    persist(bookmarks().map((candidate) => ({ ...candidate, mounted: held.has(candidate.id) })));
   };
 
   const removeSelected = (id: string) => {
@@ -3612,7 +3663,10 @@ export default function App(props: {
           bookmarks={sidebarBookmarks()}
           // No mount is what the window shows on downloads, so none highlights
           // as active there — the session behind is untouched (XDL-E2-S1).
-          activeId={bookmarks().find((bookmark) => bookmark.mounted)?.id ?? ""}
+          // The focused pane's share, not "the one mounted bookmark": with two
+          // panes there are two, and the row marked active is the one the
+          // window's verbs would act on (XTP-E8-S2).
+          activeId={activeMountId() ?? ""}
           selectedId={selectedBookmark()}
           dropBookmark={dropTarget()?.bookmark ?? null}
           favorites={shownFavorites()}

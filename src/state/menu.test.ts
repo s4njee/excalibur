@@ -176,13 +176,34 @@ describe("the context menu's items", () => {
       removeFavorite: true,
       editBookmark: true,
       removeBookmark: true,
+      unmountBookmark: true,
     };
     const offered = new Set([
       ...byAction(menuFor([entry("a.txt")], RW)),
       ...byAction(menuFor([], { ...RW, hasSelection: false })),
       ...byAction(favoriteMenu()),
       ...byAction(bookmarkMenu()),
+      // A mounted row offers one more, which is the only place it appears.
+      ...byAction(bookmarkMenu(true)),
     ]);
     expect([...offered].sort()).toEqual(Object.keys(all).sort());
+  });
+});
+
+describe("the bookmark menu", () => {
+  it("offers Unmount only for a share this window is holding", () => {
+    // A verb with nothing to act on, on a row that names a share nobody is
+    // connected to. MOUNTED is the section that says which those are.
+    expect(byAction(bookmarkMenu())).not.toContain("unmountBookmark");
+    expect(byAction(bookmarkMenu(true))).toContain("unmountBookmark");
+  });
+
+  it("keeps the other two whether or not it is mounted", () => {
+    // Neither touches the share: forgetting a bookmark is a write to local
+    // state, and a mounted share can be forgotten without being unmounted.
+    for (const items of [bookmarkMenu(), bookmarkMenu(true)]) {
+      expect(byAction(items)).toContain("editBookmark");
+      expect(byAction(items)).toContain("removeBookmark");
+    }
   });
 });

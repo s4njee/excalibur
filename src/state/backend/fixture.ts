@@ -448,8 +448,10 @@ export function fixtureBackend(
       ];
     },
     async clearLog(): Promise<void> {},
-    // The preview holds no sessions, so there is nothing to make active.
+    // The preview holds no sessions, so there is nothing to make active — or
+    // to disconnect.
     async setActive(): Promise<void> {},
+    async unmount(): Promise<void> {},
     // Nothing writes to a fixture's log, so there is nothing to hear.
     onLogLine(): () => void {
       return () => {};

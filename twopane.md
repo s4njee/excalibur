@@ -504,6 +504,12 @@ whole of this epic, and it is a question the handoff never had to ask.
   and `App.tsx`'s current derivation (`bookmarks().find(b => b.mounted)`) cannot
   express that.
 - Unmounting the focused pane's share leaves the other pane alone.
+- **There was no Unmount.** The engine has had the command since E1 and the window
+  never called it: a share could be mounted and never given back. It is a row on a
+  MOUNTED bookmark's own menu — only there, because on an unmounted row it is a verb with
+  nothing to act on — and it leaves the bookmark alone: this is the session going, not
+  the row. A pane that was on it is left with no mount, which is the screen E1-S6 already
+  draws.
 
 #### XTP-E8-S3 — Dropping onto a sidebar row, with somewhere to drop from
 **AC**
@@ -513,6 +519,14 @@ whole of this epic, and it is a question the handoff never had to ask.
   same `mount.writable` value everything else reads (XTP-E9-S1).
 - A drop onto the row of a share that is already one of the two panes is a
   copy into it, not a no-op.
+- **The refusal read the wrong pane.** `writable` came from the focused pane's mount
+  alone, so a drop onto the *other* pane's read-only share was accepted here and failed
+  later — which is the failure E13-S5 gave the rule for: a ring that appears and then
+  refuses is worse than no ring. It now asks whichever pane holds that share, and still
+  takes another *window's* share at its word rather than refusing a legal drop on the
+  strength of not having asked.
+- Two remote shares are still refused by `resolveDrop`, as they are in the gutter: the
+  queue's verbs are share↔local, and relaying is E22-S3.
 
 ---
 
