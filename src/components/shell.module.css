@@ -378,6 +378,10 @@
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  /* Shrinkable, or the list keeps its content height and pushes the status bar
+     out of the window. Fixed height above it — the tree band (XTP-E2-S4) —
+     is what makes a short window reach that point. */
+  min-height: 0;
   background: var(--list-bg);
 }
 
@@ -388,6 +392,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  min-height: 0;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -1019,6 +1024,12 @@
   flex: none;
   gap: 10px;
   height: var(--height-statusbar);
+  /* The bar is one line tall and says so. Two panes made a narrow bar the
+     normal case, and wrapped text does not become a second row — it spills out
+     of a 24px box. So nothing wraps, and the reason gives up its width first
+     (`.truncate` below). */
+  white-space: nowrap;
+  overflow: hidden;
   padding: 0 12px;
   background: var(--statusbar-bg);
   border-top: 1px solid var(--hairline-chrome);
@@ -1090,9 +1101,20 @@
 }
 
 .truncate {
+  /* The one part of the status bar that may shrink: an ellipsised reason is
+     still readable, an ellipsised item count is not. */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Everything but the reason keeps its width. `:not` rather than source order,
+   because `.statusbar > span` outranks `.truncate` on specificity and would
+   otherwise take the shrinking back. */
+.statusbar > span:not(.truncate) {
+  flex: none;
 }
 
 /* Undo toast --------------------------------------------------------------- */

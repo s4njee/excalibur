@@ -192,6 +192,9 @@ living in one pane instance.
   second answer is how a tree comes to disagree with the list beside it. So the tree
   fetches only the folders the pane has not listed, and a window costs no extra request
   to draw one.
+- A fixed band above a list is what turns CSS's flex-column trap into a visible bug: the
+  list would not shrink, so it overflowed the pane and pushed the status bar out of a
+  short window. `scrolling.test.ts` states the rule for every growing column.
 - Selecting a row navigates; the selected row is the pane's folder rather than a
   selection of the tree's own. Navigating *into* a folder reveals it — its ancestors
   open, it does not — which is what `2a` draws, and what stops a band five rows tall

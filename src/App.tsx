@@ -2989,7 +2989,14 @@ export default function App(props: {
                     onContextMenu={openContextMenu}
                     // Undefined at the share root, which is what withholds the `..`
                     // row — read from the same `canAscend` as the toolbar's arrow.
-                    onAscend={nav.canAscend(path()) ? ascend : undefined}
+                    // The *pane's* path: read from the window, a left pane one
+                    // folder deep put a `..` row on a right pane sitting at its
+                    // share root, and clicking it moved the left pane.
+                    onAscend={
+                      nav.canAscend(side.pane.path())
+                        ? () => side.pane.ascend()
+                        : undefined
+                    }
                     slow={side.pane.listingState.slow()}
                     sort={sort()}
                     onSort={onSort}

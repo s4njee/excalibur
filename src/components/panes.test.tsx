@@ -148,6 +148,28 @@ describe("two panes, drawn", () => {
     expect(slot?.style.flexGrow).toBe("0.7");
   });
 
+  it("gives the parent row to the pane that can ascend, not to both", async () => {
+    // `canAscend` was read from the window, which is the focused pane: a left
+    // pane one folder deep drew a `..` row on a right pane sitting at its own
+    // share root, and clicking that row moved the left pane.
+    await open();
+    await turnOn();
+    const parentRows = () =>
+      [...host.querySelectorAll<HTMLElement>('[role="row"][title="Enclosing folder"]')];
+    expect(parentRows()).toHaveLength(0);
+
+    // The left pane goes one folder in; the right stays where it is.
+    host
+      .querySelector<HTMLElement>('[data-path="Documentaries"]')
+      ?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await settle();
+    await settle();
+
+    expect(parentRows()).toHaveLength(1);
+    const [left] = lists();
+    expect(left?.contains(parentRows()[0]!)).toBe(true);
+  });
+
   it("keeps one file list when the second pane is put away", async () => {
     await open();
     await turnOn();
