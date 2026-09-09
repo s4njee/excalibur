@@ -45,6 +45,15 @@ export function Toolbar(props: {
   onTransfers: () => void;
   /** Whether the pane is open, so the button can read as pressed. */
   transfersOpen: boolean;
+  /**
+   * Two panes are drawn, so direction is spatial (`twopane.md` XTP-E7-S2).
+   *
+   * Download and Upload name a direction the window no longer has an opinion
+   * about: with two panes it is the gutter's arrows that say which way, and a
+   * button that meant "to the downloads folder" beside them would be a third
+   * answer to a question the user is already answering spatially.
+   */
+  dual: boolean;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onPreferences: () => void;
@@ -200,21 +209,26 @@ export function Toolbar(props: {
             shortcut="edit"
             onClick={props.onEdit}
           />
-          <Verb
-            affordance="download"
-            context={context()}
-            label="Download"
-            shortcut="download"
-            onClick={props.onDownload}
-          />
-          <Verb
-            affordance="upload"
-            context={context()}
-            label="Upload"
-            shortcut="upload"
-            primary
-            onClick={props.onUpload}
-          />
+          {/* Absent rather than disabled, which is the rule this toolbar
+              already follows: a verb that cannot apply is not drawn, so the
+              bar changes rather than greying out. */}
+          <Show when={!props.dual}>
+            <Verb
+              affordance="download"
+              context={context()}
+              label="Download"
+              shortcut="download"
+              onClick={props.onDownload}
+            />
+            <Verb
+              affordance="upload"
+              context={context()}
+              label="Upload"
+              shortcut="upload"
+              primary
+              onClick={props.onUpload}
+            />
+          </Show>
       </div>
       {/* A filename is not prose. WKWebView capitalises, autocorrects and
           spell-checks a text input by default, and a filter that quietly

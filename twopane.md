@@ -342,9 +342,12 @@ apply *per window*, not per pane, because they stay what `rowLayout` means.
 - `Quick Look`, `Edit`, the filter and the View menu keep working and act on the
   focused pane.
 - `＋ Add URL` and `Transfers` are app-wide and do not move.
-- The path field belongs to the focused pane; each pane also draws its own, per
-  the handoff. One of the two is redundant and the handoff does not say which —
-  see the open questions.
+- **One editable path field, in the toolbar, belonging to the focused pane.**
+  The handoff draws one per pane, having no toolbar field to compare against;
+  this window has one that already takes a typed path or URI (E1-S2), and two
+  editable fields would be two places to type the same thing. Each pane's title
+  band shows its own path, read-only, so both are legible at once and only the
+  focused one is editable. Recorded in `docs/design-gaps.md`.
 
 ---
 
@@ -522,8 +525,8 @@ The handoff names these as *Not yet designed*, and each one is reachable in this
 - The sync-browsing mismatch warning in the pane title band (XTP-E6-S1).
 - The disconnected / reconnecting banner, which in two-pane mode has to say *which* pane
   lost its connection — a per-pane banner, or one banner that names the side.
-- Whether a pane should draw its own path field when the toolbar already has one
-  for the focused pane (XTP-E7-S2). The handoff draws both, having no toolbar
-  path field to compare against.
+- Whether the read-only path in each pane's title band is enough, or whether a
+  pane wants its own editable field as the handoff draws (decided for now in
+  XTP-E7-S2: one editable field, in the toolbar).
 - What the protocol line reads for a non-xsync backend, now that it is the only place the
   transport is named in two-pane mode.

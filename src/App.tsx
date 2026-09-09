@@ -997,13 +997,17 @@ export default function App(props: {
           return;
 
         case "download":
-          // Share verbs act on the file list, which downloads has none of.
-          // The toolbar leaves them out there, and the keys follow (XDL-E2-S1).
+          // Gone with the button, not merely hidden behind it: leaving the key
+          // bound would keep a verb the toolbar says does not exist, and ⌘D
+          // would still send a file to the downloads folder while the two panes
+          // say direction is chosen by pointing (XTP-E7-S2).
+          if (drawnPanes().length > 1) return;
           event.preventDefault();
           void downloadSelected();
           return;
 
         case "upload":
+          if (drawnPanes().length > 1) return;
           event.preventDefault();
           void uploadHere();
           return;
@@ -3008,6 +3012,7 @@ export default function App(props: {
         })}
         onViewAction={runViewAction}
         onAddDownload={() => void openAddDownload()}
+        dual={drawnPanes().length > 1}
         onTransfers={() => setShowTransfers((open) => !open)}
         transfersOpen={showTransfers()}
         sidebarCollapsed={settings().sidebarCollapsed}

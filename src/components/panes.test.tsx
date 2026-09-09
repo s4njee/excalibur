@@ -156,3 +156,78 @@ describe("two panes, drawn", () => {
     expect(lists()).toHaveLength(1);
   });
 });
+
+describe("the toolbar with two panes (XTP-E7-S2)", () => {
+  const viewButton = () => host.querySelector<HTMLElement>('[aria-label="View options"]');
+  const menuItem = (text: string) =>
+    [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((candidate) =>
+      candidate.textContent?.includes(text),
+    ) ?? null;
+  const click = (element: HTMLElement | null) =>
+    element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  /** Scoped to the toolbar, which is the window's second row. */
+  const toolbar = () => host.firstElementChild?.children[1] ?? null;
+  const verb = (label: string) =>
+    [...(toolbar()?.querySelectorAll("button") ?? [])].find(
+      (button) => button.textContent === label,
+    ) ?? null;
+
+  async function turnOn() {
+    click(viewButton());
+    await settle();
+    click(menuItem("Two Panes"));
+    await settle();
+    await settle();
+  }
+
+  it("keeps all four verbs with one pane", async () => {
+    await open();
+    for (const label of ["Quick Look", "Edit", "Download", "Upload"]) {
+      expect(verb(label), label).not.toBeNull();
+    }
+  });
+
+  it("drops Download and Upload, because direction is spatial now", async () => {
+    // Absent rather than disabled, which is the rule this toolbar already
+    // follows: the bar changes rather than greying out.
+    await open();
+    await turnOn();
+    expect(verb("Download")).toBeNull();
+    expect(verb("Upload")).toBeNull();
+  });
+
+  it("keeps the verbs that still mean something", async () => {
+    await open();
+    await turnOn();
+    // These act on the focused pane, which is a question two panes can answer.
+    expect(verb("Quick Look")).not.toBeNull();
+    expect(verb("Edit")).not.toBeNull();
+    // App-wide, so unaffected by how many panes are drawn.
+    expect(verb("＋ Add URL")).not.toBeNull();
+    expect(toolbar()?.querySelector('[aria-label="Transfers"]')).not.toBeNull();
+    expect(toolbar()?.querySelector('[aria-label="View options"]')).not.toBeNull();
+  });
+
+  it("unbinds the keys as well, rather than hiding the verb behind them", async () => {
+    // A key that still worked would be a verb the toolbar says does not exist.
+    await open();
+    await turnOn();
+    const event = new KeyboardEvent("keydown", {
+      key: "d",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+    await settle();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("brings them back when the second pane is put away", async () => {
+    await open();
+    await turnOn();
+    await turnOn();
+    expect(verb("Download")).not.toBeNull();
+    expect(verb("Upload")).not.toBeNull();
+  });
+});

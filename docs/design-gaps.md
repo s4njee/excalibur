@@ -8,6 +8,28 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## Two panes: what the toolbar keeps *(XTP-E7-S2, 2026-09-09)*
+
+The handoff's two-pane toolbar drops `Download` and `Upload` because direction
+is spatial there — the gutter's arrows say which way — and this follows it.
+Absent rather than disabled, which is the rule the toolbar already follows: a
+verb that cannot apply is not drawn, so the bar changes rather than greying out.
+
+**The keys go with the buttons.** ⌘D and ⌘U are unbound while two panes are
+drawn. Leaving them would keep a verb the toolbar says does not exist, and ⌘D
+would still send a file to the downloads folder while the two panes say
+direction is chosen by pointing.
+
+**One editable path field, not two.** The handoff draws a path field in each
+pane; it has no toolbar field to compare against, and this window's already
+takes a typed path or URI (E1-S2). Two editable fields would be two places to
+type the same thing, so the toolbar keeps the only one and it belongs to the
+focused pane. Each pane's title band shows its own path read-only, so both are
+legible at once.
+
+**For the designer:** whether the read-only path in the band is enough, or
+whether a pane wants its own editable field after all.
+
 ## The toolbar's View menu *(E17-S1, 2026-09-09)*
 
 The handoff draws no such control: its toolbar is navigation, the path field,
