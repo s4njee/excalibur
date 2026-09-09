@@ -35,6 +35,7 @@ export type ShortcutId =
   | "layoutMono"
   | "layoutIcons"
   | "layoutColumnView"
+  | "switchPane"
   | "contextMenu"
   // Moving through the list without a pointer (E26-S2). The four arrows are
   // two verbs each — move, and extend from the anchor — because they differ in
@@ -129,6 +130,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "layoutMono", label: "Mono grid", key: "3", mod: true },
   { id: "layoutIcons", label: "Icons", key: "4", mod: true },
   { id: "layoutColumnView", label: "Columns view", key: "5", mod: true },
+  // Only bound while two panes are drawn; with one it is left to the
+  // browser, which uses it to move between the toolbar's controls.
+  { id: "switchPane", label: "Switch pane", key: "tab" },
 ] as const;
 
 const BY_ID = new Map(SHORTCUTS.map((shortcut) => [shortcut.id, shortcut]));

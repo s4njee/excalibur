@@ -71,7 +71,7 @@ import {
   type Context as PermissionContext,
 } from "./state/permissions";
 import { engineFailure } from "./state/errors";
-import { createPane } from "./app/pane";
+import { createPane, type Pane, type PaneSide } from "./app/pane";
 import { createQueues } from "./app/queues";
 import { createAddDownload } from "./app/addDownload";
 import {
@@ -191,31 +191,68 @@ export default function App(props: {
    * Destructured so every reader below says `path()` and `listing()` as it
    * always did — the point of this step is that nothing had to change to fit.
    */
-  const pane = createPane({
-    path: self.path,
-    listDir: (target) => backend.listDir(target),
+  const listDir = (target: string) => backend.listDir(target);
+  const panes: Record<PaneSide, Pane> = {
     // The browser preview opens with a row selected, because the design's
     // screens draw one and there is no way to click in a screenshot.
-    selection: inTauri()
-      ? undefined
-      : clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"),
-  });
-  const {
-    history,
-    setHistory,
-    path,
-    listingState,
-    listing,
-    refresh,
-    disconnected,
-    goTo,
-    ascend,
-    filter,
-    setFilter,
-    selection,
-    setSelection,
-    selected,
-  } = pane;
+    left: createPane({
+      path: self.path,
+      listDir,
+      selection: inTauri()
+        ? undefined
+        : clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"),
+    }),
+    // Held but inert: it has no mount of its own until XTP-E2 draws it, and
+    // nothing loads it, so a window still makes exactly one listing request.
+    right: createPane({ listDir }),
+  };
+  const [focus, setFocus] = createSignal<PaneSide>("left");
+  const focused = () => panes[focus()];
+  /**
+   * Move focus between the panes.
+   *
+   * One answer to "which pane" for the whole window: the toolbar's verbs, the
+   * keyboard, and the pane a bookmark opens into (`twopane.md` XTP-E8-S1) all
+   * read this rather than each deciding for itself. A no-op while one pane is
+   * drawn, which is what makes this step invisible.
+   */
+  const focusPane = (side: PaneSide) => setFocus(side);
+  /**
+   * The panes actually on screen.
+   *
+   * One today. XTP-E7's `paneMode` is what makes this two, and everything that
+   * has to behave differently with two panes asks this rather than assuming —
+   * Tab, below, would otherwise move focus to a pane nobody can see, and the
+   * window would go blank because that pane has no mount.
+   */
+  const drawnPanes = (): PaneSide[] => ["left"];
+
+  /**
+   * The focused pane's state, under the names the window already used.
+   *
+   * Delegates rather than a destructure: `path()` still means what it did, and
+   * now means *the focused pane's*. Every reader below is unchanged, which is
+   * how a change this wide can be trusted — and with one pane drawn, focus
+   * never moves, so it resolves to the same pane every time.
+   */
+  const history = () => focused().history();
+  const setHistory: Pane["setHistory"] = (next) => focused().setHistory(next as never);
+  const path = () => focused().path();
+  const listing = () => focused().listing();
+  const disconnected = () => focused().disconnected();
+  const goTo = (target: string) => focused().goTo(target);
+  const ascend = () => focused().ascend();
+  const filter = () => focused().filter();
+  const setFilter: Pane["setFilter"] = (next) => focused().setFilter(next as never);
+  const selection = () => focused().selection();
+  const setSelection: Pane["setSelection"] = (next) =>
+    focused().setSelection(next as never);
+  const selected = () => focused().selected();
+  const refresh = { request: () => focused().refresh.request() };
+  const listingState = {
+    load: (target: string) => focused().listingState.load(target),
+    slow: () => focused().listingState.slow(),
+  };
 
   /**
    * Which category the transfers pane is filtered to (XDL-E2-S1).
@@ -948,6 +985,18 @@ export default function App(props: {
           event.preventDefault();
           setShowTransfers((open) => !open);
           return;
+
+        case "switchPane": {
+          // Left to the browser while one pane is drawn: Tab is how the
+          // toolbar's controls are reached, and taking it to do nothing would
+          // cost that for a gesture with nowhere to go.
+          const drawn = drawnPanes();
+          if (drawn.length < 2) return;
+          event.preventDefault();
+          const next = drawn[(drawn.indexOf(focus()) + 1) % drawn.length]!;
+          focusPane(next);
+          return;
+        }
 
         case "layoutColumns":
         case "layoutNameLed":

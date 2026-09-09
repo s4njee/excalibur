@@ -36,6 +36,16 @@ export interface PaneOptions {
 
 export type Pane = ReturnType<typeof createPane>;
 
+/**
+ * Which pane, spatially.
+ *
+ * Not `local`/`remote`, which is the handoff's framing: it draws a local tree
+ * beside a remote one, but either pane here can hold either — a window with two
+ * shares open, or two local folders, is an ordinary thing to want. Naming them
+ * by their contents would be wrong the first time somebody did that.
+ */
+export type PaneSide = "left" | "right";
+
 export function createPane(options: PaneOptions) {
   // A window opened by ⌘N starts in the folder the window that opened it was
   // showing, with no history behind it: Back in a new window has nowhere to go,
