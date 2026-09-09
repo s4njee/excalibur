@@ -262,6 +262,23 @@ docked to the bottom and there is no tab strip. The queue itself does not change
   never opens the drawer on its own.
 - The collapsed state is one of the handoff's *Not yet designed* items; ship to this
   description and file a `docs/design-gaps.md` entry.
+- **Docked with two panes, floating with one.** Same component, same queue, same
+  handlers — only the chrome differs, so the two shapes cannot come to show different
+  rows. The handoff draws the drawer in its two-pane screens alone, and the reason
+  generalises: a sheet anchored under the toolbar covers one of the two columns the
+  transfer is between.
+- **The tabs are the CATEGORIES already there** (XDL-E2-S1: All, Downloading, Paused,
+  Completed, Failed) rather than the handoff's `Queued`/`Failed`/`Finished`. They name
+  the same rows — "Queued" there includes what is running, which is "Downloading" here —
+  and two strips naming one filter differently is the drift this epic keeps removing.
+  A non-zero Failed count becomes a pill, as `2b` draws it.
+- **No `Log` tab** until XTP-E5 builds the message log; a tab with nothing behind it is
+  worse than its absence. **`Pause all` and `Clear finished` stay behind the `☰`**, which
+  is where a direct ask put them (2026-09-07) and where two more verbs since have joined
+  them.
+- Collapse is one number, `0` meaning the strip alone: a height and a flag could
+  disagree. It reopens at the height it was, which the window remembers because the store
+  cannot hold both at once.
 
 #### XTP-E4-S2 — The queue table
 **AC**

@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, onMount, untrack, Show } from "solid-js";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { QuickLook } from "./components/QuickLook";
 import { Transfers } from "./components/Transfers";
@@ -285,6 +285,29 @@ export default function App(props: {
     }
   });
 
+  /**
+   * A new failure selects the Failed tab — but only with the queue on screen
+   * (`twopane.md` XTP-E4-S1).
+   *
+   * A transfer failing is not a reason to take the window over. The drawer
+   * never opens itself; what it does, when it is already open, is stop showing
+   * a tab where nothing has changed while a row has just gone red one tab
+   * along.
+   *
+   * Keyed on ids rather than a count: a failure that arrives as another is
+   * cleared leaves the count where it was, and that is exactly the moment the
+   * tab is most wrong.
+   */
+  let knownFailures = new Set<string>();
+  createEffect(() => {
+    const failed = new Set(
+      transfers().filter((transfer) => transfer.status === "failed").map((transfer) => transfer.id),
+    );
+    const fresh = [...failed].some((id) => !knownFailures.has(id));
+    knownFailures = failed;
+    if (fresh && untrack(showTransfers)) openCategory("failed");
+  });
+
   /** The pane's tab strip, with live counts off the whole queue. */
   const categories = () => {
     const counts = countByCategory(transfers());
@@ -434,6 +457,8 @@ export default function App(props: {
     setWidths(loaded.columnWidths);
     setSplitRatio(loaded.splitRatio);
     setTreeBand(loaded.treeBand);
+    setDrawerHeight(loaded.drawerHeight);
+    if (loaded.drawerHeight > 0) restoreDrawer = loaded.drawerHeight;
     // Clamped on the way in: a pane sized on a bigger display would otherwise
     // come back wider than this window, with its left edge — and the grip on
     // it — off screen, so it could never be made smaller again.
@@ -506,6 +531,33 @@ export default function App(props: {
    * it: a file write per pointermove is a write per frame.
    */
   const [treeBand, setTreeBand] = createSignal<TreeBand>(DEFAULTS.treeBand);
+  /**
+   * The docked drawer's height, `0` being its tab strip alone (XTP-E4-S1).
+   *
+   * A signal during the drag and a setting on release, like the split and the
+   * tree band. `restoreDrawer` is where a collapse goes back to: collapsing to
+   * `0` and expanding to the default would lose a height the user chose, and
+   * the store cannot hold both at once.
+   */
+  const [drawerHeight, setDrawerHeight] = createSignal(DEFAULTS.drawerHeight);
+  let restoreDrawer = DEFAULTS.drawerHeight;
+  const saveDrawer = () => void saveSetting(prefs, "drawerHeight", drawerHeight());
+  const resizeDrawer = (height: number) => {
+    if (height > 0) restoreDrawer = height;
+    setDrawerHeight(height);
+  };
+  const toggleDrawer = () => {
+    resizeDrawer(drawerHeight() > 0 ? 0 : restoreDrawer);
+    saveDrawer();
+  };
+  /**
+   * The queue is docked with two panes and floats with one (XTP-E4-S1).
+   *
+   * The handoff draws the drawer in its two-pane screens alone, and the reason
+   * generalises: a sheet anchored under the toolbar covers one of the two
+   * columns a transfer is between, which is the pair the user is watching.
+   */
+  const dockedTransfers = () => drawnPanes().length > 1;
   /**
    * The band's height for one side, or `0` where there is no band.
    *
@@ -3033,6 +3085,49 @@ export default function App(props: {
    * The gutter is the handoff's 44px, and dragging it moves the split. It is
    * empty until XTP-E3 puts the transfer arrows in it.
    */
+  /**
+   * The transfer queue, in whichever shape this window is wearing.
+   *
+   * One call site for both, so the sheet and the drawer cannot come to be
+   * handed different queues, different handlers or a different category —
+   * only the chrome differs, which is the whole claim of XTP-E4-S1.
+   */
+  const TransfersSurface = (shape: { docked: boolean }) => (
+    <Transfers
+      docked={shape.docked}
+      height={drawerHeight()}
+      onResizeHeight={resizeDrawer}
+      onResizeHeightEnd={saveDrawer}
+      onToggleCollapse={toggleDrawer}
+      transfers={transfers()}
+      categories={categories()}
+      category={category()}
+      onCategory={openCategory}
+      size={paneSize()}
+      onResize={setPaneSize}
+      onResizeEnd={onPaneResizeEnd}
+      onClose={() => setShowTransfers(false)}
+      onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
+      onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
+      onRetryFailed={() => void backend.retryFailedTransfers().then(refreshTransfers)}
+      onClearFailed={() => void backend.clearFailedTransfers().then(refreshTransfers)}
+      onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
+      onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
+      onRemove={(id) => void backend.removeTransfer(id).then(refreshTransfers)}
+      onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
+      onOpenFolder={(path) => void backend.openTransferFolder(path)}
+      onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
+      onRemount={remountAction()}
+      queues={queues()}
+      onCreateQueue={(name, color, concurrency) => void createQueue(name, color, concurrency)}
+      onUpdateQueue={(id, name, color, concurrency) => void updateQueue(id, name, color, concurrency)}
+      onDeleteQueue={(id) => void deleteQueue(id)}
+      onMoveToQueue={(id, queueId) => void moveTransferToQueue(id, queueId)}
+      onReorderQueue={(queueId, ids) => void reorderQueue(queueId, ids)}
+      onReorderQueues={(ids) => void reorderQueues(ids)}
+    />
+  );
+
   const PaneRow = () => (
     <Show
       when={drawnPanes().length > 1}
@@ -3168,36 +3263,6 @@ export default function App(props: {
           </div>
         )}
       </Show>
-      <Show when={showTransfers()}>
-        <Transfers
-          transfers={transfers()}
-          categories={categories()}
-          category={category()}
-          onCategory={openCategory}
-          size={paneSize()}
-          onResize={setPaneSize}
-          onResizeEnd={onPaneResizeEnd}
-          onClose={() => setShowTransfers(false)}
-          onPauseAll={() => void backend.pauseAllTransfers().then(refreshTransfers)}
-          onClearFinished={() => void backend.clearFinishedTransfers().then(refreshTransfers)}
-          onRetryFailed={() => void backend.retryFailedTransfers().then(refreshTransfers)}
-          onClearFailed={() => void backend.clearFailedTransfers().then(refreshTransfers)}
-          onPause={(id) => void backend.pauseTransfer(id).then(refreshTransfers)}
-          onCancel={(id) => void backend.cancelTransfer(id).then(refreshTransfers)}
-          onRemove={(id) => void backend.removeTransfer(id).then(refreshTransfers)}
-          onRetry={(id) => void backend.retryTransfer(id).then(refreshTransfers)}
-          onOpenFolder={(path) => void backend.openTransferFolder(path)}
-          onCopyUrl={(url) => void navigator.clipboard?.writeText(url)}
-          onRemount={remountAction()}
-          queues={queues()}
-          onCreateQueue={(name, color, concurrency) => void createQueue(name, color, concurrency)}
-          onUpdateQueue={(id, name, color, concurrency) => void updateQueue(id, name, color, concurrency)}
-          onDeleteQueue={(id) => void deleteQueue(id)}
-          onMoveToQueue={(id, queueId) => void moveTransferToQueue(id, queueId)}
-          onReorderQueue={(queueId, ids) => void reorderQueue(queueId, ids)}
-          onReorderQueues={(ids) => void reorderQueues(ids)}
-        />
-      </Show>
       <Show when={conflicts()}>
         {(pending) => (
           <div class={styles.scrim}>
@@ -3300,6 +3365,9 @@ export default function App(props: {
           />
         )}
       </Show>
+      <Show when={showTransfers() && !dockedTransfers()}>
+        {TransfersSurface({ docked: false })}
+      </Show>
       <div class={styles.body}>
         <Sidebar
           collapsed={settings().sidebarCollapsed}
@@ -3324,7 +3392,15 @@ export default function App(props: {
             if (bookmark) setConnecting(toDraft(bookmark));
           }}
         />
-        <PaneRow />
+        {/* The panes and, below them, the drawer: docked to the bottom of the
+            work area rather than the window, so the sidebar keeps its own
+            footer and the drawer keeps the width it is describing. */}
+        <div class={styles.workspace}>
+          <PaneRow />
+          <Show when={showTransfers() && dockedTransfers()}>
+            {TransfersSurface({ docked: true })}
+          </Show>
+        </div>
       </div>
       <Show when={pendingDelete()}>
         {(pending) => (

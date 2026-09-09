@@ -12,7 +12,9 @@
 
 import { DEFAULT_WIDTHS, sanitise as sanitiseWidths, type Widths } from "./columns";
 import {
+  DEFAULT_DRAWER_HEIGHT,
   DEFAULT_PANE_SIZE,
+  sanitiseDrawerHeight,
   sanitise as sanitisePaneSize,
   type PaneSize,
 } from "./paneSize";
@@ -105,6 +107,14 @@ export interface Settings {
   transfersPane: PaneSize;
   /** Each pane's directory tree band, in pixels; `0` is collapsed. */
   treeBand: TreeBand;
+  /**
+   * The docked transfer drawer's height, in pixels; `0` is its tab strip alone.
+   *
+   * Beside `transfersPane` rather than folded into it: the floating sheet is
+   * sized in two dimensions and anchored top-right, the drawer in one and
+   * anchored to the bottom. One record would have to mean both.
+   */
+  drawerHeight: number;
   sort: Sort;
 }
 
@@ -136,6 +146,7 @@ export const DEFAULTS: Settings = {
   columnWidths: DEFAULT_WIDTHS,
   transfersPane: DEFAULT_PANE_SIZE,
   treeBand: { left: DEFAULT_TREE_HEIGHT, right: DEFAULT_TREE_HEIGHT },
+  drawerHeight: DEFAULT_DRAWER_HEIGHT,
   sort: DEFAULT_SORT,
 };
 
@@ -167,6 +178,7 @@ const KEYS: Record<keyof Settings, string> = {
   columnWidths: "columnWidths.columns",
   transfersPane: "transfersPane",
   treeBand: "treeBand",
+  drawerHeight: "drawerHeight",
   sort: "sort",
 };
 
@@ -323,6 +335,8 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return sanitiseWidths(value) as Settings[K];
     case "transfersPane":
       return sanitisePaneSize(value) as Settings[K];
+    case "drawerHeight":
+      return sanitiseDrawerHeight(value) as Settings[K];
     case "treeBand": {
       const record = typeof value === "object" && value !== null
         ? (value as Record<string, unknown>)

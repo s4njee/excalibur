@@ -8,6 +8,43 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## The docked drawer *(XTP-E4-S1, 2026-09-09)*
+
+**The mock** draws the queue docked along the bottom of the two-pane window,
+with a 26px tab strip reading `Queued (2)`, `Failed (1)`, `Finished (8)`, `Log`
+and right-aligned `Pause all` / `Clear finished`. Its collapsed state is named
+in *Not yet designed*.
+
+**What was built:** the same `Transfers` component in a second shape. Floating
+over a window with one pane, exactly as before; docked under the pane row with
+two, taking its width from the work area so the sidebar keeps its own footer.
+One element, one set of handlers, one category — the shapes cannot come to
+disagree about what is in the queue.
+
+**Collapsed is the tab strip alone**, put away by the chevron in the strip or
+by dragging the drawer's top edge past the point where a row stops being
+readable. The counts stay legible while it is collapsed, which is what makes it
+worth keeping on screen at all, and the way back is the control that put it
+away rather than a menu row somewhere else. One number remembers it, `0` being
+collapsed: a height and a flag could disagree.
+
+**The tabs are the categories this app already has.** `All`, `Downloading`,
+`Paused`, `Completed`, `Failed` (XDL-E2-S1, from the aria2 reference) rather
+than the handoff's three. They name the same rows — the mock's `Queued` shows
+running transfers with a progress bar, which is `Downloading` here — and two
+strips naming one filter differently is a thing a user has to learn twice. A
+non-zero `Failed` becomes the red pill `2b` draws. There is no `Log` tab: the
+message log is XTP-E5 and unbuilt.
+
+`Pause all` and `Clear finished` stay behind the `☰` the queue's other bulk
+verbs live in — that was a direct ask (2026-09-07), and there are four of them
+now rather than the mock's two.
+
+**For the designer:** whether the drawer should span the sidebar as well (it
+does not, so it describes exactly the panes above it); and whether a collapsed
+drawer should keep the failure pill visible when every other count is hidden —
+today the whole strip stays, counts and all.
+
 ## The directory tree's band, and the way back to it *(XTP-E2-S4, 2026-09-09)*
 
 The handoff draws the tree in `2a` and both panes collapsed in `2b`, and nothing

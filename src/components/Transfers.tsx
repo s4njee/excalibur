@@ -1,10 +1,10 @@
-import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount, type JSX } from "solid-js";
 import styles from "./transfers.module.css";
 import { ContextMenu } from "./ContextMenu";
 import { DownloadsTable } from "./DownloadsTable";
 import { Sparkline } from "./Sparkline";
 import { filterByCategory, type DownloadCategory } from "../state/downloads";
-import { resized, type PaneSize } from "../state/paneSize";
+import { resized, resizedDrawer, type PaneSize } from "../state/paneSize";
 import { activeCount, aggregateRate, pushSample, remainingBytes } from "../state/throughput";
 import { formatRate, formatSize } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
@@ -24,11 +24,32 @@ import { QueueControls } from "./QueueControls";
  * categories that used to be sidebar rows are this panel's tab strip. It
  * draws the reference's table rather than a second, compact row shape — one
  * queue seen one way, so the two densities can no longer disagree.
+ *
+ * Two shapes, one queue (`twopane.md` XTP-E4-S1). Floating over the window
+ * with one pane, docked along the bottom with two — because a sheet over a
+ * two-pane window covers the very columns the transfer is between. What is
+ * inside is the same tabs, the same table and the same footer: only the
+ * chrome around them differs, so the two can never come to show different
+ * rows.
  */
 export function Transfers(props: {
   transfers: Transfer[];
   /** Required: a sheet with no way out is a trap. */
   onClose: () => void;
+  /**
+   * Docked along the bottom of the pane row rather than floating (XTP-E4-S1).
+   *
+   * The tab strip carries the actions then, as the handoff draws it, and there
+   * is no separate header: a docked band is already titled by where it is.
+   */
+  docked?: boolean;
+  /** Docked only: content height in pixels, `0` being the tab strip alone. */
+  height?: number;
+  /** Docked only: mid-drag heights, then the one to remember. */
+  onResizeHeight?: (height: number) => void;
+  onResizeHeightEnd?: () => void;
+  /** Docked only: put it away, or bring it back to the height it was. */
+  onToggleCollapse?: () => void;
   /**
    * The queue grouped the way the reference groups it (XDL-E2-S1), with counts
    * off the *whole* queue so a tab's number does not change as tabs are
@@ -148,6 +169,32 @@ export function Transfers(props: {
     window.addEventListener("pointerup", up);
   };
 
+  /**
+   * Drag the drawer's top edge.
+   *
+   * Its own handler rather than `startResize`'s: the drawer has one dimension
+   * and grows the other way, and the room it may take is its column's rather
+   * than the window's. Collapsing is what a drag past the minimum means, so
+   * the gesture and the chevron end in the same state.
+   */
+  const startDrawerResize = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const start = panel.getBoundingClientRect().height;
+    const startY = event.clientY;
+    // The column above, which is what a taller drawer takes from.
+    const available = panel.parentElement?.getBoundingClientRect().height ?? window.innerHeight;
+    const move = (moved: PointerEvent) =>
+      props.onResizeHeight?.(resizedDrawer(start, moved.clientY - startY, available));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      props.onResizeHeightEnd?.();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   const runMenuAction = (action: TransferMenuAction) => {
     setMenuAt(null);
     switch (action) {
@@ -164,6 +211,187 @@ export function Transfers(props: {
         props.onPauseAll();
     }
   };
+
+  /**
+   * The categories, and whatever the shape wants at their right.
+   *
+   * One strip for both shapes: the drawer's actions sit in it because the
+   * handoff draws them there and a docked band needs no separate header, and
+   * the floating sheet keeps its own header. The tabs themselves are the same
+   * tabs.
+   */
+  const tabStrip = (trailing?: JSX.Element) => (
+    /* CATEGORIES (XDL-E2-S1), which used to be sidebar rows. A tab strip
+       rather than a list: these narrow one queue rather than switching the
+       window between locations, and a location list is what the sidebar is
+       for. A count is live and a zero is an answer, so every tab is drawn
+       whether or not it has rows. Recorded in `docs/design-gaps.md`. */
+    <div class={styles.tabs} role="tablist" aria-label="Categories">
+      <For each={props.categories}>
+        {(category) => {
+          const active = () => category.id === props.category;
+          return (
+            <button
+              class={`${styles.tab} ${active() ? styles.tabActive : ""}`}
+              role="tab"
+              data-category={category.id}
+              aria-selected={active()}
+              onClick={() => props.onCategory(category.id)}
+            >
+              {category.label}
+              <span
+                class={`${styles.tabCount} ${
+                  category.id === "failed" && category.count > 0 ? styles.tabCountFailed : ""
+                }`}
+              >
+                {category.count}
+              </span>
+            </button>
+          );
+        }}
+      </For>
+      {trailing}
+    </div>
+  );
+
+  const queueMenu = () => (
+    <Show when={menuAt()}>
+      {(at) => (
+        <ContextMenu
+          items={transferMenu(props.transfers)}
+          at={at()}
+          label="Queue actions"
+          anchor={hamburger}
+          onChoose={runMenuAction}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
+    </Show>
+  );
+
+  const queuePicker = () => (
+    <Show
+      when={
+        props.queues &&
+        props.onCreateQueue &&
+        props.onUpdateQueue &&
+        props.onDeleteQueue &&
+        props.onMoveToQueue &&
+        props.onReorderQueue &&
+        props.onReorderQueues
+      }
+    >
+      <QueueControls
+        queues={queues()}
+        selected={selectedQueue()}
+        onSelect={setSelectedQueue}
+        onCreate={props.onCreateQueue!}
+        onUpdate={props.onUpdateQueue!}
+        onDelete={props.onDeleteQueue!}
+        onReorder={props.onReorderQueues!}
+      />
+    </Show>
+  );
+
+  /* The bulk actions live behind one control (asked for directly,
+     2026-09-07). The handoff draws three buttons in this header and there are
+     now four verbs, two of them about failures — recorded in
+     docs/design-gaps.md. Close stays a button of its own: it acts on the
+     panel, and everything in the menu acts on the queue. */
+  const queueActions = () => (
+    <button
+      class={styles.headerAction}
+      ref={hamburger}
+      aria-label="Queue actions"
+      aria-haspopup="menu"
+      aria-expanded={menuAt() !== null}
+      onClick={toggleMenu}
+    >
+      ☰
+    </button>
+  );
+
+  const table = () => (
+    <DownloadsTable
+      transfers={queueTransfers()}
+      onPause={props.onPause}
+      onCancel={props.onCancel}
+      onRemove={props.onRemove}
+      onRetry={props.onRetry}
+      onOpenFolder={props.onOpenFolder}
+      onCopyUrl={props.onCopyUrl}
+      onRemount={props.onRemount}
+      queues={queues()}
+      selectedQueue={selectedQueue()}
+      onMoveToQueue={props.onMoveToQueue}
+      onReorder={props.onReorderQueue}
+    />
+  );
+
+  const footer = () => (
+    <div class={styles.footer}>
+      <span class={styles.footerStats}>
+        {/* The reference's "3 active · 48 connections". The count we have is
+            active rows; the connection count is the engine's and unplumbed
+            to the row (XD-E2-S4), so the footer says nothing rather than
+            invent one (XDL-E2-S4). */}
+        <span class={styles.footerMono}>{activeCount(props.transfers)} active</span>
+        <span class={styles.footerMono}>
+          {formatSize(remainingBytes(props.transfers))} remaining
+        </span>
+      </span>
+      <Show when={aggregate() > 0}>
+        <span class={styles.aggregate}>{formatRate(aggregate())} aggregate</span>
+      </Show>
+      <Sparkline samples={samples()} />
+    </div>
+  );
+
+  const open = () => (props.height ?? 0) > 0;
+
+  if (props.docked) {
+    return (
+      <div ref={panel} class={styles.drawer} role="region" aria-label="Transfers">
+        {/* The one edge a docked band can be dragged by. Dragging it down past
+            the point where rows stop being readable collapses the drawer, so
+            the gesture and the chevron land in the same state. */}
+        <div
+          class={styles.drawerGrip}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize transfers"
+          onPointerDown={startDrawerResize}
+        />
+        {tabStrip(
+          <div class={styles.tabActions}>
+            {queuePicker()}
+            {queueActions()}
+            {/* Collapsed is the tab strip alone: the counts stay legible and
+                the way back is the control that put it away, rather than a
+                menu row somewhere else. */}
+            <button
+              class={styles.headerAction}
+              aria-label={open() ? "Collapse transfers" : "Expand transfers"}
+              aria-expanded={open()}
+              onClick={() => props.onToggleCollapse?.()}
+            >
+              {open() ? "▾" : "▴"}
+            </button>
+            <button class={styles.headerAction} aria-label="Close" onClick={props.onClose}>
+              ✕
+            </button>
+          </div>,
+        )}
+        {queueMenu()}
+        <Show when={open()}>
+          <div class={styles.drawerBody} style={{ height: `${props.height}px` }}>
+            {table()}
+            {footer()}
+          </div>
+        </Show>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -202,108 +430,16 @@ export function Transfers(props: {
       />
       <div class={styles.header}>
         <span class={styles.title}>Transfers</span>
-        <Show when={props.queues && props.onCreateQueue && props.onUpdateQueue && props.onDeleteQueue && props.onMoveToQueue && props.onReorderQueue && props.onReorderQueues}>
-          <QueueControls
-            queues={queues()}
-            selected={selectedQueue()}
-            onSelect={setSelectedQueue}
-            onCreate={props.onCreateQueue!}
-            onUpdate={props.onUpdateQueue!}
-            onDelete={props.onDeleteQueue!}
-            onReorder={props.onReorderQueues!}
-          />
-        </Show>
-        {/* The bulk actions live behind one control (asked for directly,
-            2026-09-07). The handoff draws three buttons in this header and
-            there are now four verbs, two of them about failures — recorded in
-            docs/design-gaps.md. Close stays a button of its own: it acts on the
-            panel, and everything in the menu acts on the queue. */}
-        <button
-          class={styles.headerAction}
-          ref={hamburger}
-          aria-label="Queue actions"
-          aria-haspopup="menu"
-          aria-expanded={menuAt() !== null}
-          onClick={toggleMenu}
-        >
-          ☰
-        </button>
+        {queuePicker()}
+        {queueActions()}
         <button class={styles.headerAction} aria-label="Close" onClick={props.onClose}>
           ✕
         </button>
       </div>
-
-      {/* CATEGORIES (XDL-E2-S1), which used to be sidebar rows. A tab strip
-          rather than a list: these narrow one queue rather than switching the
-          window between locations, and a location list is what the sidebar is
-          for. A count is live and a zero is an answer, so every tab is drawn
-          whether or not it has rows. Recorded in `docs/design-gaps.md`. */}
-      <div class={styles.tabs} role="tablist" aria-label="Categories">
-        <For each={props.categories}>
-          {(category) => {
-            const active = () => category.id === props.category;
-            return (
-              <button
-                class={`${styles.tab} ${active() ? styles.tabActive : ""}`}
-                role="tab"
-                data-category={category.id}
-                aria-selected={active()}
-                onClick={() => props.onCategory(category.id)}
-              >
-                {category.label}
-                <span class={styles.tabCount}>{category.count}</span>
-              </button>
-            );
-          }}
-        </For>
-      </div>
-
-      <Show when={menuAt()}>
-        {(at) => (
-          <ContextMenu
-            items={transferMenu(props.transfers)}
-            at={at()}
-            label="Queue actions"
-            anchor={hamburger}
-            onChoose={runMenuAction}
-            onClose={() => setMenuAt(null)}
-          />
-        )}
-      </Show>
-
-      <DownloadsTable
-        transfers={queueTransfers()}
-        onPause={props.onPause}
-        onCancel={props.onCancel}
-        onRemove={props.onRemove}
-        onRetry={props.onRetry}
-        onOpenFolder={props.onOpenFolder}
-        onCopyUrl={props.onCopyUrl}
-        onRemount={props.onRemount}
-        queues={queues()}
-        selectedQueue={selectedQueue()}
-        onMoveToQueue={props.onMoveToQueue}
-        onReorder={props.onReorderQueue}
-      />
-
-      <div class={styles.footer}>
-        <span class={styles.footerStats}>
-          {/* The reference's "3 active · 48 connections". The count we have is
-              active rows; the connection count is the engine's and unplumbed
-              to the row (XD-E2-S4), so the footer says nothing rather than
-              invent one (XDL-E2-S4). */}
-          <span class={styles.footerMono}>
-            {activeCount(props.transfers)} active
-          </span>
-          <span class={styles.footerMono}>
-            {formatSize(remainingBytes(props.transfers))} remaining
-          </span>
-        </span>
-        <Show when={aggregate() > 0}>
-          <span class={styles.aggregate}>{formatRate(aggregate())} aggregate</span>
-        </Show>
-        <Sparkline samples={samples()} />
-      </div>
+      {tabStrip()}
+      {queueMenu()}
+      {table()}
+      {footer()}
     </div>
   );
 }

@@ -102,3 +102,45 @@ export function sanitise(raw: unknown): PaneSize {
         : null,
   };
 }
+
+/**
+ * The docked drawer's content height, in pixels (`twopane.md` XTP-E4-S1).
+ *
+ * The same pane, docked rather than floating: with two panes a sheet over the
+ * window covers the very columns the transfer is between, so the two-pane view
+ * puts the queue below them and gives it the width instead.
+ *
+ * `0` is collapsed — the tab strip stays, which is what makes it recoverable
+ * without a menu row, and is why this is one number rather than a height and a
+ * flag that could disagree.
+ */
+export const DEFAULT_DRAWER_HEIGHT = 176;
+
+/** Under this a drag means "put it away": a header, and no rows worth reading. */
+export const MIN_DRAWER_HEIGHT = 88;
+
+/** The drawer never takes more than this share of the room above it. */
+export const MAX_DRAWER_FRACTION = 0.75;
+
+/**
+ * Where a drag on the drawer's top edge lands.
+ *
+ * The drawer is anchored to the bottom and grows upward, so a *negative*
+ * delta — the pointer moving up the screen — makes it taller. `available` is
+ * the room its column has; without it a drag can push the panes off the top,
+ * and there is no edge left to grab.
+ */
+export function resizedDrawer(start: number, delta: number, available: number): number {
+  const height = Math.round(start - delta);
+  if (height < MIN_DRAWER_HEIGHT) return 0;
+  return Math.min(height, Math.max(0, Math.round(available * MAX_DRAWER_FRACTION)));
+}
+
+/** One remembered drawer height, read back from a user-editable file. */
+export function sanitiseDrawerHeight(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_DRAWER_HEIGHT;
+  // `0` is the user having collapsed it, so it survives the clamp that would
+  // otherwise round it up to the minimum and reopen the drawer every launch.
+  if (raw <= 0) return 0;
+  return Math.max(MIN_DRAWER_HEIGHT, Math.round(raw));
+}

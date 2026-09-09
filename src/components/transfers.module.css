@@ -210,6 +210,57 @@
   font-weight: 500;
 }
 
+/* The docked drawer (XTP-E4-S1). The same queue as `.panel`, along the bottom
+   of the pane row: with two panes a sheet over the window covers the very
+   columns the transfer is between. It takes its width from its column and its
+   height from the setting, and collapses to the tab strip alone. */
+.drawer {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--hairline-chrome);
+  background: var(--list-bg);
+}
+
+/* Four pixels of grab on the drawer's top edge, sitting on its own border. */
+.drawerGrip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 5px;
+  cursor: row-resize;
+  z-index: 1;
+}
+
+.drawerBody {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-height: 0;
+}
+
+/* The strip's right-hand end, where the handoff puts the queue's controls. */
+.tabActions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 0;
+}
+
+/* A failure is the one count worth seeing without reading the tab (`2b`), so
+   it becomes a pill rather than the mono grey the other counts use. Only when
+   there is one: a `0` in red would cry wolf on every launch. */
+.tabCountFailed {
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--error-chip-bg);
+  color: var(--badge-error-text);
+  font-weight: 600;
+}
+
 /* CATEGORIES as a tab strip (XDL-E2-S1). Under the header rather than in it:
    the header's controls act on the queue, and these choose which queue you
    are looking at. */

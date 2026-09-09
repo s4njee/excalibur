@@ -634,6 +634,17 @@
    The window's body when `paneMode` is `dual`: two columns sharing the width
    with a gutter between them. The gutter is the handoff's 44px and is empty
    until XTP-E3 puts the transfer arrows in it. */
+/* The work area: the panes, and the drawer docked under them (XTP-E4-S1).
+   Beside the sidebar rather than around it, so the sidebar keeps its own
+   footer and the drawer spans exactly the columns it is describing. */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 .paneRow {
   display: flex;
   flex: 1;
