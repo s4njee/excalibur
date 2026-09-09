@@ -21,7 +21,7 @@
 //      2026-09-09 on a direct ask. Recorded in `docs/design-gaps.md`.
 
 import type { MenuItem } from "./menu";
-import type { RowLayout } from "./types";
+import type { PaneMode, RowLayout } from "./types";
 
 export type ViewMenuAction =
   | "toggleHidden"
@@ -30,13 +30,15 @@ export type ViewMenuAction =
   | "layoutNameLed"
   | "layoutMono"
   | "layoutIcons"
-  | "layoutColumnView";
+  | "layoutColumnView"
+  | "togglePanes";
 
 /** The settings the menu reflects; a subset, so callers cannot pass the world. */
 export interface ViewState {
   showHidden: boolean;
   foldersFirst: boolean;
   rowLayout: RowLayout;
+  paneMode: PaneMode;
 }
 
 /** `✓ Label` or `  Label`, so the rows line up whether or not they are on. */
@@ -92,6 +94,16 @@ export function viewMenu(view: ViewState): MenuItem<ViewMenuAction>[] {
       label: tick(view.rowLayout === "column-view", "Column View"),
       disabled: false,
       reason: null,
+    },
+    {
+      action: "togglePanes",
+      // Ruled off from the layouts because it answers a different question:
+      // how many panes, not how a listing is drawn. A pane still uses one of
+      // the layouts above (`twopane.md` XTP-E7-S1).
+      label: tick(view.paneMode === "dual", "Two Panes"),
+      disabled: false,
+      reason: null,
+      separated: true,
     },
   ];
 }

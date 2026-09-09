@@ -18,7 +18,7 @@ import {
 } from "./paneSize";
 import { DEFAULT_SORT, type Sort } from "./sort";
 import type { Prefs } from "./prefs";
-import type { RowLayout, SortColumn } from "./types";
+import type { PaneMode, RowLayout, SortColumn } from "./types";
 
 /**
  * What the user picked, which is not the same as what is displayed.
@@ -55,6 +55,19 @@ export interface DownloadHeader {
 export interface Settings {
   theme: ThemeChoice;
   rowLayout: RowLayout;
+  /**
+   * One pane or two (`twopane.md` XTP-E7-S1).
+   *
+   * Beside `rowLayout`, not inside it: a pane still draws rows in one of the
+   * layouts, so folding this in would make "two panes, name-led rows"
+   * unsayable. Two axes, one menu.
+   */
+  paneMode: PaneMode;
+  /**
+   * How the window's width is shared between two panes, as the left one's
+   * fraction. Persisted so a window opens the way it was left.
+   */
+  splitRatio: number;
   sidebarCollapsed: boolean;
   showHidden: boolean;
   foldersFirst: boolean;
@@ -83,6 +96,8 @@ export interface Settings {
 export const DEFAULTS: Settings = {
   theme: "system",
   rowLayout: "columns",
+  paneMode: "single",
+  splitRatio: 0.5,
   sidebarCollapsed: false,
   // Hidden files are shown by default because this is a tool for people who
   // deliberately went looking at a network share.
@@ -117,6 +132,8 @@ export const DEFAULTS: Settings = {
 const KEYS: Record<keyof Settings, string> = {
   theme: "theme",
   rowLayout: "rowLayout",
+  paneMode: "paneMode",
+  splitRatio: "splitRatio",
   sidebarCollapsed: "sidebarCollapsed",
   showHidden: "showHidden",
   foldersFirst: "foldersFirst",
@@ -138,6 +155,7 @@ const KEYS: Record<keyof Settings, string> = {
 
 const THEMES: readonly ThemeChoice[] = ["system", "light", "dark"];
 const LAYOUTS: readonly RowLayout[] = ["columns", "name-led", "mono", "icons", "column-view"];
+const PANE_MODES: readonly PaneMode[] = ["single", "dual"];
 const CONFLICTS: readonly ConflictDefault[] = ["ask", "replace", "skip", "keepBoth"];
 const SORT_COLUMNS: readonly SortColumn[] = ["name", "size", "added", "modified", "kind"];
 
@@ -252,6 +270,14 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return oneOf(value, THEMES, DEFAULTS.theme) as Settings[K];
     case "rowLayout":
       return oneOf(value, LAYOUTS, DEFAULTS.rowLayout) as Settings[K];
+    case "paneMode":
+      return oneOf(value, PANE_MODES, DEFAULTS.paneMode) as Settings[K];
+    case "splitRatio":
+      // Clamped rather than trusted: a stored 0 or 1 is a pane of no width,
+      // and its splitter would then be unreachable at the window's edge.
+      return (typeof value === "number" && Number.isFinite(value)
+        ? Math.min(0.8, Math.max(0.2, value))
+        : DEFAULTS.splitRatio) as Settings[K];
     case "conflictDefault":
       return oneOf(value, CONFLICTS, DEFAULTS.conflictDefault) as Settings[K];
     case "sidebarCollapsed":

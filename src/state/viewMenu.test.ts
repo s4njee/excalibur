@@ -5,6 +5,7 @@ const view = (over: Partial<ViewState> = {}): ViewState => ({
   showHidden: false,
   foldersFirst: false,
   rowLayout: "columns",
+  paneMode: "single",
   ...over,
 });
 
@@ -21,6 +22,7 @@ describe("the View menu", () => {
       "layoutMono",
       "layoutIcons",
       "layoutColumnView",
+      "togglePanes",
     ]);
   });
 
@@ -56,5 +58,15 @@ describe("the View menu", () => {
     // They are different questions: two switches, then a choice of one.
     const items = viewMenu(view());
     expect(items.find((item) => item.action === "layoutColumns")?.separated).toBe(true);
+  });
+
+  it("keeps the pane count on its own axis, ruled off from the layouts", () => {
+    // Two panes is not a layout: a pane still draws rows in one of them, so
+    // ticking it must not untick the row layout.
+    const items = viewMenu(view({ paneMode: "dual", rowLayout: "name-led" }));
+    const panes = items.find((item) => item.action === "togglePanes");
+    expect(panes?.label).toContain("✓");
+    expect(panes?.separated).toBe(true);
+    expect(items.find((item) => item.action === "layoutNameLed")?.label).toContain("✓");
   });
 });

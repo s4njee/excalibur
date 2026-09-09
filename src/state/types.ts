@@ -258,4 +258,12 @@ export interface Bookmark {
 
 export type SortColumn = "name" | "size" | "added" | "modified" | "kind";
 export type RowLayout = "columns" | "name-led" | "mono" | "icons" | "column-view";
+
+/**
+ * One pane or two (`twopane.md` XTP-E7-S1).
+ *
+ * A separate axis from `RowLayout`, because a pane still draws rows in one of
+ * the layouts. Both are chosen from the View menu.
+ */
+export type PaneMode = "single" | "dual";
 export type Theme = "light" | "dark";

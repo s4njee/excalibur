@@ -625,6 +625,80 @@
   border-bottom: 1px solid var(--hairline-row);
 }
 
+/* Two panes (XTP-E2-S1) ----------------------------------------------------
+   The window's body when `paneMode` is `dual`: two columns sharing the width
+   with a gutter between them. The gutter is the handoff's 44px and is empty
+   until XTP-E3 puts the transfer arrows in it. */
+.paneRow {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The slot carries the split; the column inside it carries the layout. Kept
+   apart so the ratio can be set inline without touching anything else. */
+.paneSlot {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.paneColumn {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--list-bg);
+}
+
+/* Which pane a verb would act on. An inner border rather than an outer one, so
+   turning it on does not move a single row by a pixel. */
+.paneColumnFocused {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.paneTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hairline-chrome);
+  background: var(--sidebar-bg);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* The share this pane is on. Mono because it is a path, and not uppercased
+   with the label because a path's case is information. */
+.paneTitleUri {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.paneGutter {
+  flex: none;
+  width: 44px;
+  border-left: 1px solid var(--hairline-chrome);
+  border-right: 1px solid var(--hairline-chrome);
+  background: var(--toolbar-bg);
+  cursor: col-resize;
+}
+
 /* Column view (E26-S4) -----------------------------------------------------
    A horizontal strip of panes, each its own scroller. The strip scrolls too,
    because a deep path has more columns than the window is wide. */

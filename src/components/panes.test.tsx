@@ -25,7 +25,7 @@ const settle = () => new Promise((done) => setTimeout(done, 0));
 
 let listed: string[] = [];
 
-async function open() {
+async function open(prefs = memoryPrefs()) {
   listed = [];
   const base = fixtureBackend();
   const backend = {
@@ -39,7 +39,7 @@ async function open() {
     () => (
       <App
         backend={backend}
-        prefs={memoryPrefs()}
+        prefs={prefs}
         bookmarks={{ load: async () => [], save: async () => undefined }}
       />
     ),
@@ -87,5 +87,72 @@ describe("a window with two panes held", () => {
     // Two panes are held, not drawn. XTP-E2 is what puts the second on screen.
     await open();
     expect(host.querySelectorAll('[role="grid"]')).toHaveLength(1);
+  });
+});
+
+describe("two panes, drawn", () => {
+  const viewButton = () => host.querySelector<HTMLElement>('[aria-label="View options"]');
+  const menuItem = (text: string) =>
+    [...host.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((candidate) =>
+      candidate.textContent?.includes(text),
+    ) ?? null;
+  const lists = () => [...host.querySelectorAll<HTMLElement>('[role="grid"]')];
+  const gutter = () => host.querySelector<HTMLElement>('[aria-label="Resize panes"]');
+  const click = (element: HTMLElement | null) =>
+    element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+  async function turnOn() {
+    click(viewButton());
+    await settle();
+    click(menuItem("Two Panes"));
+    await settle();
+    await settle();
+  }
+
+  it("draws a second list and a gutter between them", async () => {
+    await open();
+    expect(lists()).toHaveLength(1);
+    await turnOn();
+    expect(lists()).toHaveLength(2);
+    expect(gutter()).not.toBeNull();
+  });
+
+  it("opens the second pane where the first one is, not on nothing", async () => {
+    // An empty column with no way to tell whether it is broken is a worse
+    // first sight than the folder you were already looking at.
+    await open();
+    await turnOn();
+    // Both panes asked for the same path: the one the window was showing.
+    expect(listed.filter((path) => path === "")).toHaveLength(2);
+  });
+
+  it("moves focus to the pane that was clicked", async () => {
+    await open();
+    await turnOn();
+    const [left, right] = lists();
+    const columnOf = (list: HTMLElement) => list.closest("[class*='paneColumn']");
+    // The left one starts focused, because that is the pane the window was.
+    expect(columnOf(left!)?.className).toMatch(/paneColumnFocused/);
+    right?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await settle();
+    expect(columnOf(right!)?.className).toMatch(/paneColumnFocused/);
+    expect(columnOf(left!)?.className).not.toMatch(/paneColumnFocused/);
+  });
+
+  it("remembers the split across a relaunch", async () => {
+    const prefs = memoryPrefs();
+    await prefs.set("splitRatio", 0.7);
+    await open(prefs);
+    await turnOn();
+    const slot = lists()[0]?.closest("[class*='paneSlot']") as HTMLElement | null;
+    expect(slot?.style.flexGrow).toBe("0.7");
+  });
+
+  it("keeps one file list when the second pane is put away", async () => {
+    await open();
+    await turnOn();
+    expect(lists()).toHaveLength(2);
+    await turnOn();
+    expect(lists()).toHaveLength(1);
   });
 });

@@ -125,6 +125,7 @@ import {
 import { Preferences } from "./components/Preferences";
 import { AddDownloadDialog } from "./components/AddDownloadDialog";
 import {
+  DEFAULTS,
   DEFAULTS as DEFAULT_SETTINGS,
   loadSettings,
   resolveTheme,
@@ -225,7 +226,8 @@ export default function App(props: {
    * Tab, below, would otherwise move focus to a pane nobody can see, and the
    * window would go blank because that pane has no mount.
    */
-  const drawnPanes = (): PaneSide[] => ["left"];
+  const drawnPanes = (): PaneSide[] =>
+    paneMode() === "dual" ? ["left", "right"] : ["left"];
 
   /**
    * The focused pane's state, under the names the window already used.
@@ -239,7 +241,6 @@ export default function App(props: {
   const setHistory: Pane["setHistory"] = (next) => focused().setHistory(next as never);
   const path = () => focused().path();
   const listing = () => focused().listing();
-  const disconnected = () => focused().disconnected();
   const goTo = (target: string) => focused().goTo(target);
   const ascend = () => focused().ascend();
   const filter = () => focused().filter();
@@ -287,7 +288,22 @@ export default function App(props: {
     void prefs.set(categoryKey(), id);
   };
 
-  createEffect(() => listingState.load(path()));
+  /**
+   * Each drawn pane loads its own path.
+   *
+   * One effect per pane rather than one that follows focus: a focus-following
+   * effect reloads the pane you just moved to, which already has its listing,
+   * and it would load the second pane while it is inert. The guard is what
+   * keeps a single-pane window to one request (XTP-E1-S2).
+   */
+  createEffect(() => panes.left.listingState.load(panes.left.path()));
+  createEffect(() => {
+    // Only this one is guarded: the left pane is always drawn, so making it
+    // depend on the mode as well would refetch it every time the second pane
+    // is opened or put away.
+    if (paneMode() !== "dual") return;
+    panes.right.listingState.load(panes.right.path());
+  });
 
   /**
    * Relist the current directory, at most once per 250 ms (E8-S9).
@@ -306,6 +322,15 @@ export default function App(props: {
   // move on every pointer frame during a drag and would make this signal — and
   // so the whole window — react at that rate.
   const [settings, setSettings] = createSignal<Settings>(DEFAULT_SETTINGS);
+  /**
+   * A memo, not a plain read of `settings()`.
+   *
+   * `settings` is one signal holding one object, so reading `.paneMode` off it
+   * subscribes to *every* setting. The per-pane load effects below read this,
+   * and without the memo changing the theme — or the sort, or hidden files —
+   * would re-run them and refetch both listings.
+   */
+  const paneMode = createMemo(() => settings().paneMode);
   const [downloadLimits, setDownloadLimits] = createSignal<
     import("./state/types").HttpDownloadLimits
   >();
@@ -398,6 +423,7 @@ export default function App(props: {
     const loaded = await loadSettings(prefs);
     setSettings(loaded);
     setWidths(loaded.columnWidths);
+    setSplitRatio(loaded.splitRatio);
     // Clamped on the way in: a pane sized on a bigger display would otherwise
     // come back wider than this window, with its left edge — and the grip on
     // it — off screen, so it could never be made smaller again.
@@ -454,6 +480,35 @@ export default function App(props: {
     setWidths((current) => resize(current, divider, delta, visible));
   const onResizeEnd = () => void saveSetting(prefs, "columnWidths", widths());
   const onPaneResizeEnd = () => void saveSetting(prefs, "transfersPane", paneSize());
+
+  /**
+   * Where the two panes divide, as the left pane's fraction (XTP-E2-S1).
+   *
+   * A signal during the drag and a setting on release, the same split the
+   * column dividers use: writing on every pointermove would be a file write
+   * per frame.
+   */
+  const [splitRatio, setSplitRatio] = createSignal(DEFAULTS.splitRatio);
+  let paneRow: HTMLDivElement | undefined;
+  const startSplitDrag = (event: PointerEvent) => {
+    if (event.button !== 0 || !paneRow) return;
+    event.preventDefault();
+    const box = paneRow.getBoundingClientRect();
+    const move = (at: PointerEvent) => {
+      if (box.width === 0) return;
+      // Clamped where the setting clamps: a pane of no width takes its
+      // splitter to the window's edge with it, and there is no way back.
+      const ratio = Math.min(0.8, Math.max(0.2, (at.clientX - box.left) / box.width));
+      setSplitRatio(ratio);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      void saveSetting(prefs, "splitRatio", splitRatio());
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   // The row type-to-select jumped to, so the list can scroll it into view.
   const [reveal, setReveal] = createSignal<number | null>(null);
   /**
@@ -1007,6 +1062,11 @@ export default function App(props: {
           update("rowLayout", LAYOUT_KEYS[verb]);
           return;
 
+        case "togglePanes":
+          event.preventDefault();
+          togglePanes();
+          return;
+
         default:
           break;
       }
@@ -1511,6 +1571,27 @@ export default function App(props: {
    * `changeSetting` rather than a signal — the same path Preferences uses, and
    * the reason a layout chosen here is still chosen after a relaunch.
    */
+  /**
+   * Turn the second pane on and off.
+   *
+   * Focus goes back to the left pane when the second one is put away, because
+   * the focused pane is what every verb acts on and leaving focus on a pane
+   * nobody can see would aim them at nothing.
+   */
+  const togglePanes = () => {
+    const next = settings().paneMode === "dual" ? "single" : "dual";
+    if (next === "single") focusPane("left");
+    // A second pane that opened on nothing would be an empty column with no
+    // way to tell whether it was broken. It opens where the first one is, which
+    // is the folder the user is looking at, and either half can be moved from
+    // there. It gets its own mount when a bookmark is opened into it
+    // (`twopane.md` XTP-E8-S1).
+    if (next === "dual" && panes.right.listing() === null) {
+      panes.right.goTo(panes.left.path());
+    }
+    changeSetting("paneMode", next);
+  };
+
   const runViewAction = (action: ViewMenuAction) => {
     switch (action) {
       case "toggleHidden":
@@ -1525,6 +1606,9 @@ export default function App(props: {
       case "layoutIcons":
       case "layoutColumnView":
         changeSetting("rowLayout", LAYOUT_KEYS[action]);
+        return;
+      case "togglePanes":
+        togglePanes();
     }
   };
 
@@ -2247,8 +2331,8 @@ export default function App(props: {
    * and a column that sorted differently, or showed dotfiles the list was
    * hiding, would be describing a different folder from the one beside it.
    */
-  const visibleOf = (list: Entry[]) => {
-    const matching = filterEntries(list, filter());
+  const visibleOf = (list: Entry[], text: string) => {
+    const matching = filterEntries(list, text);
     const visible = showHidden() ? matching : matching.filter((entry) => !entry.hidden);
     // A row waiting out its undo window is already gone as far as the user is
     // concerned. It is hidden rather than deleted, which is what makes Undo
@@ -2258,10 +2342,12 @@ export default function App(props: {
     return sortEntries(remaining, sort(), foldersFirst());
   };
 
-  const entries = createMemo(() => {
-    const data = listing();
-    return data ? visibleOf(data.entries) : [];
-  });
+  /** What one pane draws: its own listing and filter, the window's own rules. */
+  const entriesOf = (target: Pane) => {
+    const data = target.listing();
+    return data ? visibleOf(data.entries, target.filter()) : [];
+  };
+  const entries = createMemo(() => entriesOf(focused()));
 
   /**
    * How many rows there would be with no filter.
@@ -2285,13 +2371,18 @@ export default function App(props: {
    * Download would then act on a file they cannot see. The underlying set is
    * left alone, so clearing the filter brings the selection back.
    */
+  const selectedVisibleOf = (target: Pane) =>
+    entriesOf(target).filter((entry) => target.selected().has(entry.path));
+  const selectedBytesOf = (target: Pane) =>
+    selectedVisibleOf(target).reduce((total, entry) => total + entry.size, 0);
+  /** A pane's own crumbs, which is where two panes on one share differ. */
+  const mountPathOf = (target: Pane) =>
+    ["", ...rootSegments(), ...nav.segments(target.path())].join("/");
+
   const selectedVisible = createMemo(() =>
     entries().filter((entry) => selected().has(entry.path)),
   );
 
-  const selectedBytes = createMemo(() =>
-    selectedVisible().reduce((total, entry) => total + entry.size, 0),
-  );
 
   /**
    * What the title bar, the breadcrumb and the status path name.
@@ -2495,6 +2586,139 @@ export default function App(props: {
     );
   };
 
+  /**
+   * One pane's column: the list and its status bar (XTP-E2-S1).
+   *
+   * A local component rather than one in `src/components/`, because it closes
+   * over the window's handlers — `select`, `open`, `runDrop` and two dozen
+   * more — which all act on the *focused* pane. Passing them would mean thirty
+   * props and a second copy of the question "which pane".
+   *
+   * It takes focus on the way in instead: a pointer down anywhere in the
+   * column focuses it before the click reaches a row, so by the time a handler
+   * runs the focused pane is the one that was clicked. That is what lets the
+   * window's existing handlers work unchanged for two panes.
+   */
+  const PaneColumn = (side: { pane: Pane; side: PaneSide }) => (
+    <div
+      class={`${styles.paneColumn} ${
+        drawnPanes().length > 1 && focus() === side.side ? styles.paneColumnFocused : ""
+      }`}
+      onPointerDown={() => focusPane(side.side)}
+    >
+      {/* The band names what the pane holds. The handoff says LOCAL SITE and
+          REMOTE SITE; either pane here can hold either, so it says the side and
+          the share — and nothing at all with one pane, where there is no second
+          column to tell it apart from. */}
+      <Show when={drawnPanes().length > 1}>
+        <div class={styles.paneTitle}>
+          <span>{side.side === "left" ? "Left" : "Right"}</span>
+          <span class={styles.paneTitleUri}>{mountPathOf(side.pane)}</span>
+        </div>
+      </Show>
+          <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
+                {/* Nothing mounted is not an empty directory: there is no list to
+                    draw, and the one thing to offer is the way out of it (E1-S6). */}
+                <Show
+                  when={!side.pane.disconnected()}
+                  fallback={<EmptyState onNewConnection={() => setConnecting(true)} />}
+                >
+                  {/* Column view is the one layout that is not this directory
+                      drawn differently — it draws the ancestors too, each its
+                      own listing — so it is a component beside `FileList`
+                      rather than a fifth arm inside it (E26-S4). */}
+                  <Show
+                    when={settings().rowLayout !== "column-view"}
+                    fallback={
+                      <ColumnView
+                        path={side.pane.path()}
+                        listDir={(target) => backend.listDir(target)}
+                        prepare={(list) => visibleOf(list, side.pane.filter())}
+                        selected={side.pane.selected}
+                        onSelect={select}
+                        onNavigate={goTo}
+                        onOpen={open}
+                      />
+                    }
+                  >
+                  <FileList
+                    layout={settings().rowLayout}
+                    entries={entriesOf(side.pane)}
+                    selected={side.pane.selected}
+                    onSelect={select}
+                    onBand={selectBand}
+                    reveal={reveal()}
+                    // A page is the list's viewport in the list's row height, so the
+                    // list is what counts it (E26-S2).
+                    onViewportRows={setPageRows}
+                    onOpen={open}
+                    onContextMenu={openContextMenu}
+                    // Undefined at the share root, which is what withholds the `..`
+                    // row — read from the same `canAscend` as the toolbar's arrow.
+                    onAscend={nav.canAscend(path()) ? ascend : undefined}
+                    slow={side.pane.listingState.slow()}
+                    sort={sort()}
+                    onSort={onSort}
+                    widths={widths()}
+                    onResize={onResize}
+                    onResizeEnd={onResizeEnd}
+                    renaming={renaming()}
+                    dropTarget={dropTarget()}
+                    onDragOut={(entry) => void dragOut(entry)}
+                    onRename={(from, name) => void commitRename(from, name)}
+                  />
+                  </Show>
+                </Show>
+                <StatusBar
+                  mount={mountFacts()}
+                  path={mountPathOf(side.pane)}
+                  items={entriesOf(side.pane).length}
+                  total={totalEntries()}
+                  selected={selectedVisibleOf(side.pane).length}
+                  remounting={remounting()}
+                  onRemount={remountAction()}
+                  selectedBytes={selectedBytesOf(side.pane)}
+                />
+          </div>
+    </div>
+  );
+
+  /**
+   * The window's body: one pane, or two with a gutter between them.
+   *
+   * The gutter is the handoff's 44px, and dragging it moves the split. It is
+   * empty until XTP-E3 puts the transfer arrows in it.
+   */
+  const PaneRow = () => (
+    <Show
+      when={drawnPanes().length > 1}
+      fallback={<PaneColumn pane={panes.left} side="left" />}
+    >
+      <div class={styles.paneRow} ref={paneRow}>
+        <div
+          class={styles.paneSlot}
+          style={{ "flex-grow": `${splitRatio()}`, "flex-basis": "0" }}
+        >
+          <PaneColumn pane={panes.left} side="left" />
+        </div>
+        <div
+          class={styles.paneGutter}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize panes"
+          onPointerDown={startSplitDrag}
+        />
+        <div
+          class={styles.paneSlot}
+          style={{ "flex-grow": `${1 - splitRatio()}`, "flex-basis": "0" }}
+        >
+          <PaneColumn pane={panes.right} side="right" />
+        </div>
+      </div>
+    </Show>
+  );
+
+
   return (
     <div
       class={styles.window}
@@ -2541,6 +2765,7 @@ export default function App(props: {
           showHidden: showHidden(),
           foldersFirst: foldersFirst(),
           rowLayout: settings().rowLayout,
+          paneMode: settings().paneMode,
         })}
         onViewAction={runViewAction}
         onAddDownload={() => void openAddDownload()}
@@ -2748,70 +2973,7 @@ export default function App(props: {
             if (bookmark) setConnecting(toDraft(bookmark));
           }}
         />
-        <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
-              {/* Nothing mounted is not an empty directory: there is no list to
-                  draw, and the one thing to offer is the way out of it (E1-S6). */}
-              <Show
-                when={!disconnected()}
-                fallback={<EmptyState onNewConnection={() => setConnecting(true)} />}
-              >
-                {/* Column view is the one layout that is not this directory
-                    drawn differently — it draws the ancestors too, each its
-                    own listing — so it is a component beside `FileList`
-                    rather than a fifth arm inside it (E26-S4). */}
-                <Show
-                  when={settings().rowLayout !== "column-view"}
-                  fallback={
-                    <ColumnView
-                      path={path()}
-                      listDir={(target) => backend.listDir(target)}
-                      prepare={visibleOf}
-                      selected={selected}
-                      onSelect={select}
-                      onNavigate={goTo}
-                      onOpen={open}
-                    />
-                  }
-                >
-                <FileList
-                  layout={settings().rowLayout}
-                  entries={entries()}
-                  selected={selected}
-                  onSelect={select}
-                  onBand={selectBand}
-                  reveal={reveal()}
-                  // A page is the list's viewport in the list's row height, so the
-                  // list is what counts it (E26-S2).
-                  onViewportRows={setPageRows}
-                  onOpen={open}
-                  onContextMenu={openContextMenu}
-                  // Undefined at the share root, which is what withholds the `..`
-                  // row — read from the same `canAscend` as the toolbar's arrow.
-                  onAscend={nav.canAscend(path()) ? ascend : undefined}
-                  slow={listingState.slow()}
-                  sort={sort()}
-                  onSort={onSort}
-                  widths={widths()}
-                  onResize={onResize}
-                  onResizeEnd={onResizeEnd}
-                  renaming={renaming()}
-                  dropTarget={dropTarget()}
-                  onDragOut={(entry) => void dragOut(entry)}
-                  onRename={(from, name) => void commitRename(from, name)}
-                />
-                </Show>
-              </Show>
-              <StatusBar
-                mount={mountFacts()}
-                path={mountPath()}
-                items={entries().length}
-                total={totalEntries()}
-                selected={selectedVisible().length}
-                remounting={remounting()}
-                onRemount={remountAction()}
-                selectedBytes={selectedBytes()}
-              />
-        </div>
+        <PaneRow />
       </div>
       <Show when={pendingDelete()}>
         {(pending) => (
