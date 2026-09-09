@@ -398,6 +398,20 @@ observer; every frame goes through the private `Connection::request`
   the target is writable.
 - The warning's appearance is *Not yet designed*; ship to this description and file a
   `docs/design-gaps.md` entry.
+- **Off by default**, where the handoff has it on: its two-pane window opens local beside
+  remote, so mirroring is useful from the first click. This one opens the second pane on
+  the folder the first is showing (XTP-E2-S1), and two panes in lockstep through one
+  share is a second pane that shows nothing the first does not.
+- **The other pane is probed before it is moved.** "Keep the other pane put" means finding
+  out first: a pane navigated optimistically keeps its previous listing under an error, so
+  it would sit on a path it is not showing. One extra `list_dir` per mirrored navigation,
+  only while sync browsing is on.
+- The mirror is by *relative* path, and the warning names the path that is missing. It
+  clears when that pane moves, when the two are back in step, or when the user dismisses
+  it. `Create folder` makes each missing level in turn — `mkdir` is not `mkdir -p` — and
+  is absent on a share that cannot be written.
+- **In the View menu**, not the toolbar checkbox the handoff draws, for the reason
+  XTP-E2-S3 already gave: this window keeps its view state in one menu.
 
 ---
 

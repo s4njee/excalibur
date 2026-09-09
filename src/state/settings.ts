@@ -108,6 +108,17 @@ export interface Settings {
   /** Each pane's directory tree band, in pixels; `0` is collapsed. */
   treeBand: TreeBand;
   /**
+   * Navigating one pane navigates the other to the same subpath
+   * (`twopane.md` XTP-E6-S1).
+   *
+   * Off by default, where the handoff has it on. Its two-pane window opens
+   * local beside remote, so mirroring is useful from the first click; this
+   * one opens the second pane on the *same* folder as the first (XTP-E2-S1),
+   * and two panes moving in lockstep through one share is a second pane that
+   * shows nothing the first does not. Recorded in `docs/design-gaps.md`.
+   */
+  syncBrowsing: boolean;
+  /**
    * The docked transfer drawer's height, in pixels; `0` is its tab strip alone.
    *
    * Beside `transfersPane` rather than folded into it: the floating sheet is
@@ -146,6 +157,7 @@ export const DEFAULTS: Settings = {
   columnWidths: DEFAULT_WIDTHS,
   transfersPane: DEFAULT_PANE_SIZE,
   treeBand: { left: DEFAULT_TREE_HEIGHT, right: DEFAULT_TREE_HEIGHT },
+  syncBrowsing: false,
   drawerHeight: DEFAULT_DRAWER_HEIGHT,
   sort: DEFAULT_SORT,
 };
@@ -178,6 +190,7 @@ const KEYS: Record<keyof Settings, string> = {
   columnWidths: "columnWidths.columns",
   transfersPane: "transfersPane",
   treeBand: "treeBand",
+  syncBrowsing: "syncBrowsing",
   drawerHeight: "drawerHeight",
   sort: "sort",
 };
@@ -315,6 +328,8 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return bool(value, DEFAULTS.showHidden) as Settings[K];
     case "foldersFirst":
       return bool(value, DEFAULTS.foldersFirst) as Settings[K];
+    case "syncBrowsing":
+      return bool(value, DEFAULTS.syncBrowsing) as Settings[K];
     case "downloadFolder":
       return sanitiseFolder(value) as Settings[K];
     case "downloadConnections":

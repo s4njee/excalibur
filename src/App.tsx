@@ -331,6 +331,120 @@ export default function App(props: {
    * and it would load the second pane while it is inert. The guard is what
    * keeps a single-pane window to one request (XTP-E1-S2).
    */
+  /**
+   * Sync browsing: one pane's navigation followed by the other (XTP-E6-S1).
+   *
+   * Mirrored by *relative* path — the subpath under each pane's own share
+   * root — because the two panes are usually two different roots and that is
+   * the whole gesture: walk one tree, watch the same walk happen in the other.
+   *
+   * The probe is the honest part. The design says the other pane stays put
+   * where the mirrored path does not exist, which means finding out *before*
+   * moving it; a pane navigated optimistically keeps its previous listing
+   * under an error, so it would sit on a path it is not showing. One extra
+   * `list_dir` per mirrored navigation is what that costs, and only while sync
+   * browsing is on.
+   */
+  const [mismatch, setMismatch] = createSignal<Record<PaneSide, string | null>>({
+    left: null,
+    right: null,
+  });
+  /**
+   * Where each pane was last *sent* by the mirror.
+   *
+   * Without it the mirror is a loop: moving the other pane fires its own
+   * effect, which moves this one back. A flag cleared on a timer would be a
+   * race; the path it was sent to is a fact, and arriving at it is the one
+   * navigation not worth mirroring.
+   */
+  const mirrored: Record<PaneSide, string | null> = { left: null, right: null };
+
+  const mirror = async (from: PaneSide, target: string) => {
+    const to: PaneSide = from === "left" ? "right" : "left";
+    if (mirrored[from] === target) {
+      // This pane is here *because* the other one moved. Following it back
+      // would be the loop.
+      //
+      // The path check below catches the ordinary bounce on its own; this
+      // catches the racing one, where the user has moved on again before the
+      // pane that followed arrived — without it, the late arrival mirrors a
+      // path the first pane has already left, and sends it backwards. Not
+      // reachable from a test that awaits each navigation, which is why it is
+      // written down here.
+      mirrored[from] = null;
+      return;
+    }
+    if (untrack(() => panes[to].path()) === target) {
+      // Already there — which is also how a warning goes away: the panes are
+      // in step again, and the path it named is one neither is on.
+      setMismatch((current) => (current[to] === null ? current : { ...current, [to]: null }));
+      return;
+    }
+    try {
+      await backend.listDir(target, untrack(() => mountIdOf(panes[to])) ?? undefined);
+    } catch {
+      // Kept where it is, with the reason in its own title band — never a
+      // modal, which would stop a walk the user is in the middle of.
+      setMismatch((current) => ({ ...current, [to]: target }));
+      return;
+    }
+    setMismatch((current) => ({ ...current, [to]: null }));
+    mirrored[to] = target;
+    panes[to].goTo(target);
+  };
+
+  /**
+   * Create what the other pane has and this one does not, and follow.
+   *
+   * A level at a time, because `mkdir` is not `mkdir -p` — the parent must
+   * exist — and the mirrored path can be several folders deep. Each level is
+   * listed before it is created, so an existing ancestor is not attempted.
+   *
+   * It writes to the pane the button is in, which works because pressing it
+   * focused that pane first and the shell's active mount follows focus.
+   */
+  const createMirrored = async (side: PaneSide, target: string) => {
+    const mount = mountIdOf(panes[side]) ?? undefined;
+    let walked = "";
+    try {
+      for (const segment of nav.segments(target)) {
+        walked = nav.join(walked, segment);
+        try {
+          await backend.listDir(walked, mount);
+        } catch {
+          await backend.mkdir(walked);
+        }
+      }
+    } catch (error) {
+      setProblem(engineFailure(error).message);
+      return;
+    }
+    setMismatch((current) => ({ ...current, [side]: null }));
+    mirrored[side] = target;
+    panes[side].goTo(target);
+  };
+
+  /**
+   * One pane moved, so the other follows.
+   *
+   * The effect must depend on *this* pane's path and nothing else. It read the
+   * other pane's too — through the comparison inside `mirror` — so a move in
+   * one re-ran both, and the pane that had not moved dutifully sent the pane
+   * that had back where it came from. Everything but the gates is untracked
+   * for that reason.
+   */
+  const follows = (side: PaneSide) => {
+    const here = panes[side].path();
+    const on = settings().syncBrowsing;
+    const dual = paneMode() === "dual";
+    // Moving a pane, by any means, answers the warning about it.
+    setMismatch((current) => (current[side] === null ? current : { ...current, [side]: null }));
+    if (!on || !dual) return;
+    void mirror(side, here);
+  };
+  createEffect(() => follows("left"));
+  createEffect(() => follows("right"));
+
   createEffect(() => panes.left.listingState.load(panes.left.path()));
   createEffect(() => {
     // Only this one is guarded: the left pane is always drawn, so making it
@@ -1432,8 +1546,19 @@ export default function App(props: {
    * has never named a mount has — the state every single-pane window is in
    * until a bookmark is opened into a pane.
    */
-  const activeMountId = () =>
-    focused().mountId() ?? bookmarks().find((bookmark) => bookmark.mounted)?.id ?? null;
+  /**
+   * The share this window is working with: the focused pane's, or the one it
+   * was opened on.
+   *
+   * The fallback was *the first mounted bookmark*, which is a fact about the
+   * app rather than about this window. With two panes it made a pane that had
+   * never had a share opened into it report the share the **other** pane had
+   * just opened — so the left pane's title band, its crumbs and its listing
+   * all named the right pane's share. `self.mount` is the honest fallback: it
+   * is what this window was handed when it opened (⌘N inherits one), and it
+   * does not change when some other pane connects.
+   */
+  const activeMountId = () => focused().mountId() ?? self.mount;
   const activeBookmark = () => bookmarks().find((bookmark) => bookmark.mounted) ?? null;
   /** A pane's own mount id, falling back to the window's for a pane that has none. */
   const mountIdOf = (target: Pane) => target.mountId() ?? activeMountId();
@@ -1810,6 +1935,11 @@ export default function App(props: {
         return;
       case "toggleTree":
         toggleTree();
+        return;
+      case "toggleSyncBrowsing":
+        changeSetting("syncBrowsing", !settings().syncBrowsing);
+        // Nothing to warn about once nobody is following anybody.
+        setMismatch({ left: null, right: null });
     }
   };
 
@@ -2680,9 +2810,9 @@ export default function App(props: {
     entriesOf(target).filter((entry) => target.selected().has(entry.path));
   const selectedBytesOf = (target: Pane) =>
     selectedVisibleOf(target).reduce((total, entry) => total + entry.size, 0);
-  /** A pane's own crumbs, which is where two panes on one share differ. */
+  /** A pane's own crumbs, root included: two panes can be on two shares. */
   const mountPathOf = (target: Pane) =>
-    ["", ...rootSegments(), ...nav.segments(target.path())].join("/");
+    ["", ...(namedFor(target)?.root ?? []), ...nav.segments(target.path())].join("/");
 
   const selectedVisible = createMemo(() =>
     entries().filter((entry) => selected().has(entry.path)),
@@ -2702,9 +2832,9 @@ export default function App(props: {
    * and the mock's own names are a better answer there than a connection
    * invented to justify them.
    */
-  const named = () => {
-    if (listing() === null) return null;
-    const bookmark = activeBookmark();
+  const namedFor = (target: Pane) => {
+    if (target.listing() === null) return null;
+    const bookmark = bookmarkOf(target);
     if (bookmark) {
       const root = bookmark.share.split("/").filter(Boolean);
       // Two different hosts, because the two places that show one are asking
@@ -2749,6 +2879,18 @@ export default function App(props: {
           root: ["media"],
         };
   };
+
+  /**
+   * The window's own share: the focused pane's.
+   *
+   * It read `activeBookmark()` — *the first mounted bookmark* — which with one
+   * pane is the only one and with two is whichever happens to come first in
+   * the list. So the toolbar's path field, the window's title and both panes'
+   * title bands all named one share, and for at least one pane it was the
+   * wrong one. Found by XTP-E6's own test, which could not say where a pane
+   * was without it.
+   */
+  const named = () => namedFor(focused());
 
   const host = () => named()?.host ?? null;
   /** The URI's authority, which is empty for a `file:` mount. */
@@ -3043,6 +3185,35 @@ export default function App(props: {
           <span class={styles.paneTitleUri}>{mountPathOf(side.pane)}</span>
         </div>
       </Show>
+      {/* Sync browsing could not follow (XTP-E6-S1). In the pane's own title
+          area and never a modal: the user is mid-walk in the *other* pane, and
+          a dialog would stop a gesture that succeeded. */}
+      <Show when={mismatch()[side.side]}>
+        {(missing) => (
+          <div class={styles.paneWarning} role="status">
+            <span class={styles.paneWarningText}>
+              Not on this share: {missing() === "" ? "/" : missing()}
+            </span>
+            <Show when={mountOf(side.pane)?.writable}>
+              <button
+                class={styles.paneWarningAction}
+                onClick={() => void createMirrored(side.side, missing())}
+              >
+                Create folder
+              </button>
+            </Show>
+            <button
+              class={styles.paneWarningAction}
+              aria-label="Dismiss"
+              onClick={() =>
+                setMismatch((current) => ({ ...current, [side.side]: null }))
+              }
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </Show>
       {/* The folder tree, when the pane's band is open (XTP-E2-S4). Above the
           list and below the title, where the handoff puts it. */}
       <Show when={treeHeightOf(side.side) > 0}>
@@ -3277,6 +3448,7 @@ export default function App(props: {
           rowLayout: settings().rowLayout,
           paneMode: settings().paneMode,
           treeOpen: treeHeightOf(focus()) > 0,
+          syncBrowsing: settings().syncBrowsing,
         })}
         onViewAction={runViewAction}
         onAddDownload={() => void openAddDownload()}

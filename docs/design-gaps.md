@@ -43,6 +43,38 @@ rather than only counted in the note at the top. They are visibly different in
 practice — a frame line opens with `#42` and names a protocol message — but
 nothing says so.
 
+## Sync browsing, and the warning the handoff does not draw *(XTP-E6-S1, 2026-09-09)*
+
+**The mock** checks `Sync browsing` in `2a` and clears it in `2b`, and names
+the mismatch warning in *Not yet designed*: "keep the other pane put, show a
+single inline warning in that pane's title band — never a modal — and offer to
+create the folder when the target is writable".
+
+**What was built**, to that description: a 24px strip under the pane's title
+band, in the connection banner's colours, naming the path that is not there and
+carrying `Create folder` — absent when the share is read-only — and a dismiss.
+It is the pane's own strip because the user is mid-walk in the *other* pane: a
+dialog would stop a gesture that succeeded. It goes when that pane moves, when
+the two are back in step, or when it is dismissed.
+
+**Off by default**, where the handoff has it on. Its window opens local beside
+remote, so mirroring is useful from the first click. This one opens its second
+pane on the folder the first is showing (XTP-E2-S1), and two panes moving in
+lockstep through one share is a second pane that shows nothing the first does
+not.
+
+**The control is the View menu's**, not the toolbar checkbox `2a` draws — the
+reason XTP-E2-S3 gave for `Show hidden` applies unchanged: one menu is where
+this window keeps its view state, and two controls for one setting have to
+agree forever.
+
+**For the designer:** whether the warning should offer to create the folder on
+*both* sides — today it only offers where the path is missing, which is the
+handoff's wording, but a walk that diverged is often two trees that should
+match; and whether a pane that cannot follow should say so in its title band's
+own line rather than in a strip below it, which is what "in the title band"
+literally asks for and what 26px does not fit.
+
 ## The docked drawer *(XTP-E4-S1, 2026-09-09)*
 
 **The mock** draws the queue docked along the bottom of the two-pane window,

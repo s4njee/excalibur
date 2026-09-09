@@ -634,6 +634,44 @@
    The window's body when `paneMode` is `dual`: two columns sharing the width
    with a gutter between them. The gutter is the handoff's 44px and is empty
    until XTP-E3 puts the transfer arrows in it. */
+/* Sync browsing could not follow (XTP-E6-S1). Under the pane's title band,
+   which is the only place that belongs to one pane and is always on screen.
+   The handoff lists its appearance as Not yet designed; this is the banner's
+   own colours at the title band's height. */
+.paneWarning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hairline-chrome);
+  background: var(--error-chip-bg);
+  color: var(--error);
+  font-size: 11px;
+}
+
+.paneWarningText {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: auto;
+}
+
+.paneWarningAction {
+  flex: none;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-control);
+  font-family: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
 /* The work area: the panes, and the drawer docked under them (XTP-E4-S1).
    Beside the sidebar rather than around it, so the sidebar keeps its own
    footer and the drawer spans exactly the columns it is describing. */

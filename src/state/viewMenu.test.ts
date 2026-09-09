@@ -7,6 +7,7 @@ const view = (over: Partial<ViewState> = {}): ViewState => ({
   rowLayout: "columns",
   paneMode: "single",
   treeOpen: false,
+  syncBrowsing: false,
   ...over,
 });
 
@@ -25,6 +26,7 @@ describe("the View menu", () => {
       "layoutColumnView",
       "togglePanes",
       "toggleTree",
+      "toggleSyncBrowsing",
     ]);
   });
 

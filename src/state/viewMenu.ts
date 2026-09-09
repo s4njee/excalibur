@@ -32,7 +32,8 @@ export type ViewMenuAction =
   | "layoutIcons"
   | "layoutColumnView"
   | "togglePanes"
-  | "toggleTree";
+  | "toggleTree"
+  | "toggleSyncBrowsing";
 
 /** The settings the menu reflects; a subset, so callers cannot pass the world. */
 export interface ViewState {
@@ -42,6 +43,8 @@ export interface ViewState {
   paneMode: PaneMode;
   /** The focused pane's tree band is open (`twopane.md` XTP-E2-S4). */
   treeOpen: boolean;
+  /** One pane's navigation follows the other's (`twopane.md` XTP-E6-S1). */
+  syncBrowsing: boolean;
 }
 
 /** `✓ Label` or `  Label`, so the rows line up whether or not they are on. */
@@ -117,6 +120,15 @@ export function viewMenu(view: ViewState): MenuItem<ViewMenuAction>[] {
       // The handoff draws the tree only in its two-pane screens, and the
       // single-pane window already has the sidebar for this. Greyed with the
       // reason rather than hidden, so the row can be found before it applies.
+      disabled: view.paneMode !== "dual",
+      reason: view.paneMode === "dual" ? null : "Two panes only",
+    },
+    {
+      action: "toggleSyncBrowsing",
+      // Beside the tree rather than in the toolbar, where the handoff draws a
+      // checkbox: this window keeps its view state in one menu, and a second
+      // control for one setting would have to agree with the first forever.
+      label: tick(view.syncBrowsing, "Sync Browsing"),
       disabled: view.paneMode !== "dual",
       reason: view.paneMode === "dual" ? null : "Two panes only",
     },
