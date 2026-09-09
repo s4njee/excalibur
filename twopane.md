@@ -323,6 +323,13 @@ lives: mount command and its export flags, listing timings, and failures verbati
 also the one thing in `2a`/`2b` that cannot be built inside Excalibur.
 
 #### XTP-E5-S0 — Prerequisite in `../xsync`: a frame tap on the client
+**Done 2026-09-09** (`xsync` `0851e6d`). `Client::from_split_tapped` takes an
+`Fn(Direction, id, &V3Message)`, armed before the opening handshake. It sits at the send
+and at the reader rather than at `Connection::request`'s reply: that catches frames
+nobody is waiting for as well, and keeps a server `Error` verbatim, which is what the AC
+was protecting. The observer is handed a borrow — a `V3Message` can carry a read's
+payload — so back-pressure and dropping are the observer's, which is where the AC's
+"reports the drop" belongs. Excalibur does not install one yet.
 `xsync-client` has no `tracing` or `log` dependency and exposes no callback, channel or
 observer; every frame goes through the private `Connection::request`
 (`../xsync/crates/xsync-client/src/lib.rs:286`). Filed as `integration.md` §8.

@@ -83,7 +83,7 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
 | E22-S2 hash cache by mount id + path (`:4460`) | a cache-key change inside xsync |
 | E26-S6 owner/group in Properties (`:5750`) | the `OWNER_NAMES` feature bit |
 | xsync↔xsync on one host round-trips through us | a server-side `Copy` |
-| XTP-E5-S1 the message log (`twopane.md` XTP-E5) | a frame tap on `xsync-client` — §8 |
+| ~~XTP-E5-S1 the message log~~ — done at verb resolution; frames need the wiring | ~~a frame tap on `xsync-client`~~ — landed, §8 |
 | XTP-E9-S5 cancel in flight (`twopane.md` XTP-E9-S5) | `Cancel` (type 18) reachable from the client — §8 |
 
 ### 6. `xsync-download` — the whole Downloads tab
@@ -169,11 +169,19 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
   crate offers no way to send one, so an in-flight request can only be abandoned by
   dropping the `OpenFile`, `Stage` or `Client`. **Proposed:** expose it, so a
   drawer's per-row cancel need not wait for a chunk boundary.
-- **Excalibur side, done 2026-09-09.** The pane, the `log://line` event and the
-  ring are built (XTP-E5-S1), recording at the `ShareBackend` seam — one line per
-  engine verb, with the pane saying so. When the tap lands, frame lines join the
-  same stream and only the pane's resolution note changes.
-- **Current state.** Neither exists in xsync. `xsync-client` has no `tracing` or `log`
+- **Done 2026-09-09, both halves except the wiring.** Excalibur has the pane, the
+  `log://line` event and the ring (XTP-E5-S1), recording at the `ShareBackend`
+  seam — one line per engine verb, with the pane saying so. xsync has the tap
+  (`xsync` `0851e6d`): `Client::from_split_tapped` installs an
+  `Fn(Direction, id, &V3Message)` at the send and at the reader, armed before
+  the opening handshake, handed a borrow rather than a copy because a
+  `V3Message` can carry a read's payload. **What remains** is Excalibur's
+  `XsyncBackend` passing one in and turning frames into `LogLine`s, at which
+  point the pane's `Engine operations — not protocol frames` note becomes
+  conditional on which backend the mount is.
+- **Still missing:** `Cancel` (type 18) is defined and the server handles it, but
+  the client crate offers no way to send one.
+- **Current state before that.** Neither existed. `xsync-client` has no `tracing` or `log`
   dependency and no callback, channel or observer anywhere; `Connection::request` is
   private and every frame passes through it. `V3Message` already derives `Debug`, so
   no new formatting contract is needed in xsync. On the Excalibur side `log://line`
