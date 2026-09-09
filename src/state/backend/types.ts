@@ -167,7 +167,19 @@ export interface Backend {
    * (E24-S2), where "the active mount" is not a question the engine can answer
    * — the drop is happening in one window about a share held by another.
    */
-  enqueueDownloads(paths: string[], destination: string, mount?: string): Promise<string[]>;
+  /**
+   * Queue a download of each share path into a local folder.
+   *
+   * `rename` is `Keep both`'s answer, keyed by source path: what to call a
+   * source whose name is already taken where it is going. Absent means every
+   * source keeps its own name, which is `Replace`.
+   */
+  enqueueDownloads(
+    paths: string[],
+    destination: string,
+    mount?: string,
+    rename?: Record<string, string>,
+  ): Promise<string[]>;
   /** Queue a URL into a local folder without a mounted share (XDL-E1). */
   enqueueHttpDownload(url: string, destination: string, options?: HttpDownloadOptions): Promise<string>;
   /** Advisory metadata from the engine's probe; never writes a destination. */
@@ -175,7 +187,12 @@ export interface Backend {
   /** Actual native limits, not a frontend estimate of available connections. */
   downloadLimits(): Promise<HttpDownloadLimits>;
   /** Queue an upload of each local path into a share folder. `mount` as above. */
-  enqueueUploads(paths: string[], destination: string, mount?: string): Promise<string[]>;
+  enqueueUploads(
+    paths: string[],
+    destination: string,
+    mount?: string,
+    rename?: Record<string, string>,
+  ): Promise<string[]>;
   pauseTransfer(id: string): Promise<void>;
   cancelTransfer(id: string): Promise<void>;
   /** Remove a queue row, stopping it first when it is active. */

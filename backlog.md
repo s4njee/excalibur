@@ -115,9 +115,13 @@ Excalibur's own byte-moving worker goes away (DoD v2, `legacy/plan.md:5809`).
   the compact view. Untouched; resolves the E13-S1 design gap.
   (`legacy/plan.md:4641`, `docs/design-gaps.md:106`)
 - **E22-S3 — "Apply to all remaining" as a choice** on the conflict prompt.
-  Untouched. **Bug found while reading that path:** `Keep both` computes a free
-  name, shows it, then does not use it — `resolveConflicts` re-sends the original
-  paths, so it behaves as `Replace`. (`legacy/plan.md:4644`, `:2603`)
+  Untouched. ~~**Bug found while reading that path:** `Keep both` computes a free
+  name, shows it, then does not use it.~~ **Fixed 2026-09-09**: `enqueue_downloads`
+  and `enqueue_uploads` take a `rename` map keyed by source path, and
+  `resolveConflicts` fills it from the destination's own suggestion. The name is
+  taken apart on the Rust side the same way a listing's name is, so an answer
+  cannot smuggle a separator and write outside the chosen folder.
+  (`legacy/plan.md:4644`, `:2603`)
 - **E13-S6 — open transfers resume at offset**, and a reconnect mid-transfer
   continuing from the last acknowledged byte. (`legacy/plan.md:1167`, `:2886`)
 - **E23-S2 — Restore.** Every window comes back on its mount and path, a failed

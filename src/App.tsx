@@ -1829,11 +1829,12 @@ export default function App(props: {
     destination: string,
     upload: boolean,
     mount?: string,
+    rename?: Record<string, string>,
   ) => {
     if (sources.length === 0) return;
     await (upload
-      ? backend.enqueueUploads(sources, destination, mount)
-      : backend.enqueueDownloads(sources, destination, mount));
+      ? backend.enqueueUploads(sources, destination, mount, rename)
+      : backend.enqueueDownloads(sources, destination, mount, rename));
     setShowTransfers(true);
     refreshTransfers();
   };
@@ -1851,7 +1852,7 @@ export default function App(props: {
     const answeredNames = new Set(answered.map((item) => item.name));
 
     // Skip drops them; Replace and Keep both send them. "Keep both" renames on
-    // the *server's* suggestion, because the name has to be free where the
+    // the *destination's* suggestion, because the name has to be free where the
     // file is going and only that side knows.
     const keep = pending.sources.filter((source) => {
       const name = source.split(/[\\/]/).pop() ?? source;
@@ -1859,8 +1860,27 @@ export default function App(props: {
       if (!answeredNames.has(name)) return true;
       return choice !== "skip";
     });
+    /**
+     * What each renamed source should be called.
+     *
+     * This used to be computed, shown to the user as "Keep both would call it
+     * …", and then thrown away — the original paths were re-sent, so the answer
+     * behaved as Replace and overwrote the file it promised to keep
+     * (`backlog.md:117`). The name now travels with the request.
+     */
+    const rename =
+      choice === "keepBoth"
+        ? Object.fromEntries(
+            pending.sources.flatMap((source) => {
+              const name = source.split(/[\\/]/).pop() ?? source;
+              if (!answeredNames.has(name)) return [];
+              const item = answered.find((candidate) => candidate.name === name);
+              return item ? [[source, item.keepBothAs] as const] : [];
+            }),
+          )
+        : undefined;
     try {
-      await enqueue(keep, pending.destination, pending.upload, pending.mount);
+      await enqueue(keep, pending.destination, pending.upload, pending.mount, rename);
     } catch (error) {
       setProblem(engineFailure(error).message);
     }

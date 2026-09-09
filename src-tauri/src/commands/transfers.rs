@@ -222,6 +222,10 @@ pub(crate) async fn enqueue_downloads(
     paths: Vec<String>,
     destination: String,
     mount: Option<String>,
+    // `Keep both`'s answer: what to call a source whose name is already taken
+    // at the destination. Keyed by source path, because the prompt answers
+    // about one clashing name at a time and the rest keep their own.
+    rename: Option<std::collections::HashMap<String, String>>,
 ) -> std::result::Result<Vec<String>, CommandError> {
     // `mount` names the share the *paths* are on. Absent for Download, where it
     // is this window's; present for a drop carrying another window's selection
@@ -249,7 +253,15 @@ pub(crate) async fn enqueue_downloads(
         // Names from the server are not paths (E13-S4's other rule, and the
         // one worth keeping whatever the row shape is). A listing that answers
         // `..` is describing a write outside the folder the user chose.
-        let name = plan::local_name(&path).map(ToOwned::to_owned);
+        // `Keep both` renames on the destination's suggestion, and it is still
+        // sanitised: a name from the far side is no more a path than a name
+        // from a listing is.
+        let name = rename
+            .as_ref()
+            .and_then(|map| map.get(&path))
+            .and_then(|chosen| plan::local_name(chosen))
+            .map(ToOwned::to_owned)
+            .or_else(|| plan::local_name(&path).map(ToOwned::to_owned));
         let Some(name) = name else {
             ids.push(
                 report_problem(
@@ -363,6 +375,8 @@ pub(crate) async fn enqueue_uploads(
     paths: Vec<String>,
     destination: String,
     mount: Option<String>,
+    // `Keep both`'s answer, keyed by source path. See `enqueue_downloads`.
+    rename: Option<std::collections::HashMap<String, String>>,
 ) -> std::result::Result<Vec<String>, CommandError> {
     let (mount, _) = state.mount_and_backend(&window, mount.as_deref()).await?;
     let mut ids = Vec::new();
@@ -372,7 +386,18 @@ pub(crate) async fn enqueue_uploads(
         // yet. The planner's `Planned` event fills it in a moment later.
         let size =
             std::fs::metadata(&path).map_or(0, |meta| if meta.is_dir() { 0 } else { meta.len() });
-        let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+        // The chosen name is taken apart the same way, so a `Keep both` answer
+        // cannot smuggle a separator and write outside the chosen folder.
+        let name = rename.as_ref().and_then(|map| map.get(&path)).map_or_else(
+            || path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned(),
+            |chosen| {
+                chosen
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(chosen)
+                    .to_owned()
+            },
+        );
         let dest = if destination.is_empty() {
             name
         } else {

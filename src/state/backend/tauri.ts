@@ -180,9 +180,10 @@ export function tauriBackend(): Backend {
       paths: string[],
       destination: string,
       mount?: string,
+      rename?: Record<string, string>,
     ): Promise<string[]> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<string[]>("enqueue_downloads", { paths, destination, mount });
+      return invoke<string[]>("enqueue_downloads", { paths, destination, mount, rename });
     },
     async enqueueHttpDownload(
       url: string,
@@ -204,9 +205,10 @@ export function tauriBackend(): Backend {
       paths: string[],
       destination: string,
       mount?: string,
+      rename?: Record<string, string>,
     ): Promise<string[]> {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<string[]>("enqueue_uploads", { paths, destination, mount });
+      return invoke<string[]>("enqueue_uploads", { paths, destination, mount, rename });
     },
     async pauseTransfer(id: string): Promise<void> {
       const { invoke } = await import("@tauri-apps/api/core");
