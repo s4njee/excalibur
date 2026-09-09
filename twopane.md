@@ -13,8 +13,8 @@ Those two artboards are the whole of this document. Everything in `1a`–`1h` is
 built or already owned by a story in `backlog.md`; nothing here re-specifies it.
 
 Story ids `XTP-E<n>-S<m>`, in their own namespace, on the `XDL-` precedent
-(`../AGENTS.md:86`) — the plan namespace is full to `E27` and this is a second app mode,
-not a stripe across the existing epics. **AC** = acceptance criteria. Handoff references
+(`../AGENTS.md:86`) — the plan namespace is full to `E27` and this is a body of work
+of its own, not a stripe across the existing epics. **AC** = acceptance criteria. Handoff references
 look like *(handoff §Screens/7, Transfer gutter)*.
 
 ---
@@ -24,8 +24,9 @@ look like *(handoff §Screens/7, Transfer gutter)*.
 - **Two panes, not two windows.** Excalibur already has real multi-window
   (`new_window`, `src/state/window.ts`) and M7 shipped a drag between two windows.
   The handoff's `2a` is not that: it is one window whose body is split, with a shared
-  drawer and one focused pane driving the toolbar. Windows stay; this is a mode inside
-  one of them.
+  drawer and one focused pane driving the toolbar. Windows stay; this is a view of
+  one of them, chosen from the View menu beside the row layouts and column view
+  (XTP-E7).
 
 - **The local pane is a mount, not a special case.** `Protocol::Local` and
   `LocalBackend` already exist and implement the same `ShareBackend` as `XsyncBackend`
@@ -35,7 +36,7 @@ look like *(handoff §Screens/7, Transfer gutter)*.
   Management)*. So the left pane is an ordinary pane pointed at a local mount, and
   "local vs remote" is a label on the pane, not a branch in the code.
 
-- **xsync is the transport this mode is designed against.** The handoff's prose is
+- **xsync is the transport this view is designed against.** The handoff's prose is
   SMB/NFS throughout — "SMB tree connect flags, NFS export options", "SMB3 · aes-128-gcm",
   `ro,root_squash`. That language is a placeholder for a fact xsync already reports
   better: `MountInfo.effective_writable` and its `reason`, computed server-side from
@@ -97,7 +98,7 @@ living in one pane instance.
   and the filter all read the focused pane; nothing reads a global "current" anything.
 - Focus follows the last-clicked pane. Tab switches panes. The focused pane's list
   carries a 1px accent inner border *(handoff §Two-pane specifics)*.
-- Single-pane mode is the same code with one pane instance rendered.
+- One pane is the same code with one pane instance rendered.
 
 #### XTP-E1-S3 — A pane on a local mount
 **AC**
@@ -140,7 +141,7 @@ living in one pane instance.
 
 #### XTP-E2-S3 — The two-pane toolbar
 **AC**
-- Direction is spatial in this mode, so `Download` and `Upload` are absent from the
+- Direction is spatial here, so `Download` and `Upload` are absent from the
   toolbar entirely *(handoff §Screens/7, Toolbar)*.
 - Left to right: `Site Manager`, `Reconnect`, divider, `Quick Look`, `Edit` (both acting
   on the focused pane), divider, `Sync browsing` and `Show hidden` checkboxes, then the
@@ -274,7 +275,7 @@ observer; every frame goes through the private `Connection::request`
   `Clear`.
 - An error line may carry an inline recovery button — `2b` draws `Remount as RW` on the
   hint line, and `remount_read_write` is already a command.
-- The log records in both modes; only its surfacing differs. Single pane keeps using the
+- The log records in both views; only its surfacing differs. One pane keeps using the
   separate Transfers window.
 - Backends that cannot produce wire frames log at the `ShareBackend` seam instead, and
   the pane says which resolution it is showing rather than implying frames it does not
@@ -296,37 +297,101 @@ observer; every frame goes through the private `Connection::request`
 
 ---
 
-## XTP-E7 — Mode switch and persistence
+## XTP-E7 — Two panes as a view, not a mode
 
-#### XTP-E7-S1 — One window, two modes
+*Revised 2026-09-09, asked directly: "i am wondering whether it should be just a
+togglable view like columns/icons and share the same bookmarks".*
+
+Yes to the menu, and the answer got better since this was written: the View menu
+now exists and holds five layouts, and column view already established that a
+"layout" may be a component of its own drawing more than one listing. Two panes
+belongs in that menu, chosen the same way, and there is no case for a separate
+mode with its own switch.
+
+**But it is not a `rowLayout` value, and that is the thing worth getting right.**
+Icons and column view *replace* how a listing is drawn. Two panes does not —
+each pane still draws rows, in one of the row layouts. So the window needs both
+answers at once, and folding two panes into `rowLayout` would make
+"two panes, name-led rows" unsayable. It is a second axis, shown in the same
+menu under its own rule.
+
+That also settles the open question this document used to carry: `1g`/`1h`
+apply *per window*, not per pane, because they stay what `rowLayout` means.
+
+#### XTP-E7-S1 — The View menu's second axis
 **AC**
-- Single ↔ two pane is a View menu item plus a shortcut, and preserves the current mount,
-  cwd and selection.
-- `viewMode: 'single' | 'dual'` persists through `src/state/settings.ts` alongside
-  `rowLayout` and `theme`.
-- The transfer queue is shared: a transfer started in one mode stays visible in the other
-  — single pane surfaces it in the Transfers window (`1d`), two pane in the drawer. The
-  queue is per-app, not per-window, which it already is.
-- Row metrics in a pane list match `1f`; `1g`/`1h` remain available and apply to both panes.
+- `paneMode: 'single' | 'dual'` in `state/settings.ts`, beside `rowLayout` and
+  persisted the same way — not a member of `RowLayout`.
+- One more row in the View menu, ruled off from the layouts because it answers a
+  different question, with the tick treatment the other rows use
+  (`state/viewMenu.ts`).
+- A shortcut in `state/shortcuts.ts` continuing ⌘1–⌘5.
+- Switching preserves the focused pane's mount, cwd and selection; switching
+  back leaves the window as it was found.
+- Every row layout stays available in both, and applies to both panes at once.
+- Column view and icons in a pane are refused rather than nested: a pane is
+  narrow and a column view inside one is columns inside a column. The menu says
+  so rather than silently drawing something else — one of the few places this
+  design has to state a rule the handoff never faced.
+
+#### XTP-E7-S2 — What the toolbar becomes
+**AC**
+- Direction is spatial with two panes, so `Download` and `Upload` leave the
+  toolbar *(handoff §Screens/7, Toolbar)* and the gutter's arrows take over
+  (XTP-E3-S1).
+- `Quick Look`, `Edit`, the filter and the View menu keep working and act on the
+  focused pane.
+- `＋ Add URL` and `Transfers` are app-wide and do not move.
+- The path field belongs to the focused pane; each pane also draws its own, per
+  the handoff. One of the two is redundant and the handoff does not say which —
+  see the open questions.
 
 ---
 
-## XTP-E8 — Site Manager
+## XTP-E8 — One set of bookmarks
 
-In two-pane mode the sidebar's job moves into a dialog *(handoff §Screens/7, Toolbar)*.
-Bookmarks, keychain storage and the connection dialog are all built
-(`src/components/ConnectionDialog.tsx`, `src/state/bookmarks.ts`); this is a second
-presentation of them, not new machinery.
+*Revised 2026-09-09, same ask: "share the same bookmarks".*
 
-#### XTP-E8-S1 — The dialog
+The handoff moves the sidebar's job into a `Site Manager` dialog for the
+two-pane screens, and this document used to plan one. That was the handoff
+solving a problem it had given itself by drawing two panes as a separate
+application; with two panes as a view of *this* window, the sidebar is already
+there and already right. **The Site Manager epic is dropped** — one bookmark
+store, one connection dialog, one keychain path, and one less surface to keep in
+step.
+
+What the sidebar does not yet answer is which pane a row acts on. That is the
+whole of this epic, and it is a question the handoff never had to ask.
+
+#### XTP-E8-S1 — A bookmark opens into the focused pane
 **AC**
-- `Site Manager` lists saved sites with protocol, host and reachability, and connects the
-  remote pane to the selected one.
-- New / edit / remove reuse the existing connection dialog and bookmark store; no second
-  copy of the credential path is written.
-- `Reconnect` re-mounts the remote pane's current site and re-reads its writability, which
-  the handoff requires be re-read on reconnect *(handoff §Permissions gating)*.
-- Unreachable sites render at `opacity: .5`, matching the sidebar's existing treatment.
+- Double-clicking a bookmark mounts it into the focused pane, leaving the other
+  untouched. Focus is the same value XTP-E1-S2 already tracks and the same value
+  the toolbar's verbs read, so there is one answer to "which pane" in the window
+  rather than two.
+- The focused pane is visibly so before the click — the 1px accent inner border
+  from XTP-E1-S2 — because a bookmark that opens in the wrong half is a
+  destination the user did not choose.
+- With one pane the behaviour is what it is today, since the focused pane is the
+  only pane.
+
+#### XTP-E8-S2 — MOUNTED with two mounts
+**AC**
+- `MOUNTED` lists both, because the window holds both; the sidebar's active
+  treatment marks the focused pane's mount.
+- `activeId` stops being "the one mounted bookmark" — it is the focused pane's,
+  and `App.tsx`'s current derivation (`bookmarks().find(b => b.mounted)`) cannot
+  express that.
+- Unmounting the focused pane's share leaves the other pane alone.
+
+#### XTP-E8-S3 — Dropping onto a sidebar row, with somewhere to drop from
+**AC**
+- A drop onto a share row copies to that share's root — the E24-S2 behaviour
+  that exists — and now has an obvious source: a selection in the other pane.
+- The drop is refused, with the reason, when the target is not writable; the
+  same `mount.writable` value everything else reads (XTP-E9-S1).
+- A drop onto the row of a share that is already one of the two panes is a
+  copy into it, not a no-op.
 
 ---
 
@@ -363,7 +428,7 @@ truthful than what the protocol already offers.
   (`../xsync/crates/xsync-core/src/server.rs:4535`), so what the line can honestly say is
   known.
 
-#### XTP-E9-S3 — Listing latency in a mode that lists twice as often
+#### XTP-E9-S3 — Listing latency in a view that lists twice as often
 **AC**
 - `XsyncBackend::list_dir` opens a directory handle, pages it, then closes it
   (`crates/engine/src/backend/xsync.rs:812`). `READ_DIR_PATH` (type 98) answers the same
@@ -410,7 +475,7 @@ truthful than what the protocol already offers.
 | **XTP-M2 It has two sides** | XTP-E1-S3, XTP-E2-S1/S2/S3, XTP-E9-S1 | `~/Downloads` on the left, an `xs --server` share on the right, both listing, both status bars honest about what is writable |
 | **XTP-M3 It moves files** | XTP-E3, XTP-E4-S1/S2, XTP-E9-S5 | Select four files, hit `▶`, watch them appear as in-flight rows on the right and progress in the docked drawer; cancel one mid-flight |
 | **XTP-M4 It shows its work** | XTP-E5-S0, XTP-E5-S1, XTP-E9-S2/S3 | The Log tab shows the mount, its writability reason and every listing as it happens; a read-only upload fails with the server's own words and a `Remount as RW` button that works |
-| **XTP-M5 It is a client you keep open** | XTP-E2-S4, XTP-E6, XTP-E7, XTP-E8, XTP-E9-S4 | Trees expanded on both sides, sync browsing on, switch to single pane and back with the queue intact, reconnect from the Site Manager |
+| **XTP-M5 It is a client you keep open** | XTP-E2-S4, XTP-E6, XTP-E7, XTP-E8, XTP-E9-S4 | Trees expanded on both sides, sync browsing on, two panes chosen from the View menu and switched back with the queue intact, a bookmark opened into the focused pane |
 
 **Order.** XTP-E1 is the long pole and everything waits on it; it ships no feature, so it
 should not be split across a release. XTP-E5-S0 lives in another repo, so it starts in
@@ -429,7 +494,7 @@ each other.
 - [ ] One derived `mount.writable` gates the badge, `Edit`, the gutter arrow, rename,
       delete, new folder, drop acceptance and Quick Look's footer copy — verified by a
       test that flips it and asserts every affordance.
-- [ ] No write is attempted against a read-only remote from either mode; `writeGuarded()`
+- [ ] No write is attempted against a read-only remote from either view; `writeGuarded()`
       refuses it before IPC and the server's barrier is never reached.
 - [ ] The queue is one queue: a transfer started in two-pane mode is visible, pausable and
       retryable from single-pane mode and survives a restart.
@@ -448,7 +513,8 @@ The handoff names these as *Not yet designed*, and each one is reachable in this
 - The sync-browsing mismatch warning in the pane title band (XTP-E6-S1).
 - The disconnected / reconnecting banner, which in two-pane mode has to say *which* pane
   lost its connection — a per-pane banner, or one banner that names the side.
-- Whether the `1g` / `1h` row layouts apply per pane or to both at once (XTP-E7-S1
-  assumes both at once).
+- Whether a pane should draw its own path field when the toolbar already has one
+  for the focused pane (XTP-E7-S2). The handoff draws both, having no toolbar
+  path field to compare against.
 - What the protocol line reads for a non-xsync backend, now that it is the only place the
   transport is named in two-pane mode.

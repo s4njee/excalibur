@@ -328,10 +328,15 @@ used like filezilla".*
   `tracing` dependency and exposes no callback, channel or observer, and every frame
   goes through a private `Connection::request`. Filed against xsync as
   `integration.md` §8. (`twopane.md` XTP-E5)
-- **XTP-E6 / E7 / E8 — Sync browsing, mode switch, Site Manager.** Independent of
-  each other. The mode switch preserves mount, cwd and selection, and the queue is
-  shared across modes. Site Manager is a second presentation of the built bookmark
-  and connection machinery, not new machinery. (`twopane.md` XTP-E6)
+- **XTP-E6 / E7 / E8 — Sync browsing, the View menu entry, one set of bookmarks.**
+  Revised 2026-09-09 *(asked directly: "i am wondering whether it should be just a
+  togglable view like columns/icons and share the same bookmarks")*. Two panes is
+  chosen from the View menu beside the row layouts, but on its own axis — a pane
+  still draws rows in one of them, so folding it into `rowLayout` would make
+  "two panes, name-led rows" unsayable. Sharing the sidebar **drops the Site
+  Manager epic** the handoff implies; what replaces it is the question the handoff
+  never had to ask — which pane a bookmark opens into (the focused one).
+  (`twopane.md` XTP-E7)
 - **XTP-E9 — xsync as the two-pane transport.** The handoff's prose is SMB/NFS
   throughout ("SMB tree connect flags, NFS export options", `ro,root_squash`); this
   epic restates each requirement in xsync's terms instead. Writability from
