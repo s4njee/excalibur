@@ -38,6 +38,7 @@ import { FileList } from "./components/FileList";
 import { ColumnView } from "./components/ColumnView";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
+import { DirectoryTree } from "./components/DirectoryTree";
 import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/Toolbar";
 // The window's own chrome — the body, the list column, the scrims and sheets
@@ -132,7 +133,9 @@ import {
   resolveTheme,
   saveSetting,
   type Settings,
+  type TreeBand,
 } from "./state/settings";
+import { DEFAULT_TREE_HEIGHT } from "./state/tree";
 
 /**
  * Which layout each verb names.
@@ -203,13 +206,15 @@ export default function App(props: {
     left: createPane({
       path: self.path,
       listDir,
+      onProblem: (message) => setProblem(message),
       selection: inTauri()
         ? undefined
         : clickSelect(EMPTY_SELECTION, [], "Arrival.2016.mkv"),
     }),
-    // Held but inert: it has no mount of its own until XTP-E2 draws it, and
-    // nothing loads it, so a window still makes exactly one listing request.
-    right: createPane({ listDir }),
+    // Loaded only once two panes are drawn, so a single-pane window still makes
+    // exactly one listing request. It takes a mount of its own when a bookmark
+    // is opened into it (XTP-E8-S1), and until then reads the window's.
+    right: createPane({ listDir, onProblem: (message) => setProblem(message) }),
   };
   const [focus, setFocus] = createSignal<PaneSide>("left");
   const focused = () => panes[focus()];
@@ -428,6 +433,7 @@ export default function App(props: {
     setSettings(loaded);
     setWidths(loaded.columnWidths);
     setSplitRatio(loaded.splitRatio);
+    setTreeBand(loaded.treeBand);
     // Clamped on the way in: a pane sized on a bigger display would otherwise
     // come back wider than this window, with its left edge — and the grip on
     // it — off screen, so it could never be made smaller again.
@@ -493,6 +499,30 @@ export default function App(props: {
    * per frame.
    */
   const [splitRatio, setSplitRatio] = createSignal(DEFAULTS.splitRatio);
+  /**
+   * How tall each pane's directory tree is, `0` meaning put away (XTP-E2-S4).
+   *
+   * A signal during the drag and a setting on release, like the split beside
+   * it: a file write per pointermove is a write per frame.
+   */
+  const [treeBand, setTreeBand] = createSignal<TreeBand>(DEFAULTS.treeBand);
+  /**
+   * The band's height for one side, or `0` where there is no band.
+   *
+   * Two panes only. The handoff draws the tree in its two-pane screens alone,
+   * and a single-pane window already has the sidebar for this — a second
+   * navigator beside it would be two places to click the same folder.
+   */
+  const treeHeightOf = (side: PaneSide) =>
+    drawnPanes().length > 1 ? treeBand()[side] : 0;
+  const resizeTree = (side: PaneSide, height: number) =>
+    setTreeBand((current) => ({ ...current, [side]: height }));
+  const saveTreeBand = () => void saveSetting(prefs, "treeBand", treeBand());
+  const toggleTree = () => {
+    const side = focus();
+    resizeTree(side, treeBand()[side] > 0 ? 0 : DEFAULT_TREE_HEIGHT);
+    saveTreeBand();
+  };
   let paneRow: HTMLDivElement | undefined;
   const startSplitDrag = (event: PointerEvent) => {
     if (event.button !== 0 || !paneRow) return;
@@ -1642,6 +1672,9 @@ export default function App(props: {
         return;
       case "togglePanes":
         togglePanes();
+        return;
+      case "toggleTree":
+        toggleTree();
     }
   };
 
@@ -2875,6 +2908,21 @@ export default function App(props: {
           <span class={styles.paneTitleUri}>{mountPathOf(side.pane)}</span>
         </div>
       </Show>
+      {/* The folder tree, when the pane's band is open (XTP-E2-S4). Above the
+          list and below the title, where the handoff puts it. */}
+      <Show when={treeHeightOf(side.side) > 0}>
+        <DirectoryTree
+          rows={side.pane.tree.rows(showHidden())}
+          current={side.pane.path()}
+          height={treeHeightOf(side.side)}
+          label={`${side.side === "left" ? "Left" : "Right"} pane folders`}
+          onReveal={(target) => side.pane.tree.reveal(target)}
+          onNavigate={(target) => side.pane.goTo(target)}
+          onToggle={(target) => side.pane.tree.toggle(target)}
+          onResize={(height) => resizeTree(side.side, height)}
+          onResizeEnd={saveTreeBand}
+        />
+      </Show>
           <div class={`${styles.listColumn} ${problem() ? styles.listDimmed : ""}`}>
                 {/* Nothing mounted is not an empty directory: there is no list to
                     draw, and the one thing to offer is the way out of it (E1-S6). */}
@@ -3034,6 +3082,7 @@ export default function App(props: {
           foldersFirst: foldersFirst(),
           rowLayout: settings().rowLayout,
           paneMode: settings().paneMode,
+          treeOpen: treeHeightOf(focus()) > 0,
         })}
         onViewAction={runViewAction}
         onAddDownload={() => void openAddDownload()}

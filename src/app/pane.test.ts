@@ -31,10 +31,20 @@ const MOUNT: MountInfo = {
 };
 const emptyListing = async (): Promise<Listing> => ({ entries: [], mount: MOUNT });
 
-/** Run a body inside a reactive owner, because the pane registers cleanups. */
+/**
+ * Run a body inside a reactive owner, because the pane registers cleanups.
+ *
+ * An async body keeps the owner alive until it settles. Disposing at the first
+ * `await` — which is what returning the promise and tearing down would do —
+ * stops the pane's effects running at all, so anything that reacts to a
+ * listing arriving would silently never happen.
+ */
 function withPane<T>(run: (make: typeof createPane) => T): T {
   return createRoot((dispose) => {
     const result = run(createPane);
+    if (result instanceof Promise) {
+      return result.finally(dispose) as T;
+    }
     dispose();
     return result;
   });
@@ -131,6 +141,68 @@ describe("a pane", () => {
       await settle();
       // Twenty dropped files finishing is one relist, not twenty.
       expect(listDir.mock.calls.length).toBeLessThan(3);
+    });
+  });
+
+  it("hands its listing to its tree rather than having it fetched twice", async () => {
+    // The pane lists the folder it is in; the tree needs that folder's
+    // children too. One request, one answer — two would be two answers.
+    const listDir = vi.fn(async (): Promise<Listing> => ({
+      entries: [
+        {
+          name: "Films",
+          path: "Films",
+          kind: "dir",
+          size: 0,
+          modifiedMs: 0,
+          addedMs: null,
+          mode: null,
+          linkTarget: null,
+          kindLabel: "Folder",
+          kindCategory: "folder",
+          hidden: false,
+        },
+      ],
+      mount: MOUNT,
+    }));
+    await withPane(async (make) => {
+      const pane = make({ listDir });
+      pane.listingState.load("");
+      await settle();
+      expect(pane.tree.rows(true).map((row) => row.name)).toEqual(["Films"]);
+      expect(listDir).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("forgets its tree when the pane changes share", async () => {
+    // Every folder the tree listed was in the old share. Keeping them would
+    // draw a hierarchy from somewhere the pane no longer is.
+    const listDir = vi.fn(async (): Promise<Listing> => ({
+      entries: [
+        {
+          name: "Films",
+          path: "Films",
+          kind: "dir",
+          size: 0,
+          modifiedMs: 0,
+          addedMs: null,
+          mode: null,
+          linkTarget: null,
+          kindLabel: "Folder",
+          kindCategory: "folder",
+          hidden: false,
+        },
+      ],
+      mount: MOUNT,
+    }));
+    await withPane(async (make) => {
+      const pane = make({ listDir });
+      pane.listingState.load("");
+      await settle();
+      expect(pane.tree.rows(true)).toHaveLength(1);
+      pane.setMountId("xsync:freya.local:/mnt/other");
+      await settle();
+      expect(pane.tree.rows(true)).toHaveLength(0);
     });
   });
 

@@ -31,7 +31,8 @@ export type ViewMenuAction =
   | "layoutMono"
   | "layoutIcons"
   | "layoutColumnView"
-  | "togglePanes";
+  | "togglePanes"
+  | "toggleTree";
 
 /** The settings the menu reflects; a subset, so callers cannot pass the world. */
 export interface ViewState {
@@ -39,6 +40,8 @@ export interface ViewState {
   foldersFirst: boolean;
   rowLayout: RowLayout;
   paneMode: PaneMode;
+  /** The focused pane's tree band is open (`twopane.md` XTP-E2-S4). */
+  treeOpen: boolean;
 }
 
 /** `✓ Label` or `  Label`, so the rows line up whether or not they are on. */
@@ -104,6 +107,18 @@ export function viewMenu(view: ViewState): MenuItem<ViewMenuAction>[] {
       disabled: false,
       reason: null,
       separated: true,
+    },
+    {
+      action: "toggleTree",
+      // The focused pane's, because the band is per pane and `2b` draws both
+      // collapsed — one open beside one closed is a legitimate arrangement,
+      // and a window-wide switch could not say it.
+      label: tick(view.treeOpen, "Directory Tree"),
+      // The handoff draws the tree only in its two-pane screens, and the
+      // single-pane window already has the sidebar for this. Greyed with the
+      // reason rather than hidden, so the row can be found before it applies.
+      disabled: view.paneMode !== "dual",
+      reason: view.paneMode === "dual" ? null : "Two panes only",
     },
   ];
 }

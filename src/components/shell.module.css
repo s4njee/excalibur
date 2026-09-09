@@ -690,6 +690,75 @@
   text-transform: none;
 }
 
+/* The directory tree band (XTP-E2-S4). Fixed height set inline — it is the
+   remembered one, and `0` means the band is not drawn at all. */
+.treeBand {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--hairline-chrome);
+  background: var(--tree-bg);
+}
+
+.treeRows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* The handoff's 4px. Inside the scroller, so it shifts the rows as a block
+     rather than upsetting the virtual window's arithmetic, which measures from
+     `scrollTop` and overscans eight rows either way. */
+  padding: 4px 0;
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding-right: 10px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The folder the pane is in. The handoff's `#e8effd`, which is the same soft
+   selection `1g`'s rows use, so the two agree in dark as well as light. No
+   hover state, because nothing else in this window has one. */
+.treeRowCurrent {
+  background: var(--soft-selection-bg);
+}
+
+.treeDisclosure {
+  flex: none;
+  width: 8px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+
+.treeGlyphCurrent {
+  background: var(--tree-glyph-current);
+}
+
+.treeName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Four pixels of grab, sitting on the band's own border. */
+.treeHandle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 5px;
+  cursor: row-resize;
+}
+
 .paneGutter {
   display: flex;
   flex-direction: column;

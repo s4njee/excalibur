@@ -166,6 +166,21 @@ living in one pane instance.
   for the session; selecting a node navigates the pane.
 - This is the first tree in the app — `MoveTo.tsx:18` explicitly declined one — so it is
   a new component with its own tests rather than a generalisation of anything existing.
+- **Two panes only, and reopened from the View menu.** The handoff draws the tree in its
+  two-pane screens alone; a single-pane window already has the sidebar, and a second
+  navigator beside it would be two places to click the same folder. Nothing in the mocks
+  reopens a band collapsed to zero, so `Directory Tree` joins the View menu beside
+  `Two Panes` — it acts on the focused pane, and is greyed with `Two panes only` where
+  there is no band to open. Recorded in `docs/design-gaps.md`.
+- **The folder the pane is in comes from the pane's own listing.** `list_dir` has already
+  returned it; asking again would be a second round trip for an answer on screen, and a
+  second answer is how a tree comes to disagree with the list beside it. So the tree
+  fetches only the folders the pane has not listed, and a window costs no extra request
+  to draw one.
+- Selecting a row navigates; the selected row is the pane's folder rather than a
+  selection of the tree's own. Navigating *into* a folder reveals it — its ancestors
+  open, it does not — which is what `2a` draws, and what stops a band five rows tall
+  unfolding under the user.
 
 ---
 

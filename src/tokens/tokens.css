@@ -46,6 +46,10 @@
 
   /* Glyphs */
   --glyph-folder: #8a8f98;
+  /* The directory tree band (XTP-E2-S4): the handoff's `#fafafb` with a
+     `#7f9fe0` glyph on the folder the pane is in. */
+  --tree-bg: #fafafb;
+  --tree-glyph-current: #7f9fe0;
   /* From #a8adb5, which was 2.26:1 on the list — below even the 3:1 floor
      for non-text. Still lighter than the folder glyph, so the two remain
      distinguishable. */
@@ -164,6 +168,10 @@
 
   --glyph-folder: #7d838c;
   --glyph-file: #8a8b90;
+  /* The handoff's own dark value for the band; the current-folder glyph takes
+     the soft selection's blue, which is the one that reads on `#1f3358`. */
+  --tree-bg: #26272a;
+  --tree-glyph-current: #8fa8d8;
 
   /* `1g`'s soft selection needs its own dark values. Inheriting the light
      `#e8effd` left near-white text on a pale blue fill — the row's name

@@ -19,7 +19,8 @@
 // two panes sorted differently would be two answers to one question the
 // toolbar can only ask once (`twopane.md` XTP-E7-S1).
 
-import { createSignal, onCleanup } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, untrack } from "solid-js";
+import { createTree } from "./tree";
 import { createListing } from "../state/listing";
 import { coalesce } from "../state/refresh";
 import { EMPTY_SELECTION, type Selection } from "../state/selection";
@@ -39,6 +40,8 @@ export interface PaneOptions {
   listDir: (path: string, mount?: string) => Promise<Listing>;
   /** The browser preview opens with a row selected; the app does not. */
   selection?: Selection;
+  /** Where a folder that would not open goes: the window's banner. */
+  onProblem?: (message: string) => void;
 }
 
 export type Pane = ReturnType<typeof createPane>;
@@ -91,6 +94,30 @@ export function createPane(options: PaneOptions) {
   const goTo = (target: string) => setHistory((current) => nav.go(current, target));
   const ascend = () => goTo(nav.parent(path()));
 
+  /**
+   * The pane's directory tree (XTP-E2-S4).
+   *
+   * Pane state like the history and the selection: two panes on two shares
+   * have two trees, and a window has no answer for "which folders are open".
+   * It lists through the pane's own mount for the same reason the listing
+   * does.
+   */
+  const tree = createTree({
+    list: (target) => options.listDir(target, mountId() ?? undefined),
+    onProblem: options.onProblem,
+  });
+  // A share the pane is no longer on: everything the tree listed was in the
+  // old one. Deferred so opening the first share does not clear an empty tree.
+  createEffect(on(mountId, () => tree.reset(), { defer: true }));
+  // The folder the pane is in, handed to the tree rather than fetched twice.
+  // `path` untracked because the listing is what arrived — reading it as a
+  // dependency would file a listing under a folder the pane has since left.
+  createEffect(
+    on(listing, (current) => {
+      if (current) tree.absorb(untrack(path), current.entries);
+    }),
+  );
+
   const [filter, setFilter] = createSignal("");
   const [selection, setSelection] = createSignal<Selection>(
     options.selection ?? EMPTY_SELECTION,
@@ -110,6 +137,7 @@ export function createPane(options: PaneOptions) {
     disconnected,
     goTo,
     ascend,
+    tree,
     filter,
     setFilter,
     selection,

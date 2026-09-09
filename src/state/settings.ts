@@ -17,6 +17,7 @@ import {
   type PaneSize,
 } from "./paneSize";
 import { DEFAULT_SORT, type Sort } from "./sort";
+import { DEFAULT_TREE_HEIGHT, sanitiseHeight } from "./tree";
 import type { Prefs } from "./prefs";
 import type { PaneMode, RowLayout, SortColumn } from "./types";
 
@@ -50,6 +51,18 @@ export type DownloadProxy =
 export interface DownloadHeader {
   name: string;
   value: string;
+}
+
+/**
+ * How tall each pane's directory tree is, `0` meaning put away (XTP-E2-S4).
+ *
+ * Per pane rather than per window because the handoff persists it that way and
+ * `2b` draws both panes collapsed: one open beside one closed is a legitimate
+ * thing to arrange, and a single number could not say it.
+ */
+export interface TreeBand {
+  left: number;
+  right: number;
 }
 
 export interface Settings {
@@ -90,6 +103,8 @@ export interface Settings {
   columnWidths: Widths;
   /** The transfers pane's remembered size; `height: null` is content-height. */
   transfersPane: PaneSize;
+  /** Each pane's directory tree band, in pixels; `0` is collapsed. */
+  treeBand: TreeBand;
   sort: Sort;
 }
 
@@ -120,6 +135,7 @@ export const DEFAULTS: Settings = {
   conflictDefault: "ask",
   columnWidths: DEFAULT_WIDTHS,
   transfersPane: DEFAULT_PANE_SIZE,
+  treeBand: { left: DEFAULT_TREE_HEIGHT, right: DEFAULT_TREE_HEIGHT },
   sort: DEFAULT_SORT,
 };
 
@@ -150,6 +166,7 @@ const KEYS: Record<keyof Settings, string> = {
   // migration when they land.
   columnWidths: "columnWidths.columns",
   transfersPane: "transfersPane",
+  treeBand: "treeBand",
   sort: "sort",
 };
 
@@ -306,6 +323,16 @@ export function sanitiseField<K extends keyof Settings>(key: K, value: unknown):
       return sanitiseWidths(value) as Settings[K];
     case "transfersPane":
       return sanitisePaneSize(value) as Settings[K];
+    case "treeBand": {
+      const record = typeof value === "object" && value !== null
+        ? (value as Record<string, unknown>)
+        : {};
+      // Per side, so one bad half costs that half rather than both bands.
+      return {
+        left: sanitiseHeight(record.left),
+        right: sanitiseHeight(record.right),
+      } as Settings[K];
+    }
     case "sort":
       return sanitiseSort(value) as Settings[K];
     default: {

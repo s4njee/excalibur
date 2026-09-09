@@ -8,6 +8,29 @@ The handoff's own §"Not yet designed" list is the other half of this: those are
 things nobody has drawn *yet*. The entries here are things that were drawn, but
 only in a place that does not exist in the app yet, or not at all.
 
+## The directory tree's band, and the way back to it *(XTP-E2-S4, 2026-09-09)*
+
+The handoff draws the tree in `2a` and both panes collapsed in `2b`, and nothing
+that turns one into the other. A band collapsed to zero with no control anywhere
+is a feature the user can lose permanently, so `Directory Tree` is a row in the
+View menu, beside `Two Panes` — the app's existing home for "how this window is
+arranged". It acts on the focused pane, because the band is per pane and `2b`'s
+state has to be sayable one side at a time. Dragging the band's bottom edge
+shut does the same thing, so the gesture and the menu agree.
+
+**Two panes only.** The handoff has no tree in `1a`–`1h`, and this window
+already has a sidebar in single-pane mode: MOUNTED, FAVORITES, and the shares.
+A tree beside it would be two places to click the same folder, and it would
+change every existing window for a feature the mocks put in the two-pane view.
+The menu row is greyed rather than hidden, with `Two panes only` as its reason,
+so it can be found before it applies.
+
+**For the designer:** whether the band should scroll to the folder the pane has
+moved to, or stay where the user left it. It currently stays: the row is marked
+and the band is scrollable, but a band that jumped under the user each time they
+double-clicked in the list would be worse than one they scroll themselves. `2a`
+shows five rows and no scrollbar, so the mocks do not say.
+
 ## Two panes: what each status bar says *(XTP-E2-S2, 2026-09-09)*
 
 The handoff's two-pane bars carry a badge, counts, and capacity right-aligned —

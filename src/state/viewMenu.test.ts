@@ -6,6 +6,7 @@ const view = (over: Partial<ViewState> = {}): ViewState => ({
   foldersFirst: false,
   rowLayout: "columns",
   paneMode: "single",
+  treeOpen: false,
   ...over,
 });
 
@@ -23,6 +24,7 @@ describe("the View menu", () => {
       "layoutIcons",
       "layoutColumnView",
       "togglePanes",
+      "toggleTree",
     ]);
   });
 

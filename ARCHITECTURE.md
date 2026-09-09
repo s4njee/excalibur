@@ -165,6 +165,13 @@ touches is written down rather than implied by closure.
 `queues.ts` (the app-wide transfer queue) and `addDownload.ts` (the Add Download
 dialog) are the two done so far. More are worth doing; see the note at the end.
 
+`pane.ts` is the other shape in here: not a piece lifted out of the window but a
+thing the window *has more than one of* — a place in a share, its history, its
+selection, and its `tree.ts` (which folders the pane has listed and opened).
+Anything a second pane would need its own copy of belongs there; anything the
+toolbar can only ask once — sort, hidden files, the column widths — stays a
+window setting.
+
 ## `src/components/` — one file per component
 
 Flat, and named for what it draws. Two stylesheets are deliberately shared,
