@@ -37,6 +37,34 @@ export function remainingBytes(transfers: Transfer[]): number {
     );
 }
 
+/** Rows waiting for a worker. */
+export function queuedCount(transfers: Transfer[]): number {
+  return transfers.filter((transfer) => transfer.status === "queued").length;
+}
+
+/** Rows that stopped with an error, and are still in the queue to say so. */
+export function failedCount(transfers: Transfer[]): number {
+  return transfers.filter((transfer) => transfer.status === "failed").length;
+}
+
+/**
+ * How long the whole queue has left, in seconds (`twopane.md` XTP-E4-S2).
+ *
+ * The bytes still to move over the rate they are moving at. `null` when
+ * nothing is moving or the link is reporting nothing: an ETA computed from a
+ * rate of zero is infinite, and drawing that as a number would be a promise
+ * the queue cannot keep.
+ *
+ * Deliberately not a sum of the rows' own `etaSeconds`: those run in parallel,
+ * so adding them would over-report by the number of workers.
+ */
+export function aggregateEtaSeconds(transfers: Transfer[]): number | null {
+  const rate = aggregateRate(transfers);
+  if (rate <= 0) return null;
+  const remaining = remainingBytes(transfers);
+  return remaining <= 0 ? null : remaining / rate;
+}
+
 /**
  * A fixed-capacity ring of samples: push the newest value, drop the oldest.
  *

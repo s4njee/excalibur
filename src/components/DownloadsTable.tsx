@@ -3,7 +3,7 @@ import styles from "./downloadsTable.module.css";
 import { ContextMenu } from "./ContextMenu";
 import { visibleRange } from "../state/virtual";
 import { formatDuration, formatRate, formatSize } from "../state/format";
-import { fractionOf, originHost } from "../state/downloads";
+import { endsOf, fractionOf, originHost, progressLabel } from "../state/downloads";
 import type { NamedQueue, Transfer } from "../state/types";
 import { downloadMenu, type DownloadMenuAction } from "../state/menu";
 import { DownloadDetail } from "./DownloadDetail";
@@ -60,9 +60,22 @@ export function transferRemountable(transfer: Transfer): boolean {
  * The reference's download table: file, size, progress, speed, ETA, status.
  * Language is sans, machine values are mono and right-aligned where numeric;
  * the only actions are the row's own, in a narrow trailing column.
+ *
+ * Two column sets, one table (`twopane.md` XTP-E4-S2). The queue holds two
+ * kinds of work and the two references answer differently: for a download the
+ * far end is a URL and what matters is speed, ETA and status; for a transfer
+ * between two panes the row is *between two named places*, and the drawer's
+ * columns say which way and which file at each end. Same rows, same context
+ * menu, same virtual window — only which cells are drawn changes, so the two
+ * can never disagree about the queue itself.
  */
 export function DownloadsTable(props: {
   transfers: Transfer[];
+  /**
+   * `downloads` is the aria2 reference's set; `sites` the share browser's,
+   * drawn in the docked drawer where a transfer has two ends worth naming.
+   */
+  layout?: "downloads" | "sites";
   onPause: (id: string) => void;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
@@ -113,6 +126,9 @@ export function DownloadsTable(props: {
     }
   });
 
+  const sites = () => props.layout === "sites";
+  const grid = () => `${styles.grid} ${sites() ? styles.gridSites : ""}`;
+
   const range = () =>
     visibleRange(scrollTop(), viewport(), DOWNLOAD_ROW_HEIGHT, props.transfers.length);
   const rows = () => props.transfers.slice(range().start, range().end);
@@ -160,20 +176,36 @@ export function DownloadsTable(props: {
 
   return (
     <div class={styles.table} ref={scroller} role="grid" aria-label="Download list">
-      <div class={`${styles.grid} ${styles.head}`} role="row">
-        <span role="columnheader">File</span>
-        <span role="columnheader" class={styles.headCellNumeric}>
-          Size
-        </span>
-        <span role="columnheader">Progress</span>
-        <span role="columnheader" class={styles.headCellNumeric}>
-          Speed
-        </span>
-        <span role="columnheader" class={styles.headCellNumeric}>
-          ETA
-        </span>
-        <span role="columnheader">Status</span>
-        <span />
+      <div class={`${grid()} ${styles.head}`} role="row">
+        <Show
+          when={sites()}
+          fallback={
+            <>
+              <span role="columnheader">File</span>
+              <span role="columnheader" class={styles.headCellNumeric}>
+                Size
+              </span>
+              <span role="columnheader">Progress</span>
+              <span role="columnheader" class={styles.headCellNumeric}>
+                Speed
+              </span>
+              <span role="columnheader" class={styles.headCellNumeric}>
+                ETA
+              </span>
+              <span role="columnheader">Status</span>
+              <span />
+            </>
+          }
+        >
+          <span role="columnheader">Dir</span>
+          <span role="columnheader">Local file</span>
+          <span role="columnheader">Remote file</span>
+          <span role="columnheader" class={styles.headCellNumeric}>
+            Size
+          </span>
+          <span role="columnheader">Progress</span>
+          <span />
+        </Show>
       </div>
       <Show
         when={props.transfers.length > 0}
@@ -187,9 +219,12 @@ export function DownloadsTable(props: {
             // unknown, a clamped fraction otherwise (XDL-E2-S3).
             const fraction = fractionOf(transfer);
             const origin = originHost(transfer);
+            // Both ends, for the drawer's columns. Derived rather than read
+            // where a share row has no endpoint pair (E22-S3 is untouched).
+            const ends = () => endsOf(transfer);
             return (
               <div
-                class={`${styles.grid} ${styles.row}`}
+                class={`${grid()} ${styles.row}`}
               role="row"
               data-transfer={transfer.id}
               tabIndex={props.selectedQueue !== undefined && props.selectedQueue !== "all" && props.onReorder ? 0 : undefined}
@@ -242,14 +277,38 @@ export function DownloadsTable(props: {
                 props.onReorder(queueId, ids);
               }}
             >
-                <div class={styles.cellFile}>
-                  <div class={styles.name} title={transfer.name}>
-                    {transfer.name}
+                <Show
+                  when={sites()}
+                  fallback={
+                    <div class={styles.cellFile}>
+                      <div class={styles.name} title={transfer.name}>
+                        {transfer.name}
+                      </div>
+                      <div class={styles.origin} title={origin ?? undefined}>
+                        {origin ?? "—"}
+                      </div>
+                    </div>
+                  }
+                >
+                  {/* Which way, and the file at each end. `↑ UP` is drawn in
+                      the accent because an upload is the direction that
+                      changes somebody else's share. */}
+                  <div
+                    class={`${styles.dir} ${ends().direction === "up" ? styles.dirUp : ""}`}
+                  >
+                    {ends().direction === "up"
+                      ? "↑ UP"
+                      : ends().direction === "down"
+                        ? "↓ DOWN"
+                        : "—"}
                   </div>
-                  <div class={styles.origin} title={origin ?? undefined}>
-                    {origin ?? "—"}
+                  <div class={styles.endPath} title={ends().local ?? undefined}>
+                    {ends().local ?? "—"}
                   </div>
-                </div>
+                  <div class={styles.endPath} title={ends().remote ?? undefined}>
+                    {ends().remote ?? "—"}
+                  </div>
+                </Show>
                 <div class={`${styles.numeric} ${fraction !== null ? "" : styles.dim}`}>
                   {fraction !== null ? formatSize(transfer.bytesTotal) : "—"}
                 </div>
@@ -278,36 +337,42 @@ export function DownloadsTable(props: {
                       and no percentage — never a bar at zero claiming 0%
                       (XDL-E2-S3). */}
                   <span class={styles.percent}>
-                    {fraction === null
-                      ? formatSize(transfer.bytesDone)
-                      : `${Math.round(fraction * 100)}%`}
+                    {sites()
+                      ? progressLabel(transfer)
+                      : fraction === null
+                        ? formatSize(transfer.bytesDone)
+                        : `${Math.round(fraction * 100)}%`}
                   </span>
                 </div>
-                <div
-                  class={`${styles.numeric} ${
-                    transfer.status === "running" && transfer.rate !== null
-                      ? styles.speedActive
-                      : styles.dim
-                  }`}
-                >
-                  {transfer.status === "running" && transfer.rate !== null
-                    ? formatRate(transfer.rate)
-                    : "—"}
-                </div>
-                <div class={`${styles.numeric} ${transfer.etaSeconds !== null ? "" : styles.dim}`}>
-                  {transfer.etaSeconds !== null ? formatDuration(transfer.etaSeconds) : "—"}
-                </div>
-                <div>
-                  <span
-                    class={`${styles.badge} ${state.tone}`}
-                    title={transfer.status === "failed" ? (transfer.error ?? undefined) : undefined}
+                <Show when={!sites()}>
+                  <div
+                    class={`${styles.numeric} ${
+                      transfer.status === "running" && transfer.rate !== null
+                        ? styles.speedActive
+                        : styles.dim
+                    }`}
                   >
-                    {state.label}
-                  </span>
-                  <Show when={transfer.status === "failed" && transfer.error}>
-                    {(error) => <div class={styles.error}>{error()}</div>}
-                  </Show>
-                </div>
+                    {transfer.status === "running" && transfer.rate !== null
+                      ? formatRate(transfer.rate)
+                      : "—"}
+                  </div>
+                  <div class={`${styles.numeric} ${transfer.etaSeconds !== null ? "" : styles.dim}`}>
+                    {transfer.etaSeconds !== null ? formatDuration(transfer.etaSeconds) : "—"}
+                  </div>
+                  <div>
+                    <span
+                      class={`${styles.badge} ${state.tone}`}
+                      title={
+                        transfer.status === "failed" ? (transfer.error ?? undefined) : undefined
+                      }
+                    >
+                      {state.label}
+                    </span>
+                    <Show when={transfer.status === "failed" && transfer.error}>
+                      {(error) => <div class={styles.error}>{error()}</div>}
+                    </Show>
+                  </div>
+                </Show>
                 <div class={styles.actions}>
                   <button
                     class={styles.action}
@@ -318,7 +383,10 @@ export function DownloadsTable(props: {
                   >
                     Details
                   </button>
-                  <Show when={props.queues && props.onMoveToQueue}>
+                  {/* Queues are the download manager's idea; the drawer is
+                      about one transfer between two panes, and the row's menu
+                      still carries `Move to queue` for anyone who wants it. */}
+                  <Show when={!sites() && props.queues && props.onMoveToQueue}>
                     <select
                       class={styles.queueSelect}
                       aria-label={`Queue for ${transfer.name}`}

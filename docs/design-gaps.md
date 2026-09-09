@@ -40,10 +40,22 @@ message log is XTP-E5 and unbuilt.
 verbs live in — that was a direct ask (2026-09-07), and there are four of them
 now rather than the mock's two.
 
+**The drawer's table is the handoff's columns; the sheet keeps the aria2
+reference's.** One component with two column sets rather than two tables: same
+rows, same context menu, same virtual window. The queue holds two kinds of work
+and the references answer differently — for an HTTP download the far end is a
+URL and what matters is speed, ETA and status; for a transfer between two panes
+the row is between two named places and the direction is the first thing to
+know. Both keep this app's per-row actions, which neither mock draws, so the
+trailing column is a fixed 210px: an `auto` column that is empty in the header
+and full of buttons in the rows takes every other column out of line.
+
 **For the designer:** whether the drawer should span the sidebar as well (it
-does not, so it describes exactly the panes above it); and whether a collapsed
+does not, so it describes exactly the panes above it); whether a collapsed
 drawer should keep the failure pill visible when every other count is hidden —
-today the whole strip stays, counts and all.
+today the whole strip stays, counts and all; and whether the sheet should adopt
+the two-ended columns once E22-S3 gives every row a real endpoint pair, at which
+point the two sets differ only by Speed/ETA/Status.
 
 ## The directory tree's band, and the way back to it *(XTP-E2-S4, 2026-09-09)*
 

@@ -250,17 +250,6 @@
   padding: 3px 0;
 }
 
-/* A failure is the one count worth seeing without reading the tab (`2b`), so
-   it becomes a pill rather than the mono grey the other counts use. Only when
-   there is one: a `0` in red would cry wolf on every launch. */
-.tabCountFailed {
-  padding: 0 5px;
-  border-radius: 7px;
-  background: var(--error-chip-bg);
-  color: var(--badge-error-text);
-  font-weight: 600;
-}
-
 /* CATEGORIES as a tab strip (XDL-E2-S1). Under the header rather than in it:
    the header's controls act on the queue, and these choose which queue you
    are looking at. */
@@ -301,6 +290,17 @@
   font-family: var(--font-mono);
   font-size: 9.5px;
   color: var(--text-tertiary);
+}
+
+/* A failure is the one count worth seeing without reading the tab (`2b`), so
+   it becomes a pill rather than the mono grey the other counts use. Only when
+   there is one: a `0` in red would cry wolf on every launch. */
+.tabCountFailed {
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--error-chip-bg);
+  color: var(--badge-error-text);
+  font-weight: 600;
 }
 
 @keyframes indeterminate-slide {

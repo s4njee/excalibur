@@ -3,6 +3,7 @@ import {
   DOWNLOAD_CATEGORIES,
   categorize,
   countByCategory,
+  endsOf,
   outstanding,
   downloadUrlLines,
   filterByCategory,
@@ -234,5 +235,58 @@ describe("whether the queue still owes work", () => {
 
   it("is false for an empty queue", () => {
     expect(outstanding([])).toBe(false);
+  });
+});
+
+describe("a transfer's two ends", () => {
+  const share = (over: Partial<Transfer> = {}): Transfer => ({
+    ...row("a", "running"),
+    from: undefined,
+    to: undefined,
+    ...over,
+  });
+
+  it("reads the endpoints when a row has them", () => {
+    expect(endsOf(row("a", "running"))).toEqual({
+      local: "/local/a",
+      remote: "remote/a",
+      direction: "down",
+    });
+  });
+
+  it("names an HTTP row's URL as its far end", () => {
+    const download = share({
+      direction: null,
+      from: { kind: "http", url: "https://example.test/a.iso" },
+      to: { kind: "local", path: "/Users/dorian/Downloads" },
+    });
+    expect(endsOf(download)).toEqual({
+      local: "/Users/dorian/Downloads",
+      remote: "https://example.test/a.iso",
+      direction: "down",
+    });
+  });
+
+  it("derives them from the direction for a share row that has none", () => {
+    // The case that matters today: `enqueue_uploads` and `enqueue_downloads`
+    // set `from`/`to` to `None`, and giving every row an endpoint pair is
+    // E22-S3. The direction still says which path is which.
+    expect(endsOf(share({ direction: "up", sourcePath: "/local/a", destPath: "Movies/a" }))).toEqual(
+      { local: "/local/a", remote: "Movies/a", direction: "up" },
+    );
+    expect(endsOf(share({ direction: "down", sourcePath: "Movies/a", destPath: "/local/a" }))).toEqual(
+      { local: "/local/a", remote: "Movies/a", direction: "down" },
+    );
+  });
+
+  it("names neither end rather than guessing", () => {
+    // A row with no endpoints and no direction says nothing about where its
+    // bytes are going, and the cell draws a dash rather than a path that may
+    // be the wrong way round.
+    expect(endsOf(share({ direction: null }))).toEqual({
+      local: null,
+      remote: null,
+      direction: null,
+    });
   });
 });

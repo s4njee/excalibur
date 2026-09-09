@@ -295,6 +295,22 @@ docked to the bottom and there is no tab strip. The queue itself does not change
   `Direction::{Up,Down}`; the `from`/`to: Endpoint` change that gives a row two named
   ends is E22-S3, untouched (`backlog.md:107`). This story either lands after it or
   renders source and destination from the pane pair that created the row and says so.
+- **Taken the second way.** `endsOf` reads the endpoint pair where there is one — HTTP
+  rows have had one since XDL — and derives the two ends from `direction` where there is
+  not, which is the same fallback `originHost` has always made. A row that names neither
+  gets a dash rather than a path that might be the wrong way round.
+- **Two column sets, one table.** `layout="sites"` in the drawer, `"downloads"` in the
+  sheet: same rows, same context menu, same virtual window, different cells. The queue
+  holds two kinds of work and the two references answer differently — for a download the
+  far end is a URL and what matters is speed, ETA and status; for a transfer between two
+  panes the row is between two named places. The trailing actions column is a fixed
+  width, because an `auto` that is empty in the header and full of buttons in the rows
+  puts every column out of line with its own heading.
+- The row's queue picker is dropped in the drawer — queues are the download manager's
+  idea, and the row's menu still carries `Move to queue`.
+- The footer's counts and ETA are shared with the sheet: they are better numbers there
+  too. The ETA is bytes-remaining over aggregate rate, not a sum of the rows' own — those
+  run in parallel, so adding them over-reports by the number of workers.
 
 ---
 

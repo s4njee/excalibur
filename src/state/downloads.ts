@@ -3,7 +3,8 @@
 // signal rather than a second store. The queue is the app's and every window
 // sees the same rows; the *selected category* is the window's, like the path.
 
-import type { Transfer, TransferStatus } from "./types";
+import { formatRate, formatSize } from "./format";
+import type { Transfer, TransferDirection, TransferStatus } from "./types";
 
 /** The reference's five groups, in its order. */
 export type DownloadCategory = "all" | "downloading" | "paused" | "completed" | "failed";
@@ -189,6 +190,72 @@ export function originHost(transfer: Transfer): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * What the drawer's progress cell reads (`twopane.md` XTP-E4-S2).
+ *
+ * The handoff's "67% · 112 MB/s", and the word `queued` for a row that has not
+ * started — an empty track at 0% reads as a transfer that has stalled, which
+ * is a different and worse thing to believe. A running row without a rate yet
+ * shows the percentage alone rather than waiting for one.
+ */
+export function progressLabel(transfer: Transfer): string {
+  if (transfer.status === "queued") return "queued";
+  const fraction = fractionOf(transfer);
+  // No total, so no percentage: the bytes that have landed are all this row
+  // can honestly claim (XDL-E2-S3's rule, not a second one).
+  if (fraction === null) return formatSize(transfer.bytesDone);
+  const percent = `${Math.round(fraction * 100)}%`;
+  if (transfer.status !== "running" || transfer.rate === null) return percent;
+  return `${percent} · ${formatRate(transfer.rate)}`;
+}
+
+/**
+ * A row's two ends, named (`twopane.md` XTP-E4-S2).
+ *
+ * The drawer's table gives a transfer a column per end, because with two panes
+ * a transfer is *between* two places the user is looking at and "which file"
+ * is only half the question.
+ *
+ * `Transfer` still carries `direction` and two bare paths for share rows —
+ * `from`/`to` are set only by the HTTP route, and giving every row an endpoint
+ * pair is E22-S3 (`backlog.md:107`), untouched. So the ends are read from the
+ * endpoints where they exist and derived from the direction where they do not,
+ * which is the same fallback `originHost` above already makes. Nothing is
+ * invented: a row that names neither gets `null` and the cell draws a dash.
+ */
+export interface TransferEnds {
+  /** The path on this machine. */
+  local: string | null;
+  /** The path on the other side: in the share, or the URL it came from. */
+  remote: string | null;
+  /** Which way the bytes move, for the direction cell. */
+  direction: TransferDirection | null;
+}
+
+export function endsOf(transfer: Transfer): TransferEnds {
+  const from = transfer.from;
+  const to = transfer.to;
+  if (from && to) {
+    const direction: TransferDirection | null =
+      from.kind === "local" ? "up" : to.kind === "local" ? "down" : null;
+    return { local: pathOf(from.kind === "local" ? from : to), remote: pathOf(from.kind === "local" ? to : from), direction };
+  }
+  // Legacy share rows: the direction says which of the two paths is which.
+  switch (transfer.direction) {
+    case "up":
+      return { local: transfer.sourcePath, remote: transfer.destPath, direction: "up" };
+    case "down":
+      return { local: transfer.destPath, remote: transfer.sourcePath, direction: "down" };
+    default:
+      return { local: null, remote: null, direction: null };
+  }
+}
+
+/** One endpoint as a line of text: a path, or the URL an HTTP row came from. */
+function pathOf(endpoint: NonNullable<Transfer["from"]>): string {
+  return endpoint.kind === "http" ? endpoint.url : endpoint.path;
 }
 
 /**

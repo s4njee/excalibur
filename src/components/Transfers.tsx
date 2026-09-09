@@ -5,8 +5,16 @@ import { DownloadsTable } from "./DownloadsTable";
 import { Sparkline } from "./Sparkline";
 import { filterByCategory, type DownloadCategory } from "../state/downloads";
 import { resized, resizedDrawer, type PaneSize } from "../state/paneSize";
-import { activeCount, aggregateRate, pushSample, remainingBytes } from "../state/throughput";
-import { formatRate, formatSize } from "../state/format";
+import {
+  activeCount,
+  aggregateEtaSeconds,
+  aggregateRate,
+  failedCount,
+  pushSample,
+  queuedCount,
+  remainingBytes,
+} from "../state/throughput";
+import { formatDuration, formatRate, formatSize } from "../state/format";
 import { transferMenu, type TransferMenuAction } from "../state/transferMenu";
 import type { Transfer } from "../state/types";
 import type { NamedQueue } from "../state/types";
@@ -313,6 +321,9 @@ export function Transfers(props: {
 
   const table = () => (
     <DownloadsTable
+      // The drawer names both ends of a transfer, because with two panes the
+      // row is *between* two places the user is looking at (XTP-E4-S2).
+      layout={props.docked ? "sites" : "downloads"}
       transfers={queueTransfers()}
       onPause={props.onPause}
       onCancel={props.onCancel}
@@ -335,10 +346,22 @@ export function Transfers(props: {
             active rows; the connection count is the engine's and unplumbed
             to the row (XD-E2-S4), so the footer says nothing rather than
             invent one (XDL-E2-S4). */}
-        <span class={styles.footerMono}>{activeCount(props.transfers)} active</span>
+        {/* What the queue is doing, in one line: the handoff's
+            "1 active · 1 queued · 1 failed" (XTP-E4-S2). Failed is here as
+            well as in its tab because a footer read at a glance is where a
+            silent failure would otherwise sit unnoticed. */}
+        <span class={styles.footerMono}>
+          {activeCount(props.transfers)} active · {queuedCount(props.transfers)} queued ·{" "}
+          {failedCount(props.transfers)} failed
+        </span>
         <span class={styles.footerMono}>
           {formatSize(remainingBytes(props.transfers))} remaining
         </span>
+        {/* Absent rather than "—" while nothing is moving: an ETA is a promise
+            about a rate, and there is no rate to make it from. */}
+        <Show when={aggregateEtaSeconds(props.transfers)}>
+          {(eta) => <span class={styles.footerMono}>ETA {formatDuration(eta())}</span>}
+        </Show>
       </span>
       <Show when={aggregate() > 0}>
         <span class={styles.aggregate}>{formatRate(aggregate())} aggregate</span>

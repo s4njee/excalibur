@@ -25,7 +25,7 @@ const settle = () => new Promise((done) => setTimeout(done, 0));
 /** The window's transfer subscriber, so a test can push a row through. */
 let announce: ((transfer: Transfer) => void) | null = null;
 
-function row(id: string, status: TransferStatus): Transfer {
+function row(id: string, status: TransferStatus, over: Partial<Transfer> = {}): Transfer {
   return {
     id,
     direction: "down",
@@ -42,7 +42,13 @@ function row(id: string, status: TransferStatus): Transfer {
     error: null,
     queuedAtMs: 1,
     mount: "smb:nas.local:media",
+    ...over,
   };
+}
+
+/** A share transfer as the engine actually makes one: no endpoint pair. */
+function share(id: string, status: TransferStatus, over: Partial<Transfer> = {}): Transfer {
+  return row(id, status, { from: undefined, to: undefined, ...over });
 }
 
 async function open(options: { prefs?: Prefs; queue?: Transfer[] } = {}) {
@@ -250,5 +256,105 @@ describe("a failure while the queue is on screen", () => {
       tab(id)?.querySelector("[class*='tabCountFailed']") !== undefined;
     expect(pill("failed")).toBe(true);
     expect(pill("paused")).toBe(false);
+  });
+});
+
+describe("the drawer's queue table (XTP-E4-S2)", () => {
+  /** The queue table's own headers; the file lists above have theirs too. */
+  const headers = () =>
+    [
+      ...(host
+        .querySelector('[role="grid"][aria-label="Download list"]')
+        ?.querySelectorAll<HTMLElement>('[role="columnheader"]') ?? []),
+    ].map((cell) => cell.textContent ?? "");
+  const cells = (id: string) =>
+    [...(host.querySelector(`[data-transfer="${id}"]`)?.children ?? [])].map(
+      (cell) => cell.textContent ?? "",
+    );
+
+  it("names both ends of a transfer, which the sheet's columns do not", async () => {
+    await open({ queue: [share("a", "running")] });
+    await openQueue();
+    expect(headers()).toContain("Speed");
+    expect(headers()).not.toContain("Remote file");
+    await twoPanes();
+    expect(headers()).toEqual(["Dir", "Local file", "Remote file", "Size", "Progress"]);
+  });
+
+  it("says which way, and which file at each end", async () => {
+    // A share row carries no endpoint pair — that is E22-S3 — so the two
+    // columns are derived from the direction the row does carry.
+    await open({
+      queue: [
+        share("up", "running", {
+          direction: "up",
+          sourcePath: "/Users/dorian/notes.txt",
+          destPath: "Movies/notes.txt",
+        }),
+      ],
+    });
+    await twoPanes();
+    await openQueue();
+    expect(cells("up")[0]).toBe("↑ UP");
+    expect(cells("up")[1]).toBe("/Users/dorian/notes.txt");
+    expect(cells("up")[2]).toBe("Movies/notes.txt");
+  });
+
+  it("turns the arrow round for a download", async () => {
+    await open({
+      queue: [
+        share("down", "running", {
+          direction: "down",
+          sourcePath: "Movies/a.mkv",
+          destPath: "/Users/dorian/a.mkv",
+        }),
+      ],
+    });
+    await twoPanes();
+    await openQueue();
+    expect(cells("down")[0]).toBe("↓ DOWN");
+    expect(cells("down")[1]).toBe("/Users/dorian/a.mkv");
+    expect(cells("down")[2]).toBe("Movies/a.mkv");
+  });
+
+  it("reads the rate beside the percentage", async () => {
+    await open({
+      queue: [share("a", "running", { bytesDone: 67, bytesTotal: 100, rate: 112_000_000 })],
+    });
+    await twoPanes();
+    await openQueue();
+    expect(cells("a")[4]).toContain("67% · 112 MB/s");
+  });
+
+  it("says a queued row is queued rather than drawing it at nought", async () => {
+    // An empty track reading "0%" is a transfer that has stalled, which is a
+    // different and worse thing to believe.
+    await open({ queue: [share("a", "queued")] });
+    await twoPanes();
+    await openQueue();
+    expect(cells("a")[4]).toContain("queued");
+    expect(cells("a")[4]).not.toContain("0%");
+  });
+
+  it("counts the queue and how long it has left, in the footer", async () => {
+    await open({
+      queue: [
+        share("a", "running", { bytesDone: 0, bytesTotal: 100, rate: 25 }),
+        share("b", "queued"),
+        share("c", "failed"),
+      ],
+    });
+    await twoPanes();
+    await openQueue();
+    const footer = host.querySelector("[class*='footer']")?.textContent ?? "";
+    expect(footer).toContain("1 active · 1 queued · 1 failed");
+    expect(footer).toContain("ETA 4s");
+  });
+
+  it("has no ETA to give while nothing is moving", async () => {
+    await open({ queue: [share("a", "queued")] });
+    await twoPanes();
+    await openQueue();
+    expect(host.querySelector("[class*='footer']")?.textContent ?? "").not.toContain("ETA");
   });
 });
