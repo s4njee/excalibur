@@ -82,6 +82,15 @@ export function FileList(props: {
   onDragOut?: (entry: Entry) => void;
   /** Which of the handoff's three row treatments to draw (E8-S3/S4). */
   layout: RowLayout;
+  /**
+   * Rows that are still arriving (XTP-E3-S3).
+   *
+   * A file mid-transfer is drawn in the destination before it exists there,
+   * because the alternative is a folder that stays empty while something is
+   * obviously happening. It becomes an ordinary row the moment the listing
+   * knows about it, which needs no relist.
+   */
+  inFlight?: (path: string) => boolean;
 }) {
   // Every row in a layout is the same height, which is what lets the virtual
   // window be arithmetic rather than measurement — but the height differs
@@ -565,7 +574,9 @@ export function FileList(props: {
                   <div
                     class={`${styles.row} ${layoutClass()} ${
                       selected() ? styles.rowSelected : ""
-                    } ${entry.hidden ? styles.rowHidden : ""} ${
+                    } ${props.inFlight?.(entry.path) ? styles.rowInFlight : ""} ${
+                      entry.hidden ? styles.rowHidden : ""
+                    } ${
                       props.dropTarget?.folder === entry.path ? styles.rowDropTarget : ""
                     }`}
                     data-path={entry.path}
@@ -633,7 +644,12 @@ export function FileList(props: {
                         </Show>
                         <Show when={columns().modified}>
                           <div class={styles.metaCell} role="gridcell">
-                            {formatModified(entry.modifiedMs)}
+                            {/* There is no mtime yet — the file has not been
+                                written — so the cell says what is happening
+                                rather than a dash that means "unknown". */}
+                            {props.inFlight?.(entry.path)
+                              ? "Transferring…"
+                              : formatModified(entry.modifiedMs)}
                           </div>
                         </Show>
                         <Show when={columns().kind}>

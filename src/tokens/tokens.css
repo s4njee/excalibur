@@ -65,6 +65,9 @@
   --selection-text: #ffffff;
   --selection-soft-bg: #e8effd;
   --selection-soft-text: #4a6ba8;
+  /* A row for a file that is arriving (XTP-E3-S3). The handoff's `#fafafb`:
+     barely off the list, because it is a real row in a moment. */
+  --row-arriving-bg: #fafafb;
 
   /* Sidebar */
   --sidebar-active-bg: #dfe7fb;
@@ -138,6 +141,7 @@
   --toolbar-bg: #2a2b2e;
   --sidebar-bg: #26272a;
   --list-bg: #1e1f21;
+  --row-arriving-bg: #242528;
   --statusbar-bg: #2a2b2e;
   --field-bg: #1c1d1f;
   --control-bg: #35363a;

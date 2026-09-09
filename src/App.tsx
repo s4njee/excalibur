@@ -59,6 +59,7 @@ import type {
   MountInfo,
   RowLayout,
   Theme,
+  Transfer,
 } from "./state/types";
 import * as nav from "./state/navigation";
 import { sortEntries, toggle } from "./state/sort";
@@ -2404,11 +2405,81 @@ export default function App(props: {
     return sortEntries(remaining, sort(), foldersFirst());
   };
 
+  /**
+   * The transfers landing in one pane's directory right now (XTP-E3-S3).
+   *
+   * `direction` decides which space `destPath` is in, because the two commands
+   * disagree on purpose: an upload's destination is share-relative on its
+   * `mount`, and a download's is a local absolute folder — where `mount` names
+   * where the *sources* were, not where they are going.
+   */
+  const landingIn = (target: Pane): Transfer[] => {
+    const parentOf = (candidate: string) => {
+      const cut = candidate.lastIndexOf("/");
+      return cut === -1 ? "" : candidate.slice(0, cut);
+    };
+    const mine = target.mountId() ?? activeMountId();
+    return transfers().filter((transfer) => {
+      if (transfer.status !== "running" && transfer.status !== "queued") return false;
+      const parent = parentOf(transfer.destPath);
+      if (transfer.direction === "up") {
+        return (transfer.mount ?? null) === mine && parent === target.path();
+      }
+      return isLocalPane(target) && parent === absoluteIn(target, target.path());
+    });
+  };
+
+  /**
+   * A row for a file that is on its way but not there yet.
+   *
+   * Size is the bytes that have arrived, which is the one number that is true
+   * of a partial file; there is no mtime because it has not been written yet,
+   * and claiming one would be inventing it.
+   */
+  const inFlightRows = (target: Pane): Entry[] =>
+    landingIn(target).map((transfer) => ({
+      name: transfer.name,
+      path: target.path() === "" ? transfer.name : `${target.path()}/${transfer.name}`,
+      kind: "file" as const,
+      size: transfer.bytesDone,
+      modifiedMs: null,
+      addedMs: null,
+      mode: null,
+      linkTarget: null,
+      kindLabel: "Transferring",
+      kindCategory: "other" as const,
+      hidden: false,
+    }));
+
   /** What one pane draws: its own listing and filter, the window's own rules. */
-  const entriesOf = (target: Pane) => {
+  const listedIn = (target: Pane) => {
     const data = target.listing();
     return data ? visibleOf(data.entries, target.filter()) : [];
   };
+
+  /**
+   * The arriving rows a pane still needs to draw itself.
+   *
+   * A file the server has already published is a real row: it stops being
+   * in-flight the moment the listing knows about it, which is what makes the
+   * change to an ordinary row need no relist. Both the merge below and the
+   * marker the list styles by read *this*, so a row cannot be drawn while the
+   * other says it is finished.
+   */
+  const pendingIn = (target: Pane, listed = listedIn(target)) => {
+    const known = new Set(listed.map((entry) => entry.name));
+    return inFlightRows(target).filter((entry) => !known.has(entry.name));
+  };
+
+  const entriesOf = (target: Pane) => {
+    const listed = listedIn(target);
+    const pending = pendingIn(target, listed);
+    return pending.length === 0 ? listed : [...listed, ...pending];
+  };
+
+  /** Which of a pane's rows are still arriving, for the list to draw them so. */
+  const inFlightPaths = (target: Pane) =>
+    new Set(pendingIn(target).map((entry) => entry.path));
   const entries = createMemo(() => entriesOf(focused()));
 
   /**
@@ -2808,6 +2879,7 @@ export default function App(props: {
                   <FileList
                     layout={settings().rowLayout}
                     entries={entriesOf(side.pane)}
+                  inFlight={(path) => inFlightPaths(side.pane).has(path)}
                     selected={side.pane.selected}
                     onSelect={select}
                     onBand={selectBand}

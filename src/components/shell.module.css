@@ -860,6 +860,20 @@
   color: var(--selection-text);
 }
 
+/* A row for a file that is on its way but not there yet (XTP-E3-S3). Dimmer
+   than a real row and with a dashed glyph, because it is a promise rather than
+   a file — it becomes an ordinary row when the listing catches up. */
+.rowInFlight {
+  background: var(--row-arriving-bg);
+  color: var(--text-secondary);
+}
+
+.rowInFlight .fileGlyph,
+.rowInFlight .folderGlyph {
+  border: 1px dashed var(--accent);
+  background: none;
+}
+
 .rowHidden {
   opacity: 0.55;
 }
