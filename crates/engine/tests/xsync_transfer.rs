@@ -52,7 +52,7 @@ impl BackendSource for Export {
 }
 
 async fn export(xs: &str, root: &Path, writable: bool) -> Arc<Export> {
-    let backend = XsyncBackend::connect_local(xs, root.to_str().unwrap(), !writable)
+    let backend = XsyncBackend::connect_local(xs, root.to_str().unwrap(), !writable, None)
         .await
         .expect("mount the export");
     Arc::new(Export {

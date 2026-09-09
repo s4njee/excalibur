@@ -35,18 +35,21 @@ const LINES: LogLine[] = [
     category: "command",
     text: "mount -t nfs4 -o sec=krb5p 10.0.0.4:/export/backups",
     mount: "nfs:10.0.0.4",
+    resolution: "verb",
   },
   {
     at: Date.parse("2026-08-31T09:22:41Z"),
     category: "response",
     text: "OK · export flags ro,root_squash,no_subtree_check",
     mount: "nfs:10.0.0.4",
+    resolution: "verb",
   },
   {
     at: Date.parse("2026-08-31T09:22:44Z"),
     category: "error",
     text: "upload rejected — EROFS on /export/backups/patch-notes.txt",
     mount: "nfs:10.0.0.4",
+    resolution: "verb",
   },
   {
     at: Date.parse("2026-08-31T09:22:44Z"),
@@ -54,6 +57,7 @@ const LINES: LogLine[] = [
     text: "export is mounted read-only",
     action: "remountRw",
     mount: "nfs:10.0.0.4",
+    resolution: "verb",
   },
 ];
 
@@ -174,6 +178,17 @@ describe("the message log", () => {
     expect(pane()?.textContent).toContain("not protocol frames");
   });
 
+  it("says so when the lines are frames off the wire", async () => {
+    // An xsync session is tapped frame by frame (XTP-E5-S0), and the note is
+    // what tells the reader the difference.
+    await open({
+      lines: [{ ...LINES[0]!, resolution: "frame" }],
+    });
+    await openLog();
+    expect(pane()?.textContent).toContain("xsync protocol frames");
+    expect(pane()?.textContent).not.toContain("not protocol frames");
+  });
+
   it("quotes the server verbatim", async () => {
     await open();
     await openLog();
@@ -199,6 +214,7 @@ describe("the message log", () => {
       at: Date.parse("2026-08-31T09:23:00Z"),
       category: "status",
       text: "mounted read-write",
+      resolution: "verb",
     });
     await settle();
     expect(texts().some((text) => text.includes("mounted read-write"))).toBe(true);

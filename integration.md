@@ -175,10 +175,10 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
   (`xsync` `0851e6d`): `Client::from_split_tapped` installs an
   `Fn(Direction, id, &V3Message)` at the send and at the reader, armed before
   the opening handshake, handed a borrow rather than a copy because a
-  `V3Message` can carry a read's payload. **What remains** is Excalibur's
-  `XsyncBackend` passing one in and turning frames into `LogLine`s, at which
-  point the pane's `Engine operations — not protocol frames` note becomes
-  conditional on which backend the mount is.
+  `V3Message` can carry a read's payload. Excalibur installs one per xsync
+  mount, in the shell's connector where the client is built; the engine turns
+  frames into `LogLine`s at frame resolution, minus the data plane, and the
+  pane's note follows the lines it is showing.
 - **Still missing:** `Cancel` (type 18) is defined and the server handles it, but
   the client crate offers no way to send one.
 - **Current state before that.** Neither existed. `xsync-client` has no `tracing` or `log`

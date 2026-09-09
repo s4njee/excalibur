@@ -12,9 +12,11 @@ use excalibur_engine::backend::nfs::{self, Identity, NfsBackend, NfsTarget};
 use excalibur_engine::backend::sftp::{Credential, SftpBackend, SftpTarget};
 #[cfg(feature = "smb")]
 use excalibur_engine::backend::smb::{SmbBackend, SmbTarget};
-use excalibur_engine::backend::xsync::{SshTarget, XsyncBackend};
+use excalibur_engine::backend::xsync::{self, SshTarget, XsyncBackend};
 use excalibur_engine::backend::{Access, ConnectionSpec, Protocol, ShareBackend};
-use excalibur_engine::{hostkeys, Connector, EngineError, KnownHosts, Result, SecretStore, Trust};
+use excalibur_engine::{
+    hostkeys, Connector, EngineError, KnownHosts, MessageLog, Result, SecretStore, Trust,
+};
 
 use crate::util::whoami;
 
@@ -29,6 +31,12 @@ pub(crate) struct ProtocolConnector {
     pub(crate) known_hosts: KnownHosts,
     /// Where a stored password comes from. Read here, never in the window.
     pub(crate) secrets: Arc<dyn SecretStore>,
+    /// The app's message log, for the one protocol that can show its frames.
+    ///
+    /// Shared with the session manager rather than owned by it, because a tap
+    /// has to be installed *as the client is built* — before the opening
+    /// handshake — and that happens here (`twopane.md` XTP-E5-S1).
+    pub(crate) log: Arc<MessageLog>,
 }
 
 #[async_trait]
@@ -84,7 +92,15 @@ impl Connector for ProtocolConnector {
                     known_hosts: self.known_hosts.path(),
                     rsh: None,
                 };
-                let backend = XsyncBackend::connect_ssh(&target, &spec.share).await?;
+                // Frame resolution for xsync alone: the tap is its client's,
+                // and the other protocols have no frames to show. Their mounts
+                // keep the verb lines every backend records.
+                let backend = XsyncBackend::connect_ssh(
+                    &target,
+                    &spec.share,
+                    Some(xsync::frame_tap(Arc::clone(&self.log), spec.id.clone())),
+                )
+                .await?;
                 Ok(Arc::new(backend))
             }
             // `share` is the folder and `host` is empty: a folder on this

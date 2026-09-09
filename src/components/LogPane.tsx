@@ -1,6 +1,6 @@
 import { For, Show, createEffect, onMount } from "solid-js";
 import styles from "./transfers.module.css";
-import { categoryLabel, formatLogTime } from "../state/log";
+import { categoryLabel, formatLogTime, resolutionNote } from "../state/log";
 import type { LogAction, LogLine } from "../state/types";
 
 /**
@@ -51,13 +51,16 @@ export function LogPane(props: {
       ref={scroller}
       onScroll={() => (stick = atBottom())}
     >
-      {/* What these lines are. The design's stream is per protocol frame;
-          `xsync-client` exposes no tap (XTP-E5-S0, in another repo) and SMB,
-          NFS and SFTP have none to expose, so these are engine verbs. A pane
-          that let a reader believe they were seeing the wire would be worse
-          than one that says which they are seeing. */}
-      <div class={styles.logResolution} title="A frame-level log needs a tap on the xsync client (XTP-E5-S0)">
-        Engine operations — not protocol frames
+      {/* What these lines are. xsync's client has a frame tap (XTP-E5-S0) and
+          the other protocols have no frames to expose, so a window with both
+          kinds of mount open holds both kinds of line. A pane that let a
+          reader believe they were seeing the wire would be worse than one that
+          says which they are seeing. */}
+      <div
+        class={styles.logResolution}
+        title="xsync sessions are logged frame by frame; every other protocol a verb at a time"
+      >
+        {resolutionNote(props.lines)}
       </div>
       <Show
         when={props.lines.length > 0}

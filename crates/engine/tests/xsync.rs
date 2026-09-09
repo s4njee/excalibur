@@ -6,10 +6,13 @@
 //! anyone who has not built it.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use excalibur_engine::backend::xsync::XsyncBackend;
+use excalibur_engine::backend::xsync::{self, XsyncBackend};
 use excalibur_engine::backend::CasOutcome;
-use excalibur_engine::{EngineError, EntryKind, ShareBackend, WriteMode};
+use excalibur_engine::{EngineError, EntryKind, LogCategory, MessageLog, ShareBackend, WriteMode};
+use xsync_client::{Access, Direction};
+use xsync_core::protocol_v3::V3Message;
 
 /// The `xs` binary to serve with, or `None` to skip.
 fn xs_binary() -> Option<String> {
@@ -34,7 +37,7 @@ async fn lists_reads_and_writes_a_real_export() {
         return;
     };
     let root = share();
-    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false, None)
         .await
         .expect("mount the export");
 
@@ -107,7 +110,7 @@ async fn a_read_only_export_refuses_writes_and_says_why() {
         return;
     };
     let root = share();
-    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), true)
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), true, None)
         .await
         .expect("mount the export read-only");
 
@@ -141,7 +144,7 @@ async fn the_namespace_mutations_work_against_a_real_server() {
         return;
     };
     let root = share();
-    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false, None)
         .await
         .expect("mount the export");
 
@@ -210,7 +213,7 @@ async fn a_recursive_remove_clears_a_nested_tree() {
         return;
     };
     let root = share();
-    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false, None)
         .await
         .expect("mount the export");
 
@@ -240,7 +243,7 @@ async fn a_guarded_write_is_atomic_and_refuses_a_file_that_moved() {
         return;
     };
     let root = share();
-    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false, None)
         .await
         .expect("mount the export");
 
@@ -307,7 +310,7 @@ async fn the_mount_facts_a_listing_carries_include_capacity() {
         return;
     };
     let root = share();
-    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false)
+    let backend = XsyncBackend::connect_local(&xs, root.path().to_str().unwrap(), false, None)
         .await
         .expect("mount the export");
 
@@ -325,4 +328,166 @@ async fn the_mount_facts_a_listing_carries_include_capacity() {
     // only available from its own call is a capacity nothing ever shows.
     let listing = backend.list_dir("").await.expect("list the root");
     assert_eq!(listing.mount.capacity, Some(mounted));
+}
+
+/// The frames one session wrote to a log, newest last.
+fn frame_lines(log: &MessageLog) -> Vec<String> {
+    log.lines().into_iter().map(|line| line.text).collect()
+}
+
+#[tokio::test]
+async fn the_frame_tap_records_the_mount_exchange() {
+    // XTP-E5-S1 at frame resolution: this is the design's own example of what
+    // the log is for — "mount command and its export flags".
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let log = Arc::new(MessageLog::new());
+    let backend = XsyncBackend::connect_local(
+        &xs,
+        root.path().to_str().unwrap(),
+        false,
+        Some(xsync::frame_tap(Arc::clone(&log), "media".to_owned())),
+    )
+    .await
+    .expect("mount the export");
+    let _ = backend.list_dir("").await.expect("list the root");
+
+    let lines = frame_lines(&log);
+    assert!(
+        lines.iter().any(|line| line.contains("Mount")),
+        "the request: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("MountInfo rw")),
+        "and what the server granted: {lines:?}"
+    );
+    // Every line is attributed to the mount it came from, so a pane showing
+    // one share's log can say so.
+    assert!(log
+        .lines()
+        .iter()
+        .all(|line| line.mount.as_deref() == Some("media")));
+}
+
+#[tokio::test]
+async fn the_frame_tap_leaves_the_data_plane_out() {
+    // One transfer is thousands of `Read`/`ReadData` pairs. A five-hundred
+    // line ring holding a fifth of a second of a copy is not a log anybody can
+    // read, and the verb-level log omits the same traffic for the same reason.
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let log = Arc::new(MessageLog::new());
+    let backend = XsyncBackend::connect_local(
+        &xs,
+        root.path().to_str().unwrap(),
+        false,
+        Some(xsync::frame_tap(Arc::clone(&log), "media".to_owned())),
+    )
+    .await
+    .expect("mount the export");
+
+    let start = log.lines().len();
+    for offset in 0..5 {
+        let _ = backend
+            .read_range("Arrival.2016.mkv", offset * 8, 8)
+            .await
+            .expect("read a range");
+    }
+    let small = log.lines().len() - start;
+    for offset in 0..5 {
+        let _ = backend
+            .read_range("Arrival.2016.mkv", offset * 512, 512)
+            .await
+            .expect("read a range");
+    }
+    let large = log.lines().len() - start - small;
+
+    // The log tracks operations, not bytes: sixty-four times the payload for
+    // the same five reads is the same number of lines. The opens and closes
+    // around them are still recorded, which is why this compares growth rather
+    // than asserting nothing happened.
+    assert_eq!(small, large, "reading more bytes wrote no more lines");
+}
+
+#[test]
+fn the_data_plane_never_reaches_the_log() {
+    // Directly, because a real session cannot tell "not recorded" from
+    // "recorded without a name" — and the rule is about the frames, not about
+    // what a particular backend method happens to send.
+    let log = Arc::new(MessageLog::new());
+    let tap = xsync::frame_tap(Arc::clone(&log), "media".to_owned());
+
+    tap(
+        Direction::Sent,
+        7,
+        &V3Message::Read {
+            handle: 1,
+            offset: 0,
+            length: 65536,
+            want_digest: false,
+        },
+    );
+    tap(
+        Direction::Received,
+        7,
+        &V3Message::ReadData {
+            related_id: 7,
+            offset: 0,
+            eof: false,
+            digest: None,
+            data: vec![0; 65536],
+        },
+    );
+    assert!(log.lines().is_empty(), "{:?}", frame_lines(&log));
+
+    // And the control plane still does, so this is a filter rather than a tap
+    // that records nothing.
+    tap(
+        Direction::Sent,
+        8,
+        &V3Message::Mount {
+            export: b"media".to_vec(),
+            requested_access: Access::ReadWrite,
+        },
+    );
+    assert_eq!(frame_lines(&log), vec!["#8 Mount media (rw)".to_owned()]);
+}
+
+#[tokio::test]
+async fn the_frame_tap_keeps_a_refusal_verbatim() {
+    // The reason the tap is where it is: `Connection::call` turns a server
+    // `Error` reply into an `Err` and the frame is gone with it.
+    let Some(xs) = xs_binary() else {
+        eprintln!("skipping: set EXCALIBUR_XS to an xs binary to run this");
+        return;
+    };
+    let root = share();
+    let log = Arc::new(MessageLog::new());
+    let backend = XsyncBackend::connect_local(
+        &xs,
+        root.path().to_str().unwrap(),
+        false,
+        Some(xsync::frame_tap(Arc::clone(&log), "media".to_owned())),
+    )
+    .await
+    .expect("mount the export");
+
+    assert!(backend.stat("nothing-here.txt").await.is_err());
+
+    let errors: Vec<String> = log
+        .lines()
+        .into_iter()
+        .filter(|line| line.category == LogCategory::Error)
+        .map(|line| line.text)
+        .collect();
+    assert!(
+        errors.iter().any(|line| line.contains("NoEntry")),
+        "the server's own code: {errors:?}"
+    );
 }

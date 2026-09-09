@@ -14,15 +14,18 @@ only in a place that does not exist in the app yet, or not at all.
 its export flags, `Response:` with what came back, `Listing:` with a timing,
 `Error:` verbatim, and a `Hint:` carrying `Remount as RW`.
 
-**What was built** is that pane, against a stream this app can actually
-produce. `xsync-client` exposes no frame tap — no callback, channel or observer
-anywhere in it, and every frame goes through a private `Connection::request` —
-which is XTP-E5-S0, in another repo (`integration.md` §8). SMB, NFS and SFTP
-have no frames to expose in the first place. So the engine records one line per
-verb at the `ShareBackend` seam, and the pane carries a pinned line saying
-`Engine operations — not protocol frames`. A pane that let a reader believe
-they were seeing the wire would be worse than one that says which they are
-seeing.
+**What was built** is that pane, over a log with two resolutions in it. xsync
+sessions are tapped frame by frame — its client gained an observer for this
+(XTP-E5-S0) — while SMB, NFS and SFTP have no frames to expose at all and are
+recorded one line per verb at the `ShareBackend` seam. A window with both kinds
+of mount open holds both kinds of line, so each line says which it is and the
+pane's pinned note reads from what it is showing. A pane that let a reader
+believe they were seeing the wire would be worse than one that says which they
+are seeing.
+
+**The bytes are left out of both.** `Read`/`ReadData`/`Write` frames, and the
+verbs that use them, are one transfer's worth of thousands: a 500-line ring
+holding a fifth of a second of a copy is not a log anybody can read.
 
 **`Verbose` is the design's word for a filter it does not define.** Off leaves
 out `Response` and `Listing`, which are the chatty half — a browse writes one
@@ -35,8 +38,10 @@ whether it is on cannot be read.
 
 **For the designer:** whether the log should be per mount rather than app-wide
 — every line names its share, so filtering to one pane's is available and not
-drawn; and what a frame-resolution line should look like beside a verb one,
-once both exist in the same pane.
+drawn; and whether a frame line should be marked as one beside a verb line,
+rather than only counted in the note at the top. They are visibly different in
+practice — a frame line opens with `#42` and names a protocol message — but
+nothing says so.
 
 ## The docked drawer *(XTP-E4-S1, 2026-09-09)*
 

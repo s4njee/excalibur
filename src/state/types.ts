@@ -106,6 +106,17 @@ export type LogCategory =
 /** A recovery a log line offers, named by verb rather than by label. */
 export type LogAction = "remountRw";
 
+/**
+ * What a log line was made from.
+ *
+ * The design's log is per protocol frame, and only xsync can produce those —
+ * through the tap its client gained for it (XTP-E5-S0). The other protocols
+ * have no frames to expose, and their mounts are recorded a verb at a time at
+ * the engine's backend seam. Both land in one log, so each line says which it
+ * is and the pane can tell the reader what it is showing.
+ */
+export type LogResolution = "verb" | "frame";
+
 export interface LogLine {
   /** Milliseconds since the Unix epoch; the pane draws `HH:MM:SS`. */
   at: number;
@@ -115,6 +126,7 @@ export interface LogLine {
   action?: LogAction;
   /** Which mount the line is about, when it is about one. */
   mount?: string;
+  resolution: LogResolution;
 }
 
 export type TransferDirection = "up" | "down";

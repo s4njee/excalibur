@@ -414,24 +414,28 @@ export function fixtureBackend(
           category: "command",
           text: "mount -t nfs4 -o sec=krb5p 10.0.0.4:/export/backups",
           mount: "nfs:10.0.0.4:/export/backups",
+          resolution: "verb",
         },
         {
           at: at(41),
           category: "response",
           text: "OK · export flags ro,root_squash,no_subtree_check",
           mount: "nfs:10.0.0.4:/export/backups",
+          resolution: "verb",
         },
         {
           at: at(42),
           category: "listing",
           text: "/export/backups — 4 entries in 88 ms",
           mount: "nfs:10.0.0.4:/export/backups",
+          resolution: "verb",
         },
         {
           at: at(44),
           category: "error",
           text: "upload rejected — EROFS on /export/backups/patch-notes.txt",
           mount: "nfs:10.0.0.4:/export/backups",
+          resolution: "verb",
         },
         {
           at: at(44),
@@ -439,6 +443,7 @@ export function fixtureBackend(
           text: "export is mounted read-only",
           action: "remountRw",
           mount: "nfs:10.0.0.4:/export/backups",
+          resolution: "verb",
         },
       ];
     },

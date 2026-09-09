@@ -57,6 +57,24 @@ pub enum LogAction {
     RemountRw,
 }
 
+/// What a line was made from.
+///
+/// The design's log is per protocol frame, and only xsync can produce those —
+/// through the tap its client gained for this (XTP-E5-S0). SMB, NFS and SFTP
+/// have no frames to expose, and their mounts are recorded a verb at a time at
+/// the `ShareBackend` seam. Both land in one log, so each line says which it
+/// is and the pane can tell the reader what it is showing rather than implying
+/// frames it does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Resolution {
+    /// One engine verb: `list_dir`, `rename`, a mount's life.
+    #[default]
+    Verb,
+    /// One protocol frame, as it crossed the wire.
+    Frame,
+}
+
 /// One line of the log, as the shell renders it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +89,8 @@ pub struct LogLine {
     /// Which mount the line is about, when it is about one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mount: Option<String>,
+    /// Whether this is a frame or a verb.
+    pub resolution: Resolution,
 }
 
 impl LogLine {
@@ -82,6 +102,7 @@ impl LogLine {
             text: text.into(),
             action: None,
             mount: None,
+            resolution: Resolution::Verb,
         }
     }
 
@@ -97,6 +118,13 @@ impl LogLine {
     #[must_use]
     pub fn with_action(mut self, action: LogAction) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    /// Say this line is one frame off the wire rather than one engine verb.
+    #[must_use]
+    pub fn at_frame_resolution(mut self) -> Self {
+        self.resolution = Resolution::Frame;
         self
     }
 }

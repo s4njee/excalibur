@@ -68,3 +68,21 @@ export function logText(lines: LogLine[]): string {
     .map((line) => `${formatLogTime(line.at)}\t${categoryLabel(line.category)}\t${line.text}`)
     .join("\n");
 }
+
+/**
+ * What the pane says it is showing, above the lines.
+ *
+ * The design's log is per protocol frame. Only xsync produces those; SMB, NFS
+ * and SFTP have none to give and are recorded a verb at a time, and a window
+ * with both kinds of mount open holds both kinds of line. Saying which is not
+ * a caveat to be tucked away — a reader who believes they are seeing the wire
+ * when they are seeing `list_dir` will draw the wrong conclusion from a log
+ * that is missing exactly the frame they are looking for.
+ */
+export function resolutionNote(lines: LogLine[]): string {
+  const frames = lines.some((line) => line.resolution === "frame");
+  const verbs = lines.some((line) => line.resolution !== "frame");
+  if (frames && verbs) return "xsync protocol frames · engine operations elsewhere";
+  if (frames) return "xsync protocol frames";
+  return "Engine operations — not protocol frames";
+}

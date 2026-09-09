@@ -329,7 +329,8 @@ and at the reader rather than at `Connection::request`'s reply: that catches fra
 nobody is waiting for as well, and keeps a server `Error` verbatim, which is what the AC
 was protecting. The observer is handed a borrow — a `V3Message` can carry a read's
 payload — so back-pressure and dropping are the observer's, which is where the AC's
-"reports the drop" belongs. Excalibur does not install one yet.
+"reports the drop" belongs. **Wired up 2026-09-09**: the shell's connector installs one
+per xsync mount, and its frames reach the same log the verbs do.
 `xsync-client` has no `tracing` or `log` dependency and exposes no callback, channel or
 observer; every frame goes through the private `Connection::request`
 (`../xsync/crates/xsync-client/src/lib.rs:286`). Filed as `integration.md` §8.
@@ -361,11 +362,19 @@ observer; every frame goes through the private `Connection::request`
 - Backends that cannot produce wire frames log at the `ShareBackend` seam instead, and
   the pane says which resolution it is showing rather than implying frames it does not
   have.
-- **Built at the seam, without XTP-E5-S0.** Every backend is wrapped in `LoggedBackend`,
-  so a verb reaches the log by crossing the trait rather than by somebody remembering to
-  write a line beside the call. The pane carries a pinned `Engine operations — not
-  protocol frames`; when the tap lands, frame lines join the same stream and the note is
-  what changes.
+- **Two resolutions in one log.** Every backend is wrapped in `LoggedBackend`, so a verb
+  reaches the log by crossing the trait rather than by somebody remembering to write a
+  line beside the call. xsync mounts *also* carry a frame tap (XTP-E5-S0), so their
+  sessions are logged frame by frame. Each line says which it is and the pane's pinned
+  note reads from the lines it is showing: `xsync protocol frames`, `Engine operations —
+  not protocol frames`, or both when a window holds both kinds of mount.
+- **The data plane is left out of the frames too.** `Read`, `ReadData`, `Write`,
+  `WriteAck`, `Flush` and the stage writes are the bytes: one transfer is thousands of
+  them, and a 500-line ring holding a fifth of a second of a copy is not a log anybody
+  can read. Same rule `LoggedBackend` follows for the verbs those frames implement.
+- **Nothing formats a payload.** A frame is classified by its frozen type byte and
+  described from named fields; `{:?}` on a `ReadData` renders a megabyte of integers, on
+  the protocol path, for a line nobody asked for.
 - **Verbose is a category filter, not a second stream.** Off leaves out `Response` and
   `Listing` — the chatty half, one of each per directory browsed — and keeps what was
   asked for, what the mount is doing, what failed and what to do about it.

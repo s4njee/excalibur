@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { VERBOSE_ONLY, categoryLabel, formatLogTime, logText, visibleLines } from "./log";
+import {
+  VERBOSE_ONLY,
+  categoryLabel,
+  formatLogTime,
+  logText,
+  resolutionNote,
+  visibleLines,
+} from "./log";
 import type { LogLine } from "./types";
 
 const line = (over: Partial<LogLine> = {}): LogLine => ({
   at: Date.parse("2026-08-31T09:22:41Z"),
   category: "command",
   text: "mount -t nfs4 -o sec=krb5p 10.0.0.4:/export/backups",
+  resolution: "verb",
   ...over,
 });
 
@@ -65,5 +73,31 @@ describe("the log's strings", () => {
     expect(logText([line({ at, category: "error", text: "EROFS" })])).toBe(
       "09:22:41\tError:\tEROFS",
     );
+  });
+});
+
+describe("what the pane says it is showing", () => {
+  it("does not imply frames it does not have", () => {
+    // SMB, NFS and SFTP have no frames to expose; their mounts are recorded a
+    // verb at a time, and a reader who believed otherwise would draw the wrong
+    // conclusion from a log missing the frame they are looking for.
+    expect(resolutionNote([line({ resolution: "verb" })])).toBe(
+      "Engine operations — not protocol frames",
+    );
+  });
+
+  it("says frames when that is what they are", () => {
+    expect(resolutionNote([line({ resolution: "frame" })])).toBe("xsync protocol frames");
+  });
+
+  it("says both when a window holds both kinds of mount", () => {
+    // One log, two resolutions: an xsync share and an SMB one open at once.
+    expect(
+      resolutionNote([line({ resolution: "frame" }), line({ resolution: "verb" })]),
+    ).toBe("xsync protocol frames · engine operations elsewhere");
+  });
+
+  it("claims nothing for an empty log", () => {
+    expect(resolutionNote([])).toBe("Engine operations — not protocol frames");
   });
 });

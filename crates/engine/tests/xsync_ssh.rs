@@ -40,7 +40,7 @@ async fn failure(dir: &Path, known_hosts: &Path) -> EngineError {
         known_hosts,
         rsh: Some(script.to_str().expect("utf-8 path")),
     };
-    XsyncBackend::connect_ssh(&target, "/srv/strife")
+    XsyncBackend::connect_ssh(&target, "/srv/strife", None)
         .await
         .err()
         .expect("a fake ssh never answers the handshake")

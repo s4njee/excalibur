@@ -28,7 +28,8 @@ use std::sync::Arc;
 use excalibur_engine::transfer::queue::TransferQueue;
 use excalibur_engine::transfer::worker::Worker;
 use excalibur_engine::{
-    EditStore, KeyringStore, KnownHosts, MountStatus, SecretStore, SessionManager, TransferStatus,
+    EditStore, KeyringStore, KnownHosts, MessageLog, MountStatus, SecretStore, SessionManager,
+    TransferStatus,
 };
 use tauri::{Emitter, Manager};
 
@@ -88,10 +89,18 @@ pub fn run() {
     // trust decision, and every SSH connection would ask again forever.
     let known_hosts = KnownHosts::app_default().expect("no data directory for known_hosts");
     let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore);
-    let sessions = Arc::new(SessionManager::new(Arc::new(ProtocolConnector {
-        known_hosts: known_hosts.clone(),
-        secrets: Arc::clone(&secrets),
-    })));
+    // One log for the app, shared with the connector: the mount's life is
+    // written by the manager, and an xsync session's frames by a tap the
+    // connector installs as it builds the client (`twopane.md` XTP-E5-S1).
+    let log = Arc::new(MessageLog::new());
+    let sessions = Arc::new(SessionManager::with_log(
+        Arc::new(ProtocolConnector {
+            known_hosts: known_hosts.clone(),
+            secrets: Arc::clone(&secrets),
+            log: Arc::clone(&log),
+        }),
+        log,
+    ));
 
     // Held for the run loop below, which sees a window vanish and has to tell
     // the manager — the builder consumes the other clones.

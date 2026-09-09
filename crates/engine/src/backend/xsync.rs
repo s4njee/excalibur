@@ -15,8 +15,10 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::io::AsyncBufReadExt as _;
 use xsync_client::{
-    attr_presence, Access, Client, Mount, OpenFile, RenameMode, CREATE, READ, TRUNC, WRITE,
+    attr_presence, Access, Client, Direction, FrameTap, Mount, OpenFile, RenameMode, CREATE, READ,
+    TRUNC, WRITE,
 };
+use xsync_core::protocol_v3::{message_type, types, V3Message};
 
 use super::{
     Attrs, Capacity, Caps, CasOutcome, Entry, EntryKind, Health, Listing, MountInfo, MountStatus,
@@ -24,6 +26,7 @@ use super::{
 };
 use crate::error::{EngineError, Result};
 use crate::kind::classify_entry;
+use crate::log::{LogCategory, LogLine, MessageLog};
 
 /// A mounted xsync export.
 pub struct XsyncBackend {
@@ -150,7 +153,11 @@ impl XsyncBackend {
     /// Fails when the remote shell cannot start `xs`, the host key is not in
     /// `known_hosts`, the peer does not speak protocol v3, or the export cannot
     /// be mounted.
-    pub async fn connect_ssh(target: &SshTarget<'_>, root: &str) -> Result<Self> {
+    pub async fn connect_ssh(
+        target: &SshTarget<'_>,
+        root: &str,
+        tap: Option<FrameTap>,
+    ) -> Result<Self> {
         let (program, args) = ssh_argv(target, root);
         let mut command = tokio::process::Command::new(program);
         command
@@ -183,7 +190,7 @@ impl XsyncBackend {
         // Both failures below are "the session died before it answered", which
         // is what the client can see and not why it happened. `ssh`'s own
         // words are the why, so they are collected before the error is built.
-        let client = match Client::from_split(stdout, stdin, 0).await {
+        let client = match connect_client(stdout, stdin, tap).await {
             Ok(client) => client,
             Err(error) => {
                 return Err(diagnosis
@@ -214,7 +221,12 @@ impl XsyncBackend {
     /// # Errors
     ///
     /// As [`Self::connect_ssh`], plus failure to spawn `xs` itself.
-    pub async fn connect_local(program: &str, root: &str, read_only: bool) -> Result<Self> {
+    pub async fn connect_local(
+        program: &str,
+        root: &str,
+        read_only: bool,
+        tap: Option<FrameTap>,
+    ) -> Result<Self> {
         let mut command = tokio::process::Command::new(program);
         command.arg("--server").arg(root);
         if read_only {
@@ -234,7 +246,7 @@ impl XsyncBackend {
             .stdin
             .take()
             .ok_or_else(|| EngineError::Io("xs stdin was not piped".to_owned()))?;
-        let client = Client::from_split(stdout, stdin, 0)
+        let client = connect_client(stdout, stdin, tap)
             .await
             .map_err(|error| map_error(&error))?;
         Self::mount(client, root).await
@@ -1120,5 +1132,179 @@ impl ReadHandle for XsyncReads {
             // waiting for an answer nobody is left to read.
             Err(_shared) => Ok(()),
         }
+    }
+}
+
+/// Start a client, tapped or not.
+///
+/// One place, so the two ways in cannot come to install the observer
+/// differently — or one of them to forget it.
+async fn connect_client<R, W>(
+    reader: R,
+    writer: W,
+    tap: Option<FrameTap>,
+) -> std::result::Result<Client, xsync_client::Error>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    match tap {
+        Some(tap) => Client::from_split_tapped(reader, writer, 0, tap).await,
+        None => Client::from_split(reader, writer, 0).await,
+    }
+}
+
+/// One session's frames, as lines in the message log (`twopane.md` XTP-E5-S1).
+///
+/// This is the resolution the design asks for — "the log is where protocol
+/// truth lives" — and it only exists for xsync: the tap is `xsync-client`'s
+/// (XTP-E5-S0), and SMB, NFS and SFTP have no frames to expose. Their mounts
+/// keep the verb-resolution lines `LoggedBackend` records, and the two kinds
+/// sit in one log, each saying which it is.
+///
+/// **The data plane is left out.** `Read`, `ReadData`, `Write`, `WriteAck` and
+/// `Flush` are the bytes themselves: one transfer is thousands of them, and a
+/// five-hundred-line ring holding a fifth of a second of a copy is not a log
+/// anybody can read. It is the same rule `LoggedBackend` follows for the verbs
+/// those frames implement.
+///
+/// **Nothing formats a payload.** The message is classified by its frozen type
+/// byte and described from a few named fields; `{:?}` on a `ReadData` would
+/// render a megabyte of integers, on the protocol path, for a line nobody
+/// wanted.
+#[must_use]
+pub fn frame_tap(log: Arc<MessageLog>, mount: String) -> FrameTap {
+    Arc::new(move |direction, id, message| {
+        let Some(text) = describe(id, message) else {
+            return;
+        };
+        log.record(
+            LogLine::on(&mount, category_of(direction, message), text).at_frame_resolution(),
+        );
+    })
+}
+
+/// Which of the log's categories a frame belongs in.
+fn category_of(direction: Direction, message: &V3Message) -> LogCategory {
+    match message {
+        // A refusal is why the tap is where it is: `Connection::call` turns
+        // one into an `Err` and the frame is gone with it.
+        V3Message::Error { .. } => LogCategory::Error,
+        _ if message_type(message) == types::DIR_PAGE => LogCategory::Listing,
+        _ => match direction {
+            Direction::Sent => LogCategory::Command,
+            Direction::Received => LogCategory::Response,
+        },
+    }
+}
+
+/// One line for a frame, or `None` for one the log deliberately omits.
+fn describe(id: u64, message: &V3Message) -> Option<String> {
+    let kind = message_type(message);
+    if matches!(
+        kind,
+        types::READ
+            | types::READ_DATA
+            | types::WRITE
+            | types::WRITE_ACK
+            | types::FLUSH
+            | types::STAGE_WRITE
+            | types::STAGE_ACK
+            | types::KEEPALIVE
+            | types::KEEPALIVE_ACK
+    ) {
+        return None;
+    }
+    let name = frame_name(kind);
+    Some(match message {
+        V3Message::Mount {
+            export,
+            requested_access,
+        } => format!(
+            "#{id} Mount {} ({})",
+            text(export, "/"),
+            match requested_access {
+                Access::ReadWrite => "rw",
+                Access::ReadOnly => "ro",
+            }
+        ),
+        // The design's own example of what a log is for: "mount command and
+        // its export flags".
+        V3Message::MountInfo {
+            effective_writable,
+            reason,
+            options,
+            ..
+        } => {
+            let access = if *effective_writable { "rw" } else { "ro" };
+            // The flags and the reason, when the server sent them: this is the
+            // design's own example of what the log is for.
+            let mut line = format!("#{id} MountInfo {access}");
+            for part in [options.as_slice(), reason.as_slice()] {
+                if !part.is_empty() {
+                    line.push_str(" · ");
+                    line.push_str(&String::from_utf8_lossy(part));
+                }
+            }
+            line
+        }
+        // Verbatim, which is the whole point of catching this frame.
+        V3Message::Error {
+            code,
+            platform_errno,
+            message,
+            ..
+        } => format!(
+            "#{id} {code:?} ({platform_errno}) {}",
+            text(message, "no message")
+        ),
+        _ => format!("#{id} {name}"),
+    })
+}
+
+/// A frame's name, from the frozen type byte rather than from `Debug`.
+///
+/// `format!("{message:?}")` would give the same word and would render every
+/// field to get it, payloads included. The byte is a `const fn` away.
+fn frame_name(kind: u8) -> &'static str {
+    match kind {
+        types::CANCEL => "Cancel",
+        types::FEATURES => "Features",
+        types::FEATURES_ACK => "FeaturesAck",
+        types::MOUNT => "Mount",
+        types::MOUNT_INFO => "MountInfo",
+        types::OPEN => "Open",
+        types::OPENED => "Opened",
+        types::CLOSE => "Close",
+        types::SET_SIZE => "SetSize",
+        types::STAGE_OPEN => "StageOpen",
+        types::STAGE_OPENED => "StageOpened",
+        types::STAGE_STATUS => "StageStatus",
+        types::STAGE_RANGES => "StageRanges",
+        types::STAGE_COMMIT => "StageCommit",
+        types::STAGE_RESULT => "StageResult",
+        types::STAGE_ABORT => "StageAbort",
+        types::WRITE_CAS => "WriteCas",
+        types::STAT => "Stat",
+        types::ATTRS => "Attrs",
+        types::READ_DIR => "ReadDir",
+        types::DIR_PAGE => "DirPage",
+        types::STAT_FS => "StatFs",
+        types::FS_INFO => "FsInfo",
+        // A type this build does not know is still worth a line: the number is
+        // what an operator would take to the protocol document.
+        _ => "frame",
+    }
+}
+
+/// A protocol string as text, with a fallback for an empty one.
+///
+/// Lossy: these are bytes off the wire and a log that refused to draw a
+/// malformed name would be hiding the very frame worth looking at.
+fn text(bytes: &[u8], empty: &str) -> String {
+    if bytes.is_empty() {
+        empty.to_owned()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
     }
 }

@@ -158,6 +158,21 @@ impl SessionManager {
         Self::with_policy(connector, HealthPolicy::default())
     }
 
+    /// As [`Self::new`], sharing a log the caller already holds.
+    ///
+    /// The shell needs both ends of it: this manager writes a mount's life to
+    /// it, and the connector installs a frame tap into the same log as it
+    /// builds a client (`twopane.md` XTP-E5-S1). One log, two writers, so the
+    /// pane shows one story.
+    #[must_use]
+    pub fn with_log(connector: Arc<dyn Connector>, log: Arc<MessageLog>) -> Self {
+        let mut manager = Self::with_policy(connector, HealthPolicy::default());
+        // Assigned rather than built through `..`: the manager implements
+        // `Drop`, so it cannot be moved out of field by field.
+        manager.log = log;
+        manager
+    }
+
     /// As [`Self::new`], with an explicit health policy.
     #[must_use]
     pub fn with_policy(connector: Arc<dyn Connector>, policy: HealthPolicy) -> Self {

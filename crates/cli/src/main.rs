@@ -137,7 +137,7 @@ async fn main() -> ExitCode {
         }
     } else if let Some(root) = value_of("--xsync-local") {
         let program = value_of("--xs").unwrap_or_else(|| "xs".to_owned());
-        match XsyncBackend::connect_local(&program, &root, read_only).await {
+        match XsyncBackend::connect_local(&program, &root, read_only, None).await {
             Ok(backend) => Arc::new(backend),
             Err(error) => {
                 eprintln!("xcal: could not mount {root} over xsync: {error}");
@@ -228,7 +228,7 @@ async fn main() -> ExitCode {
             known_hosts: known_hosts.path(),
             rsh: None,
         };
-        match XsyncBackend::connect_ssh(&target_spec, root).await {
+        match XsyncBackend::connect_ssh(&target_spec, root, None).await {
             Ok(backend) => Arc::new(backend),
             Err(error) => {
                 eprintln!("xcal: could not mount {target} over xsync: {error}");
