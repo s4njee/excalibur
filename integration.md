@@ -214,7 +214,12 @@ discipline both arrived at independently:
   a desktop runner.
 - A **headless CLI** driving it (`crates/cli`, `xcal`) — here it also generates
   `src/state/fixture.json`, so the frontend fixture cannot drift from what the
-  engine produces (`legacy/plan.md:306`).
+  engine produces (`legacy/plan.md:306`). It cannot drift from the engine; it
+  can and did fall behind the *type*, when `Entry` gained `addedMs` and nobody
+  regenerated — the preview drew `NaN undefined NaN` in a whole column, and
+  TypeScript could not see it because the JSON is imported as a module.
+  `src/state/fixture.test.ts` now lists the fields, so a new one fails until
+  the fixture carries it.
 - A **thin `src-tauri`** owning DTOs, letting no engine enum cross IPC unmapped
   (`legacy/plan.md:630`).
 - A `design_handoff_*/` directory as the visual source of truth, plus a

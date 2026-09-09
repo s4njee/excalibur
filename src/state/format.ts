@@ -26,9 +26,27 @@ export function formatSize(bytes: number): string {
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/**
+ * Something to draw a date from.
+ *
+ * `null` is the engine saying the filesystem has no answer, which is the
+ * ordinary case for `addedMs`. The rest — `undefined`, `NaN` — are not
+ * supposed to arrive at all, because the type says `number | null`. They do
+ * anyway when a value crosses a serialisation boundary and is missing a field
+ * the type promises, and the damage is silent and total: `new Date(undefined)`
+ * puts "NaN undefined NaN, NaN:NaN" in a column, once per row.
+ *
+ * Found in the browser preview, whose committed fixture predates the Added
+ * column. The fixture is fixed too; this is the layer that keeps the next one
+ * from reaching a user.
+ */
+function isMoment(ms: number | null): ms is number {
+  return Number.isFinite(ms);
+}
+
 /** The Modified column's format: `31 Aug 2026, 18:24`. */
 export function formatModified(ms: number | null): string {
-  if (ms === null) return "—";
+  if (!isMoment(ms)) return "—";
   const date = new Date(ms);
   const day = date.getDate();
   const month = MONTHS[date.getMonth()];
@@ -39,7 +57,7 @@ export function formatModified(ms: number | null): string {
 
 /** The short form the dense row layout uses: `31 Aug 18:24`. */
 export function formatModifiedShort(ms: number | null): string {
-  if (ms === null) return "—";
+  if (!isMoment(ms)) return "—";
   const date = new Date(ms);
   const hours = `${date.getHours()}`.padStart(2, "0");
   const minutes = `${date.getMinutes()}`.padStart(2, "0");
@@ -75,7 +93,7 @@ export function formatSizeTerse(bytes: number): string {
  * part that is usually the same.
  */
 export function formatModifiedGrid(ms: number | null): string {
-  if (ms === null) return "—";
+  if (!isMoment(ms)) return "—";
   const date = new Date(ms);
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");

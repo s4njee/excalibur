@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extensionOf, formatCapacity, formatCounts, formatDuration, formatModified, formatModifiedGrid, formatMountLabels, formatSize, formatSizeTerse, formatTransferStatus } from "./format";
+import { extensionOf, formatCapacity, formatCounts, formatDuration, formatModified, formatModifiedGrid, formatModifiedShort, formatMountLabels, formatSize, formatSizeTerse, formatTransferStatus } from "./format";
 
 describe("the strings the design specifies", () => {
   it("renders the mock's own figures", () => {
@@ -38,6 +38,18 @@ describe("the strings the design specifies", () => {
     const when = new Date(2026, 7, 31, 18, 24).getTime();
     expect(formatModified(when)).toBe("31 Aug 2026, 18:24");
     expect(formatModified(null)).toBe("—");
+  });
+
+  it("draws a dash for anything that is not a moment in time", () => {
+    // Not only `null`, which is what the type admits to. A field missing from
+    // a serialised record arrives as `undefined` and `new Date(undefined)`
+    // renders "NaN undefined NaN, NaN:NaN" — silently, once per row, which is
+    // how it survived in the browser preview's Added column.
+    const missing = undefined as unknown as number | null;
+    expect(formatModified(missing)).toBe("—");
+    expect(formatModified(Number.NaN)).toBe("—");
+    expect(formatModifiedShort(missing)).toBe("—");
+    expect(formatModifiedGrid(missing)).toBe("—");
   });
 });
 
