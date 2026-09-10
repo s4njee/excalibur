@@ -626,10 +626,19 @@ truthful than what the protocol already offers.
   story tightens rather than changes shape.
 - Resume is unaffected and already strong: `STAGE_RESUME` is advertised, and a stage's
   resume token survives both the connection and the server process.
-- **Already true.** The worker's `CancelToken` is checked between chunks and the row
-  settles as `Cancelled`; the session is untouched. Nothing here promises to interrupt a
-  read in flight, and `CANCEL` (type 18) is still unreachable from `xsync-client` —
-  `integration.md` §8, unchanged.
+- **Done, and narrower than it reads.** The worker's `CancelToken` is checked between
+  chunks and the row settles as `Cancelled`; the session is untouched. `CANCEL` (type 18)
+  is now reachable from `xsync-client` — dropping a request's future puts one on the wire
+  naming it (`xsync` 2026-09-10, `integration.md` §8) — but that **does not tighten the
+  drawer's cancel**, because a transfer never runs on the browse session: it is a second
+  `xs --server` speaking the v1/v2 sync grammar, and killing the child is the only
+  cancellation it has (`crates/engine/src/transfer/xsync_engine.rs:607`). What it does
+  tighten is the browse session, which could previously be abandoned only by walking away
+  and leaving the server working. The health probe takes the first deadline
+  (`HealthPolicy::probe_timeout`): a share that stops answering without the transport
+  noticing used to park the health loop inside `ping` forever, so the dot stayed green and
+  nothing reconnected. Abandoning a superseded *listing* is now cheap and still not done —
+  the staleness is a frontend fact and the Tauri command cannot be aborted from there.
 
 ---
 

@@ -84,7 +84,7 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
 | E26-S6 owner/group in Properties (`:5750`) | the `OWNER_NAMES` feature bit |
 | xsync↔xsync on one host round-trips through us | a server-side `Copy` |
 | ~~XTP-E5-S1 the message log~~ — done at verb resolution; frames need the wiring | ~~a frame tap on `xsync-client`~~ — landed, §8 |
-| XTP-E9-S5 cancel in flight (`twopane.md` XTP-E9-S5) | `Cancel` (type 18) reachable from the client — §8 |
+| ~~XTP-E9-S5 cancel in flight~~ — the browse session abandons cleanly now; the drawer's cancel is a different transport | ~~`Cancel` (type 18) reachable from the client~~ — landed, §8 |
 
 ### 6. `xsync-download` — the whole Downloads tab
 
@@ -179,8 +179,28 @@ Each is an Excalibur story stopped at the seam, not an Excalibur bug.
   mount, in the shell's connector where the client is built; the engine turns
   frames into `LogLine`s at frame resolution, minus the data plane, and the
   pane's note follows the lines it is showing.
-- **Still missing:** `Cancel` (type 18) is defined and the server handles it, but
-  the client crate offers no way to send one.
+- **Second half done 2026-09-10 (`xsync`, `xsync-client`).** Dropping a
+  request's future now puts `Cancel` on the wire naming it. The gesture is the
+  one async already has — a `select!` that took the other branch, a
+  `tokio::time::timeout`, an aborted task — rather than a `cancel(id)` the
+  caller could aim at the wrong request: ids belong to the crate. The guard
+  keys on the pending entry, which distinguishes an abandoned request from a
+  finished one on its own and removes the slot an abandoned request used to
+  leak. The server drops a still-queued request and a running `Read` checks the
+  flag between `read_at` calls; the session is untouched either way, asserted
+  against a real `xs --server`.
+- **What it changes here, and what it does not.** The health probe now has a
+  deadline (`HealthPolicy::probe_timeout`, 10 s) and the abandoned `StatFs` is
+  cancelled rather than left running — a share that stopped answering without
+  the transport noticing used to park the health loop inside `ping` forever, so
+  the dot stayed green and no reconnect was ever attempted. The **drawer's
+  per-row cancel is unchanged**, because a transfer is not on this session at
+  all: it is a second `xs --server` speaking the v1/v2 sync grammar, and the
+  only cancellation it has is killing the child
+  (`crates/engine/src/transfer/xsync_engine.rs:607`). Abandoning a *listing* —
+  the pane that navigated away, the sync-browsing mirror superseded three
+  folders ago — is now cheap to do and still not done: the staleness is known
+  in the frontend and the Tauri command is not abortable from there.
 - **Current state before that.** Neither existed. `xsync-client` has no `tracing` or `log`
   dependency and no callback, channel or observer anywhere; `Connection::request` is
   private and every frame passes through it. `V3Message` already derives `Debug`, so

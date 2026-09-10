@@ -25,6 +25,13 @@ use tokio::sync::RwLock;
 struct ScriptedBackend {
     inner: MockBackend,
     healthy: Arc<AtomicBool>,
+    /// Answer no health probe at all, ever.
+    ///
+    /// Distinct from unhealthy, and the harder case: an unhealthy mount says
+    /// so, while a wedged one leaves the question open. Nothing below the
+    /// backend notices — the connection is up, the request went out, the reply
+    /// simply never comes.
+    wedged: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -60,6 +67,9 @@ impl ShareBackend for ScriptedBackend {
         self.inner.remove(path, recursive).await
     }
     async fn ping(&self) -> Result<Health> {
+        if self.wedged.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         if self.healthy.load(Ordering::SeqCst) {
             Ok(Health::Healthy)
         } else {
@@ -94,6 +104,8 @@ struct ScriptedConnector {
     /// Shared with every backend handed out, so a live mount can be knocked
     /// over without touching the session that holds it.
     healthy: Arc<AtomicBool>,
+    /// Likewise, but for a mount that stops answering rather than failing.
+    wedged: Arc<AtomicBool>,
     /// What the last `connect` asked for, so a test can check that a remount
     /// actually changed the request rather than reconnecting identically.
     last_preference: Arc<RwLock<Option<Access>>>,
@@ -107,6 +119,7 @@ impl Default for ScriptedConnector {
             reject_credentials: AtomicBool::new(false),
             read_only: AtomicBool::new(false),
             healthy: Arc::new(AtomicBool::new(true)),
+            wedged: Arc::new(AtomicBool::new(false)),
             last_preference: Arc::new(RwLock::new(None)),
         }
     }
@@ -124,6 +137,11 @@ impl ScriptedConnector {
 
     fn bring_back(&self) {
         self.healthy.store(true, Ordering::SeqCst);
+    }
+
+    /// Leave every probe unanswered rather than failing it.
+    fn wedge(&self) {
+        self.wedged.store(true, Ordering::SeqCst);
     }
 
     async fn last_preference(&self) -> Option<Access> {
@@ -155,6 +173,7 @@ impl Connector for ScriptedConnector {
         Ok(Arc::new(ScriptedBackend {
             inner,
             healthy: Arc::clone(&self.healthy),
+            wedged: Arc::clone(&self.wedged),
         }))
     }
 }
@@ -166,6 +185,7 @@ fn manager(connector: &Arc<ScriptedConnector>) -> SessionManager {
             interval: Duration::from_millis(50),
             backoff_initial: Duration::from_millis(10),
             backoff_max: Duration::from_millis(40),
+            ..HealthPolicy::default()
         },
     )
 }
@@ -470,6 +490,7 @@ async fn a_remounted_share_keeps_asking_for_read_write_when_it_reconnects() {
         interval: Duration::from_millis(20),
         backoff_initial: Duration::from_millis(10),
         backoff_max: Duration::from_millis(20),
+        ..HealthPolicy::default()
     };
     let sessions =
         SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
@@ -535,6 +556,7 @@ async fn a_rejected_credential_stops_the_reconnect_loop() {
         interval: Duration::from_millis(20),
         backoff_initial: Duration::from_millis(10),
         backoff_max: Duration::from_millis(20),
+        ..HealthPolicy::default()
     };
     let sessions =
         SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
@@ -585,6 +607,7 @@ async fn a_dropped_connection_still_retries() {
         interval: Duration::from_millis(20),
         backoff_initial: Duration::from_millis(10),
         backoff_max: Duration::from_millis(20),
+        ..HealthPolicy::default()
     };
     let sessions =
         SessionManager::with_policy(Arc::clone(&connector) as Arc<dyn Connector>, policy);
@@ -867,4 +890,35 @@ async fn a_preconnect_that_fails_is_told_to_nobody() {
             assert!(event.audience.is_empty(), "{:?}", event.audience);
         }
     }
+}
+
+#[tokio::test]
+async fn a_probe_that_never_answers_counts_as_the_share_being_gone() {
+    // A share can stop answering without anything below noticing: a remote
+    // `xs` that wedges, a link that black-holes packets, an SSH channel held
+    // open by a stuck process. With no deadline the health loop parks inside
+    // `ping` for as long as that lasts — no banner, no reconnect, and a health
+    // dot that stays green because the question was never answered either way.
+    // Silence for long enough is the answer.
+    let connector = Arc::new(ScriptedConnector::default());
+    let sessions = SessionManager::with_policy(
+        Arc::clone(&connector) as Arc<dyn Connector>,
+        HealthPolicy {
+            interval: Duration::from_millis(20),
+            backoff_initial: Duration::from_millis(10),
+            backoff_max: Duration::from_millis(20),
+            probe_timeout: Duration::from_millis(60),
+        },
+    );
+    sessions.mount("main", spec("media")).await.expect("mount");
+    // Subscribed after the mount, so what arrives is what the wedge caused.
+    let mut events = sessions.events();
+
+    connector.wedge();
+
+    let reported = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("the health loop is still waiting on a probe that will never answer")
+        .expect("an event");
+    assert_eq!(reported.status, MountStatus::Reconnecting);
 }

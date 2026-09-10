@@ -362,6 +362,7 @@ async fn a_dropped_session_reconnects_and_re_reads_writable() {
             // Samba takes a few seconds to come back, so the retry has to be
             // patient enough to still be trying when it does.
             backoff_max: Duration::from_secs(2),
+            ..HealthPolicy::default()
         },
     );
 

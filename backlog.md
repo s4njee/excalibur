@@ -48,6 +48,20 @@ table is out of scope here; this file is what is left. Citations are story ids
   (`legacy/plan.md:641`)
 - **E3-S2 — Re-probe bookmarks every 60s while idle.** The probe runs once on
   start. (`legacy/plan.md:722`)
+- **XTP-E9-S5b — Abandon a superseded listing.** `xsync-client` now cancels a
+  request whose future is dropped, so walking away from a listing is cheap —
+  but nothing here drops one. A pane that navigates twice, or a sync-browsing
+  mirror three folders behind, still pays for every listing it asked for. The
+  staleness is a frontend fact (the pane's `generation`) and the Tauri command
+  is not abortable from there: it wants an in-flight registry keyed by pane and
+  a `cancel_list` command. Worth doing when a share is far enough away for a
+  listing to be slow; invisible on a LAN. (`integration.md` §8)
+- **Reconnect has no deadline either.** `HealthPolicy::probe_timeout` bounds the
+  probe; the `Connector::connect` that follows a failed one is unbounded, so a
+  reconnect against a host that black-holes packets can sit in `ssh` for as long
+  as OpenSSH will wait. Less severe than the probe was — the row reads
+  `Reconnecting`, which is at least true — but the backoff never gets to run.
+  (`crates/engine/src/session/mod.rs:725`)
 - **E8-S9 — Live refresh.** Coalescer built; nothing produces `watch` events, so a
   listing never refreshes from the server side. Blocked on xsync Notify (types
   110–115, Phase 4). (`legacy/plan.md:2228`, `:1672`)

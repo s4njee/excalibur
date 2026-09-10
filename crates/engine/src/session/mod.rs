@@ -82,6 +82,15 @@ pub struct HealthPolicy {
     pub backoff_initial: Duration,
     /// Longest wait between attempts.
     pub backoff_max: Duration,
+    /// How long one probe may take before the share counts as gone.
+    ///
+    /// A probe is a round trip, and a round trip can fail to come back without
+    /// the transport noticing: a remote `xs` that stops answering, a link that
+    /// black-holes packets, an SSH channel held open by a wedged process. With
+    /// no deadline the loop parks inside `ping` forever — no banner, no
+    /// reconnect, and a health dot that stays green because the question was
+    /// never answered either way. Silence for this long *is* the answer.
+    pub probe_timeout: Duration,
 }
 
 impl Default for HealthPolicy {
@@ -93,6 +102,10 @@ impl Default for HealthPolicy {
             interval: Duration::from_secs(15),
             backoff_initial: Duration::from_secs(1),
             backoff_max: Duration::from_secs(30),
+            // Shorter than the interval, so probes never overlap, and long
+            // enough that a busy server on a slow link is not called dead for
+            // taking its time over a `statfs`.
+            probe_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -102,6 +115,21 @@ struct Session {
     backend: Option<Arc<dyn ShareBackend>>,
     status: MountStatus,
     mount: Option<MountInfo>,
+}
+
+/// One health probe, with a deadline.
+///
+/// Silence for `timeout` answers the question: see [`HealthPolicy::probe_timeout`]
+/// for why a probe that never returns has to count as a failure rather than as
+/// a pass. Abandoning it is also how the probe is called off where the protocol
+/// has a way to say so — dropping the future puts xsync's `Cancel` (type 18) on
+/// the wire, so a server that is merely slow is not left finishing an answer
+/// nobody is waiting for.
+async fn probe(backend: &Arc<dyn ShareBackend>, timeout: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, backend.ping()).await,
+        Ok(Ok(crate::backend::Health::Healthy))
+    )
 }
 
 /// Which windows are looking at `id`, in a stable order.
@@ -697,7 +725,7 @@ impl SessionManager {
                     // Unmounted, or never connected: nothing left to watch.
                     return;
                 };
-                if matches!(backend.ping().await, Ok(crate::backend::Health::Healthy)) {
+                if probe(&backend, policy.probe_timeout).await {
                     backoff = policy.backoff_initial;
                     continue;
                 }
