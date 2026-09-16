@@ -1,7 +1,9 @@
 # Excalibur
 
-A desktop share browser for **SMB, NFS, SFTP and xsync**. Rust + Tauri v2 shell,
-SolidJS frontend, and every byte of protocol and filesystem I/O in Rust.
+A desktop share browser for **SMB, NFS, SFTP and xsync**. The native interface is
+being ported to **GPUI**; the existing Tauri v2 + SolidJS shell remains in the tree
+as the parity reference while the port is completed. Every byte of protocol and
+filesystem I/O stays in Rust.
 
 Single-pane, Cyberduck-style: one directory of one share at a time, bookmarks in
 a permanently visible sidebar, and the mount's effective permission first in the
@@ -18,6 +20,7 @@ status bar, gating every write verb.
 ```text
 crates/engine/   excalibur-engine — backends, transfers, previews. No Tauri.
 crates/cli/      xcal — drives the engine headlessly, for bring-up and bugs.
+crates/gpui/     excalibur-gpui — native GPUI shell and Rust browser state.
 src-tauri/       The shell: commands, DTOs, the event bridge. Nothing else.
 src/             SolidJS frontend.
 design_handoff_share_browser/   The specification this implements.
@@ -29,6 +32,24 @@ Two boundaries hold this apart, and both are load-bearing:
   does the reading and writing.
 - **The engine has no Tauri dependency.** Every backend is testable headlessly,
   which is why `xcal` exists.
+
+### Native GPUI app
+
+The GPUI target uses the same `excalibur-engine` crate directly—there is no
+webview or stringly typed IPC layer. The deterministic design fixture and a real
+local folder are useful while developing the port:
+
+```bash
+cargo run -p excalibur-gpui -- --demo
+cargo run -p excalibur-gpui -- --local /path/to/folder
+cargo run -p excalibur-gpui
+```
+
+The last form opens the user's home folder and seeds the sidebar with Home,
+Applications, Desktop, Documents, Pictures, and Movies. It also starts the
+native connector, OS keychain, known-host policy, and New Connection surface.
+Non-secret bookmarks and view preferences live in a native JSON settings file;
+passwords remain in the OS keychain.
 
 ## Running it
 

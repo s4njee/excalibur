@@ -1,0 +1,43 @@
+[package]
+name = "excalibur-gpui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native GPUI shell for Excalibur's share browser"
+publish = false
+
+[[bin]]
+name = "excalibur-gpui"
+path = "src/main.rs"
+
+[dependencies]
+# Keep the GPUI snapshot aligned with the kit, as in the proven Ferrite and Laika
+# shells. `gpui` is named explicitly because derives in GPUI refer to that path.
+gpui-kit = { version = "=0.6.1", default-features = true }
+gpui = { package = "gpui-pre", version = "=0.3.2" }
+gpui-pre-platform = "=0.3.2"
+# Native browser/model services share the Tauri-free engine and its Tokio
+# executor; these remain the only app-owned runtime dependencies.
+excalibur-engine = { path = "../engine" }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# GPUI is launched directly with `cargo run` on macOS rather than through the
+# Tauri bundle. Install the same checked-in ICNS as AppKit's application icon
+# so direct launches have the correct Dock/window identity too.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Matches the engine's opt-in SMB backend and its GPLv3 system dependency.
+smb = ["excalibur-engine/smb"]

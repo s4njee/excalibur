@@ -13,6 +13,10 @@ frozen history you should read but never edit.
 
 ## The shape of it
 
+The native port lives in `crates/gpui`: its views call the Rust engine through
+the GPUI model and service layers directly. The Tauri/SolidJS path below remains
+the parity reference during the migration.
+
 ```
                     ┌─────────────────────────────────────────┐
    SolidJS webview  │ src/                                    │
@@ -43,7 +47,15 @@ frozen history you should read but never edit.
 **The engine is Tauri-free on purpose.** `crates/engine` has no `tauri`
 dependency, so its tests run without a webview and `crates/cli` (`xcal`) drives
 the same code from a terminal. Anything that needs a window handle
-belongs in `src-tauri`, not here.
+belongs in the active shell (`crates/gpui` or `src-tauri`), not here.
+
+The GPUI port keeps the same engine boundary but removes the webview boundary:
+`crates/gpui` calls the engine through a Tokio-backed native service facade.
+`browser.rs` owns pure sort/filter/selection/history rules, `model.rs` protects
+async listings with generation tokens, and `connector.rs` carries the existing
+credential and host-key policy without depending on Tauri. During migration,
+`src-tauri` and `src/` remain the behavioural reference for surfaces not yet
+ported.
 
 **The path dependencies only resolve when the siblings sit next to each other.**
 `crates/engine/Cargo.toml` points at `../../../xsync/crates/*`. A standalone

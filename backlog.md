@@ -28,6 +28,25 @@ table is out of scope here; this file is what is left. Citations are story ids
 - **Not gated:** no ESLint (E0-S1b), no Docker backend matrix (E19-S1), no
   Playwright visual suite (E19-S2), no e2e (E19-S3), no perf gates (E19-S4).
 
+## Native GPUI port
+
+The `GPUI` branch now has a native `crates/gpui` target built directly on
+`excalibur-engine`. The native connector, browser state, async listing model,
+settings store, connection sheet, virtual file table, bookmarks surface and
+transfer panel have Rust implementations. The Tauri/SolidJS shell remains the
+parity oracle until these remaining cutover slices are complete:
+
+- Complete enqueue, conflict-resolution and download-origin plumbing in the
+  native transfer panel. Queue persistence, worker lifecycle, event snapshots,
+  and pause/resume/retry/cancel controls are already wired.
+- Finish image/audio/video Quick Look, edit-in-place, native drag promises,
+  menus, keyboard command routing and multi-window state without moving file
+  bytes into general browser state.
+- Bring two-pane mode, directory trees, sync browsing, downloads and preferences
+  to behavioural parity with their existing tests and design-gap decisions.
+- Add native UI regression/performance gates, package the GPUI binary, then
+  remove `src-tauri`, `src`, and the pnpm/Vite build only after parity evidence.
+
 ---
 
 ## Share browser core
