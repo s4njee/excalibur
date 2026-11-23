@@ -13,18 +13,6 @@ version = 2
 # Recorded individually rather than by a blanket `unmaintained = "allow"`, so a
 # genuinely new unmaintained crate still fails the build.
 ignore = [
-  # GTK3 bindings, pulled in by tauri's Linux backend (wry -> gtk). Tauri v2
-  # still targets GTK3; migrating is upstream's call, not ours.
-  { id = "RUSTSEC-2024-0411", reason = "gtk, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0412", reason = "gtk-sys, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0413", reason = "gdk, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0414", reason = "gdk-sys, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0415", reason = "gdkwayland-sys, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0416", reason = "gdkx11, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0417", reason = "gdkx11-sys, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0418", reason = "atk, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0419", reason = "atk-sys, via tauri's Linux backend" },
-  { id = "RUSTSEC-2024-0420", reason = "gtk3-macros, via tauri's Linux backend" },
   # Build-time only: these run in proc macros and ship no code in the binary.
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, build-time only, via tauri-macros" },
   { id = "RUSTSEC-2025-0075", reason = "unic-char-property, build-time only, via tauri-codegen" },
